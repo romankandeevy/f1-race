@@ -560,6 +560,156 @@ function botLaps(level, seconds) {
   check('защита позиции: перестраивается навстречу', `сдвинулся на ${moved.toFixed(1)} м в сторону догоняющего`, moved > 1.5)
 }
 
+// 20e–20h. Боты в потоке (прогноз столкновений, полосы, автомат обгона). Касание считаем по физике Rapier:
+// самая глубокая точка контакта между болидами (глубже 2 см — удар, мельче — скользящее касание бортов)
+const NEAR_TOUCH = 0.02
+const penetration = (world, cars) => {
+  let deep = 0
+  let touching = false
+  for (let i = 0; i < cars.length; i++) {
+    for (let j = i + 1; j < cars.length; j++) {
+      for (let a = 0; a < cars[i].body.numColliders(); a++) {
+        for (let b = 0; b < cars[j].body.numColliders(); b++) {
+          world.contactPair(cars[i].body.collider(a), cars[j].body.collider(b), (m) => {
+            for (let k = 0; k < m.numContacts(); k++) {
+              if (m.contactDist(k) < 0) {
+                touching = true
+                deep = Math.max(deep, -m.contactDist(k))
+              }
+            }
+          })
+        }
+      }
+    }
+  }
+  return { deep, touching }
+}
+const newWorld = () => {
+  const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+  world.timestep = DT
+  const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
+  return world
+}
+const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, speed: v.state.fwdSpeed })
+
+// 20e. Восемь ботов стоя на решётке 2×4 (ряды через 9 м), темп и агрессия у всех разные, 45 с на овале:
+// ударов нет, касаются бортами меньше 2 с в сумме, с асфальта не уходят, обгоны случаются
+{
+  let worstDeep = 0
+  let worstTouch = 0
+  let worstOff = 0
+  let passes = 0
+  for (const seed of [1, 2, 3]) {
+    let rs = seed
+    const rand = () => (rs = (rs * 1664525 + 1013904223) % 4294967296) / 4294967296
+    const world = newWorld()
+    const cars = []
+    for (let i = 0; i < 8; i++) {
+      const v = createVehicle(RAPIER, world, { x: i % 2 ? 2.6 : -2.6, y: 0.05, z: 300 - Math.floor(i / 2) * 9 - (i % 2) * 4, wear: false }, TUNING)
+      const pilot = { pace: 1 - 0.01 * i, line: 0.9, brake: 1, look: 1, aggression: rand() }
+      cars.push({ v, body: v.body, d: createAiDriver(createRaceLine(OVAL, 'hard', TUNING, pilot), { skill: 0.82 + rand() * 0.18 }), lap: 0, last: 0, s: 0 })
+    }
+    let touchSteps = 0
+    for (let t = 0; t < 45; t += DT) {
+      const ps = cars.map((c) => posOf(c.v))
+      const inputs = cars.map((c, i) => c.d.update(c.v, DT, ps.filter((_, j) => j !== i)))
+      cars.forEach((c, i) => stepVehicle(c.v, inputs[i], DT, () => 'asphalt'))
+      world.step()
+      const { deep, touching } = penetration(world, cars.map((c) => c.v))
+      worstDeep = Math.max(worstDeep, deep)
+      if (touching) touchSteps++
+      if (Math.round(t / DT) % 24 === 0) {
+        for (const c of cars) {
+          worstOff = Math.max(worstOff, offAxis(c.v.body.translation()))
+          const sNow = OVAL[c.d.state.idx].distance_m
+          if (sNow < c.last - 500) c.lap++ // перешли через ноль круга
+          c.last = sNow
+          const prev = c.s
+          c.s = c.lap * 1000 + sNow
+          if (t > 1) {
+            for (const o of cars) if (o !== c && prev < o.sPrev && c.s > o.s && Math.abs(c.s - o.s) < 60) passes++
+          }
+          c.sPrev = prev
+        }
+      }
+    }
+    worstTouch = Math.max(worstTouch, touchSteps * DT)
+  }
+  check('бот в потоке: восемь со старта стоя, без ударов', `глубже всего ${(worstDeep * 100).toFixed(1)} см, касаются бортами до ${worstTouch.toFixed(2)} с, от оси до ${worstOff.toFixed(2)} м, обгонов ${passes}`, worstDeep < NEAR_TOUCH && worstTouch < 2 && worstOff < 6.05 && passes >= 3)
+}
+
+// 20f. Болид в соседней полосе — не повод тормозить: быстрый бот догоняет медленный, едущий в 5 м сбоку,
+// и проезжает рядом, не сбавляя газ и не уходя со своей линии
+{
+  const world = newWorld()
+  const line = createRaceLine(OVAL, 'hard')
+  const i0 = 20 // 40 м от старта прямой
+  const v = createVehicle(RAPIER, world, { x: line.x[i0], y: 0.05, z: line.z[i0], wear: false }, TUNING)
+  v.body.setLinvel({ x: 0, y: 0, z: 45 }, true)
+  const d = createAiDriver(line, { idx: i0 })
+  const lane = line.x[i0] - 5 // болид справа от линии бота на 5 м
+  let z = line.z[i0] + 50
+  let maxBrake = 0
+  let maxOff = 0
+  let passed = false
+  for (let t = 0; t < 4; t += DT) { // до торможения перед поворотом
+    z += 25 * DT
+    const input = d.update(v, DT, [{ x: lane, z, speed: 25 }])
+    stepVehicle(v, input, DT, () => 'asphalt')
+    world.step()
+    if (t > 0.5) {
+      maxBrake = Math.max(maxBrake, input.brake)
+      maxOff = Math.max(maxOff, Math.abs(d.state.offset))
+    }
+    if (v.body.translation().z > z + 20) passed = true
+  }
+  check('бот не тормозит за соседом в другой полосе', `обогнал ${passed ? 'да' : 'нет'}, педаль тормоза до ${maxBrake.toFixed(2)}, ушёл от линии не дальше ${maxOff.toFixed(2)} м`, passed && maxBrake < 0.05 && maxOff < 1)
+}
+
+// 20g. Обгон в колонне: быстрый бот идёт за тремя медленными в разных полосах — обгоняет всех, без ударов, а боковое
+// смещение гладкое: скорость до 3,3 м/с, ускорение до 5,5 м/с² (и в режиме «следом» тормозит, не прыгая вбок)
+{
+  const world = newWorld()
+  const fastLine = createRaceLine(OVAL, 'hard')
+  const slowLine = createRaceLine(OVAL, 'light')
+  const mk = (x, z, v0) => {
+    const v = createVehicle(RAPIER, world, { x, y: 0.05, z, wear: false }, TUNING)
+    v.body.setLinvel({ x: 0, y: 0, z: v0 }, true)
+    return v
+  }
+  const fast = mk(fastLine.x[10], 20, 40)
+  const slowIdx = [60, 85, 110]
+  const slow = slowIdx.map((i, k) => mk(slowLine.x[i] + (k === 1 ? 2.2 : -1.5), slowLine.z[i], 32))
+  const df = createAiDriver(fastLine, { idx: 10 })
+  const ds = slow.map((_, k) => createAiDriver(slowLine, { idx: slowIdx[k], skill: 0.62 }))
+  const all = [fast, ...slow]
+  let worstDeep = 0
+  let maxV = 0
+  let maxA = 0
+  let prevO = null
+  let prevV = 0
+  let passedAll = false
+  for (let t = 0; t < 40; t += DT) {
+    const ps = all.map(posOf)
+    stepVehicle(fast, df.update(fast, DT, ps.slice(1)), DT, () => 'asphalt')
+    slow.forEach((v, k) => stepVehicle(v, ds[k].update(v, DT, ps.filter((_, j) => j !== k + 1)), DT, () => 'asphalt'))
+    world.step()
+    worstDeep = Math.max(worstDeep, penetration(world, all).deep)
+    const o = df.state.offset
+    if (t > 1 && prevO !== null) {
+      const vl = (o - prevO) / DT
+      maxV = Math.max(maxV, Math.abs(vl))
+      if (t > 1.1) maxA = Math.max(maxA, Math.abs((vl - prevV) / DT))
+      prevV = vl
+    }
+    prevO = o
+    if (slow.every((v) => fast.body.translation().z > v.body.translation().z + 12)) passedAll = true
+  }
+  check('обгон колонны: без ударов, всех обогнал', `обогнал ${passedAll ? 'всех' : 'не всех'}, глубже всего ${(worstDeep * 100).toFixed(1)} см`, passedAll && worstDeep < NEAR_TOUCH)
+  check('боковое смещение при обгоне без рывков', `скорость до ${maxV.toFixed(2)} м/с, ускорение до ${maxA.toFixed(1)} м/с²`, maxV < 3.3 && maxA < 5.5)
+}
+
 // 21. Учёт гонки: круги со старта за линией, места, отставание, финиш через N кругов
 {
   const L = 1000
@@ -627,7 +777,7 @@ function botLaps(level, seconds) {
   const hard = ringLap('hard')
   const medium = ringLap('medium')
   const light = ringLap('light')
-  check('боты на LUMEN RING: круг', `${hard.lap.toFixed(1)} / ${medium.lap.toFixed(1)} / ${light.lap.toFixed(1)} с (сложные / средние / лёгкие)`, hard.lap < medium.lap && medium.lap < light.lap && light.lap < 90)
+  check('боты на LUMEN RING: круг', `${hard.lap.toFixed(1)} / ${medium.lap.toFixed(1)} / ${light.lap.toFixed(1)} с (сложные / средние / лёгкие)`, hard.lap < medium.lap && medium.lap < light.lap && light.lap < 90 && hard.lap < 68.5)
   const worst = Math.max(hard.over, medium.over, light.over)
   check('боты на LUMEN RING не съезжают с асфальта', `запас до края ${(-worst).toFixed(2)} м`, worst < 0)
 }
