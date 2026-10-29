@@ -10,10 +10,12 @@ import { KEYS } from './menu.js'
 import { COMPOUNDS, COMPOUND_ORDER } from './wear.js'
 import { AI_LEVELS } from './ai.js'
 import { formatTime } from './laps.js'
+import { WEATHERS, WEATHER_ORDER } from './weather.js'
 
 const SESSION_KEY = 'f1-race.session.v1'
 const LAP_OPTIONS = [1, 3, 5, 10, 15, 20]
 const SLOTS = [
+  { v: -1, name: 'По квалификации' },
   { v: 0, name: 'Поул' },
   { v: 5, name: 'Шестое' },
   { v: 11, name: 'Последнее' },
@@ -42,7 +44,7 @@ export function createScreens(ctx) {
   let stack = []
   let sel = {} // выбранный пункт по экрану
   let tab = 0 // вкладка настроек
-  let session = { mode: ctx.canRace ? 'race' : 'time', level: 'medium', laps: 5, compound: 'medium', slot: 11, abs: false, ...ctx.session }
+  let session = { mode: ctx.canRace ? 'race' : 'time', level: 'medium', laps: 5, compound: 'medium', slot: 11, abs: false, weather: 'dry', ...ctx.session }
   try {
     Object.assign(session, JSON.parse(localStorage.getItem(SESSION_KEY) || '{}'))
   } catch {
@@ -79,11 +81,12 @@ export function createScreens(ctx) {
       session.compound = v
       ctx.previewCompound?.(v) // на витрине сразу видно цвет шин выбранного состава
     }, {
-      hint: () => ({ soft: 'Мягкие: быстрее всех, но живут около трёх кругов.', medium: 'Средние: золотая середина, около шести кругов.', hard: 'Твёрдые: медленнее, зато около десяти кругов.' })[session.compound] + (session.mode === 'race' ? ' В гонке обязательны два разных состава: без пит-стопа — дисквалификация.' : ''),
+      hint: () => ({ soft: 'Мягкие: быстрее всех, но живут около трёх кругов.', medium: 'Средние: золотая середина, около шести кругов.', hard: 'Твёрдые: медленнее, зато около десяти кругов.', intermediate: 'Промежуточные (зелёные): для влажной трассы. На сухой перегреваются и сгорают за пару кругов.', wet: 'Дождевые (синие): для ливня, вода уходит из-под протектора. На подсохшей трассе медленные и горят.' })[session.compound] + (session.mode === 'race' ? ' В гонке обязательны два разных состава (в дождь — нет): без пит-стопа — дисквалификация.' : ''),
     }),
+    choice('weather', 'Погода', WEATHER_ORDER.map((v) => ({ v, name: WEATHERS[v].name })), () => session.weather, (v) => (session.weather = v), { hint: () => WEATHERS[session.weather].about }),
     choice('slot', 'Место на решётке', SLOTS.map((s) => ({ v: s.v, name: s.name })), () => session.slot, (v) => (session.slot = v), {
       hidden: () => session.mode !== 'race',
-      hint: () => 'С поула впереди пусто, с последнего места — весь круг обгонов.',
+      hint: () => (session.slot === -1 ? `Сначала квалификация: ты один на трассе, разгонный круг и два быстрых, в зачёт лучший. Решётку строит время — как в F1.` : 'С поула впереди пусто, с последнего места — весь круг обгонов.'),
     }),
     toggle('abs', 'ABS', () => session.abs, (v) => (session.abs = v), { hint: () => 'Помощник на торможении: не даёт заблокировать колёса. В гонке включается и выключается клавишей B.' }),
     action('go', session.mode === 'race' ? 'На старт' : 'Выехать на трассу', () => {
@@ -126,6 +129,7 @@ export function createScreens(ctx) {
         slider('hud', 'Размер интерфейса', 60, 110, 2, () => settings.get('hud'), (v) => settings.set('hud', v), { fmt: (v) => `${v}%`, hint: () => 'Время круга, таблица, табло внизу. Уменьши, если закрывают дорогу.' }),
         choice('units', 'Скорость', [{ v: 'kmh', name: 'км/ч' }, { v: 'mph', name: 'миль/ч' }], () => settings.get('units'), (v) => settings.set('units', v), { hint: () => 'Единицы на табло. Телеметрия остаётся в км/ч.' }),
         toggle('minimap', 'Мини-карта', () => settings.get('minimap'), (v) => settings.set('minimap', v), { hint: () => 'Контур трассы справа вверху с точками болидов.' }),
+        toggle('ghost', 'Призрак лучшего круга', () => settings.get('ghost'), (v) => settings.set('ghost', v), { hint: () => 'В заезде на время и квалификации полупрозрачный болид едет по твоему рекорду: видно, где теряешь.' }),
         action('reset', 'Сбросить все настройки', () => settings.reset(), { hint: () => 'Вернуть всё в первоначальный вид. Ливрея болида и настройки гонки не меняются.' }),
       ],
     },

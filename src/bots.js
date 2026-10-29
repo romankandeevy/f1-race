@@ -9,7 +9,7 @@ import { createVehicle, stepVehicle, setGhost } from './vehicle.js'
 import { TUNING, SETUP_DEFAULT } from './tuning.js'
 import { createRaceLine, createAiDriver, makePilots } from './ai.js'
 import { freshTyres } from './wear.js'
-import { createPitStop, defaultPlan } from './pit.js'
+import { createPitStop, defaultPlan, rainTyreFor } from './pit.js'
 import { retireReason, mechanicalFlag } from './stewards.js'
 
 export const BOT_COUNT = 11 // с игроком 12 болидов (Рома 28.10)
@@ -79,6 +79,10 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
     // чёрно-оранжевый флаг или заметно побитый болид: в боксы, как делает команда в F1
     const dm = b.v.damage
     if (mechanicalFlag(b.v) || Math.max(dm.wingL, dm.wingR, dm.rearWing, dm.floor, dm.sideL, dm.sideR) > 0.4) return true
+    // погода: на сликах пошёл дождь или на дождевых трасса подсохла — менять шины
+    const need = rainTyreFor(b.v.wet || 0)
+    const onRain = b.v.compound === 'intermediate' || b.v.compound === 'wet'
+    if ((need && need !== b.v.compound) || (!need && onRain && (b.v.wet || 0) < 0.2)) return true
     if (b.stops === 0 && (lap >= b.planLap || lap >= laps - 1)) return true
     return wear > 0.62 && lap < laps
   }
@@ -203,9 +207,10 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
       })
     },
 
-    step(dt, surfaceAt) {
+    step(dt, surfaceAt, wet = 0) {
       for (const b of list) {
         if (b.gone) continue
+        b.v.wet = wet
         b.car.snapshot(b.v.body)
         stepVehicle(b.v, b.input, dt, surfaceAt)
         b.v.events.length = 0 // события ботов игроку не показываем

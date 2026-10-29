@@ -229,9 +229,15 @@ export function pitLimiter(ctl, v, input) {
 }
 
 // план по умолчанию: другой состав (правило двух составов), крыло — если помято
+// какие шины нужны на такой трассе: ливень — дождевые, влажно — промежуточные, иначе слики (null)
+export const rainTyreFor = (wet) => (wet > 0.8 ? 'wet' : wet > 0.3 ? 'intermediate' : null)
+
 export function defaultPlan(v, lapsLeft) {
   const cur = v.compound
-  const compound = cur === 'soft' ? (lapsLeft > 3 ? 'hard' : 'medium') : lapsLeft <= 3 ? 'soft' : cur === 'medium' ? 'hard' : 'medium'
+  const rain = rainTyreFor(v.wet || 0)
+  const onRain = cur === 'intermediate' || cur === 'wet'
+  // в дождь — дождевые шины; трасса подсохла — снова слики (на короткий остаток — мягкие)
+  const compound = rain ? rain : onRain ? (lapsLeft <= 3 ? 'soft' : 'medium') : cur === 'soft' ? (lapsLeft > 3 ? 'hard' : 'medium') : lapsLeft <= 3 ? 'soft' : cur === 'medium' ? 'hard' : 'medium'
   return { compound, wing: needsRepair(v.damage) }
 }
 

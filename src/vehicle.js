@@ -266,6 +266,7 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
     massFuel: 0, // сколько топлива сейчас учтено в массе кузова
     events: [], // что случилось за шаг (прокол, отказ мотора) — main показывает игроку
     wearOn: wear,
+    wet: 0, // насколько мокрая трасса 0…1 (погода, main.js); шины держат по wetGrip
   }
   v.hullCar = hullCar
   hullOwners.set(hull.handle, v)
@@ -573,7 +574,7 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
     rollingTotal += w.rolling / 4 + (v.tyres[i].puncture ? 0.012 : 0) // проколотая шина тормозит
     // давление шин (вкладка «Шины»): выше нормы — меньше сцепления, но острее отклик; ниже — наоборот
     const pd = (setup[TYRE_KEYS[i]] - (w.front ? T.tyreRef.front : T.tyreRef.rear)) / 3.5
-    const mu = T.tireMu * w.grip * (v.wearOn ? tyreGrip(v.tyres[i], v.compound) : 1) * Math.pow(Math.max(w.load, 200) / Fn0, -T.loadSensitivity) * (w.front ? 1 : T.rearGrip) * (1 - T.tyrePressureGrip * pd)
+    const mu = T.tireMu * w.grip * (v.wearOn ? tyreGrip(v.tyres[i], v.compound, v.wet) : 1) * Math.pow(Math.max(w.load, 200) / Fn0, -T.loadSensitivity) * (w.front ? 1 : T.rearGrip) * (1 - T.tyrePressureGrip * pd)
     const sdw = suspDamageAt(v.damage, w.front, w.side)
     const gripLoss = (1 - 0.3 * sdw) * (1 - 0.35 * clamp((sdw - SUSP_BROKEN) / (1 - SUSP_BROKEN), 0, 1))
     const cap = mu * gripLoss * w.load * (1 - IMPACT_GRIP * clamp(v.impactT / IMPACT_TIME, 0, 1))

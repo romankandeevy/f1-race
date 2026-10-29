@@ -52,7 +52,7 @@ export function createRace(length, entries, laps = RACE_LAPS) {
               c.finished = true
               c.finishTime = st.time
               // правило двух составов
-              if (st.laps >= 2 && c.compounds.size === 1) c.dsq = true
+              if (st.laps >= 2 && c.compounds.size === 1 && !c.compounds.has('intermediate') && !c.compounds.has('wet')) c.dsq = true // в дождь правило двух составов не действует (как в F1)
               if (c.player) st.playerDone = true
             }
           } else if (c.prevS < length * 0.25 && s > length * 0.75) c.lap-- // проехал линию назад

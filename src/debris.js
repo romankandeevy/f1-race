@@ -1,0 +1,295 @@
+// Обломки и следы торможения (Рома 29.10).
+// Обломки: при ударе от болида отлетают куски карбона (и крашеные — цветом болида), кувыркаются, отскакивают
+// и остаются лежать на трассе; болид, проехавший рядом, их подбрасывает. На физику болидов не влияют.
+// Следы: при блокировке, пробуксовке и заносе на асфальте колесо оставляет тёмную полосу, она бледнеет за ~90 с.
+// Всё — готовые буферы по кругу: в кадре ничего не создаётся.
+import * as THREE from 'three'
+
+const DEBRIS_MAX = 260
+const KICK_R = 1.3 // м: ближе — колесо/днище подбрасывает обломок
+const MARKS_MAX = 3000 // отрезков следа
+const MARK_HALF = 0.16 // м, полширины следа (шина F1 ~0,33–0,4 м)
+const MARK_STEP = 0.3 // м между точками следа
+const MARK_LIFE = 90 // с
+const FAR = 140 // м от камеры
+const rnd = (a, b) => a + Math.random() * (b - a)
+const CARBON = new THREE.Color(0x141414)
+
+// точка удара в осях болида: нос +Z, левый борт +X
+const ZONES = {
+  front: [0, 0.15, 2.6, 0.9, 0.3],
+  rear: [0, 0.6, -2.3, 0.6, 0.3],
+  left: [0.85, 0.3, 0, 0.15, 1.6],
+  right: [-0.85, 0.3, 0, 0.15, 1.6],
+}
+
+function createDebris(scene) {
+  const geo = new THREE.BoxGeometry(0.2, 0.012, 0.11)
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.45, metalness: 0.2 })
+  const mesh = new THREE.InstancedMesh(geo, mat, DEBRIS_MAX)
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+  mesh.count = 0
+  mesh.frustumCulled = false
+  mesh.castShadow = false
+  for (let i = 0; i < DEBRIS_MAX; i++) mesh.setColorAt(i, CARBON)
+  scene.add(mesh)
+  const P = Array.from({ length: DEBRIS_MAX }, () => ({ p: new THREE.Vector3(), v: new THREE.Vector3(), q: new THREE.Quaternion(), w: new THREE.Vector3(), s: 1, floor: 0, rest: true }))
+  let next = 0
+  let used = 0
+  let moving = false
+  const m4 = new THREE.Matrix4()
+  const sc = new THREE.Vector3()
+  const dq = new THREE.Quaternion()
+  const tmp = new THREE.Vector3()
+  const q = new THREE.Quaternion()
+  const color = new THREE.Color()
+
+  const write = (i) => {
+    const d = P[i]
+    sc.set(d.s, 1, d.s * rnd(0.8, 1.2))
+    m4.compose(d.p, d.q, sc)
+    mesh.setMatrixAt(i, m4)
+  }
+
+  return {
+    // удар: r — результат applyImpact (sev, zone); paint — цвет болида
+    spawn(v, r, paint) {
+      const z = ZONES[r.zone] || ZONES.front
+      const n = Math.round(4 + 26 * r.sev)
+      const t = v.body.translation()
+      const rot = v.body.rotation()
+      const lv = v.body.linvel()
+      q.set(rot.x, rot.y, rot.z, rot.w)
+      for (let k = 0; k < n; k++) {
+        const i = next
+        next = (next + 1) % DEBRIS_MAX
+        used = Math.min(DEBRIS_MAX, used + 1)
+        const d = P[i]
+        tmp.set(z[0] + rnd(-z[3], z[3]), z[1] + rnd(0, 0.25), z[2] + rnd(-z[4], z[4])).applyQuaternion(q)
+        d.p.set(t.x + tmp.x, t.y + tmp.y, t.z + tmp.z)
+        const m = rnd(0.2, 0.8)
+        d.v.set(lv.x * m + rnd(-5, 5), rnd(1, 5), lv.z * m + rnd(-5, 5))
+        d.q.setFromEuler(new THREE.Euler(rnd(0, 6.3), rnd(0, 6.3), rnd(0, 6.3)))
+        d.w.set(rnd(-14, 14), rnd(-14, 14), rnd(-14, 14))
+        d.s = rnd(0.4, 1.8)
+        d.floor = t.y + 0.008
+        d.rest = false
+        mesh.setColorAt(i, paint && Math.random() < 0.35 ? color.set(paint) : CARBON)
+        write(i)
+      }
+      mesh.count = used
+      mesh.instanceColor.needsUpdate = true
+      mesh.instanceMatrix.needsUpdate = true
+      moving = true
+    },
+    update(dt, cars) {
+      if (!used) return
+      // проехал рядом — обломок подпрыгивает и летит
+      for (const v of cars) {
+        const t = v.body.translation()
+        const lv = v.body.linvel()
+        const sp = Math.hypot(lv.x, lv.z)
+        if (sp < 3) continue
+        for (let i = 0; i < used; i++) {
+          const d = P[i]
+          if (!d.rest && d.v.lengthSq() > 4) continue // уже летит
+          const dx = d.p.x - t.x
+          const dz = d.p.z - t.z
+          if (dx * dx + dz * dz > 2.6 * 2.6) continue
+          // габарит болида ~1,9 × 5,4 м: в его осях
+          const r = v.body.rotation()
+          q.set(r.x, r.y, r.z, -r.w) // обратный поворот
+          tmp.set(dx, 0, dz).applyQuaternion(q)
+          if (Math.abs(tmp.x) > 0.95 + KICK_R * 0.3 || Math.abs(tmp.z) > 2.7) continue
+          const m = rnd(0.3, 0.9)
+          d.v.set(lv.x * m + rnd(-2, 2), rnd(0.5, 2.5) + sp * 0.02, lv.z * m + rnd(-2, 2))
+          d.w.set(rnd(-18, 18), rnd(-18, 18), rnd(-18, 18))
+          d.rest = false
+          moving = true
+        }
+      }
+      if (!moving) return
+      let any = false
+      for (let i = 0; i < used; i++) {
+        const d = P[i]
+        if (d.rest) continue
+        any = true
+        d.v.y -= 9.8 * dt
+        d.p.addScaledVector(d.v, dt)
+        const ang = d.w.length()
+        if (ang > 1e-3) {
+          dq.setFromAxisAngle(tmp.copy(d.w).divideScalar(ang), ang * dt)
+          d.q.premultiply(dq)
+        }
+        if (d.p.y < d.floor) {
+          d.p.y = d.floor
+          d.v.y = -d.v.y * 0.25
+          d.v.x *= 0.55
+          d.v.z *= 0.55
+          d.w.multiplyScalar(0.5)
+          // успокоился — ложится плашмя
+          if (Math.abs(d.v.y) < 0.4 && Math.hypot(d.v.x, d.v.z) < 0.4) {
+            d.rest = true
+            const yaw = Math.atan2(2 * (d.q.w * d.q.y + d.q.x * d.q.z), 1 - 2 * (d.q.y * d.q.y + d.q.x * d.q.x))
+            d.q.setFromAxisAngle(tmp.set(0, 1, 0), yaw)
+          }
+        }
+        write(i)
+      }
+      mesh.instanceMatrix.needsUpdate = true
+      moving = any
+    },
+    clear() {
+      used = 0
+      next = 0
+      mesh.count = 0
+      moving = false
+    },
+  }
+}
+
+function createSkidMarks(scene) {
+  const pos = new Float32Array(MARKS_MAX * 4 * 3)
+  const alpha = new Float32Array(MARKS_MAX * 4)
+  const a0 = new Float32Array(MARKS_MAX)
+  const born = new Float32Array(MARKS_MAX)
+  const idx = new Uint32Array(MARKS_MAX * 6)
+  for (let i = 0; i < MARKS_MAX; i++) {
+    const b = i * 4
+    idx.set([b, b + 1, b + 2, b + 2, b + 1, b + 3], i * 6)
+  }
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage))
+  geo.setAttribute('alpha', new THREE.BufferAttribute(alpha, 1).setUsage(THREE.DynamicDrawUsage))
+  geo.setIndex(new THREE.BufferAttribute(idx, 1))
+  const mat = new THREE.ShaderMaterial({
+    vertexShader: 'attribute float alpha; varying float vA; void main(){ vA = alpha; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'varying float vA; void main(){ if (vA < 0.004) discard; gl_FragColor = vec4(0.0, 0.0, 0.0, vA); }',
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+  })
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.frustumCulled = false
+  mesh.renderOrder = 1
+  scene.add(mesh)
+  const state = new WeakMap() // по болиду: последняя точка следа каждого колеса
+  let next = 0
+  let time = 0
+  let fadeAcc = 0
+
+  const addQuad = (l, p, a) => {
+    const i = next
+    next = (next + 1) % MARKS_MAX
+    // поперёк направления движения
+    let dx = p.x - l.x
+    let dz = p.z - l.z
+    const len = Math.hypot(dx, dz) || 1
+    dx /= len
+    dz /= len
+    const nx = -dz * MARK_HALF
+    const nz = dx * MARK_HALF
+    const o = i * 12
+    pos[o] = l.x + nx
+    pos[o + 1] = l.y
+    pos[o + 2] = l.z + nz
+    pos[o + 3] = l.x - nx
+    pos[o + 4] = l.y
+    pos[o + 5] = l.z - nz
+    pos[o + 6] = p.x + nx
+    pos[o + 7] = p.y
+    pos[o + 8] = p.z + nz
+    pos[o + 9] = p.x - nx
+    pos[o + 10] = p.y
+    pos[o + 11] = p.z - nz
+    a0[i] = a
+    born[i] = time
+    alpha.fill(a, i * 4, i * 4 + 4)
+    geo.attributes.position.needsUpdate = true
+    geo.attributes.alpha.needsUpdate = true
+  }
+
+  return {
+    update(dt, cars, cam) {
+      time += dt
+      for (const v of cars) {
+        const t = v.body.translation()
+        let st = state.get(v)
+        if (!st) state.set(v, (st = [null, null, null, null].map(() => ({ on: false, x: 0, y: 0, z: 0 }))))
+        if ((t.x - cam.x) ** 2 + (t.z - cam.z) ** 2 > FAR * FAR) {
+          st.forEach((s) => (s.on = false))
+          continue
+        }
+        const speed = Math.abs(v.state.fwdSpeed)
+        for (let i = 0; i < 4; i++) {
+          const w = v.wheels[i]
+          const s = st[i]
+          const surf = w.surface
+          const slide = w.sliding || Math.abs(w.slip) > 0.12
+          if (!w.contact || v.damage.lost[i] || speed < 3 || !slide || (surf !== 'asphalt' && surf !== 'kerb')) {
+            s.on = false
+            continue
+          }
+          const p = w.point
+          if (!s.on) {
+            s.on = true
+            s.x = p.x
+            s.y = p.y + 0.01
+            s.z = p.z
+            continue
+          }
+          if ((p.x - s.x) ** 2 + (p.z - s.z) ** 2 < MARK_STEP * MARK_STEP) continue
+          // блокировка/пробуксовка темнее, занос — светлее
+          addQuad(s, { x: p.x, y: p.y + 0.01, z: p.z }, w.sliding ? 0.8 : 0.45)
+          s.x = p.x
+          s.y = p.y + 0.01
+          s.z = p.z
+        }
+      }
+      // бледнеют раз в секунду
+      fadeAcc += dt
+      if (fadeAcc > 1) {
+        fadeAcc = 0
+        let changed = false
+        for (let i = 0; i < MARKS_MAX; i++) {
+          if (!a0[i]) continue
+          const k = Math.max(0, 1 - (time - born[i]) / MARK_LIFE)
+          const a = a0[i] * k
+          if (!k) a0[i] = 0
+          alpha.fill(a, i * 4, i * 4 + 4)
+          changed = true
+        }
+        if (changed) geo.attributes.alpha.needsUpdate = true
+      }
+    },
+    clear() {
+      a0.fill(0)
+      alpha.fill(0)
+      geo.attributes.alpha.needsUpdate = true
+    },
+  }
+}
+
+export function createTrackMarks(scene) {
+  const debris = createDebris(scene)
+  const skids = createSkidMarks(scene)
+  const cars = []
+  return {
+    debris,
+    // раз в кадр: все болиды (игрок и не убранные боты)
+    update(dt, player, bots, camera, wet = 0) {
+      if (dt <= 0) return
+      cars.length = 0
+      cars.push(player)
+      if (bots) for (const b of bots) if (!b.gone) cars.push(b.v)
+      if (wet < 0.3) skids.update(dt, cars, camera.position) // по воде шина не оставляет чёрных полос
+      debris.update(dt, cars)
+    },
+    clear() {
+      debris.clear()
+      skids.clear()
+    },
+  }
+}

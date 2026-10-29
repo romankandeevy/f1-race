@@ -6,12 +6,24 @@
 // и стирает её. Числа подобраны по замеру на LUMEN RING (сложный бот, круг ~67 с): средняя работа шины
 // 2,5–6 кВт. Средние живут ~6 кругов, мягкие ~3,5, твёрдые ~10 — на гонку в 5 кругов нужна тактика.
 
+// wet — сцепление на сухой, полумокрой и совсем мокрой трассе (доля от сухого), между точками — плавно.
+// Слики в дождь почти не держат; промежуточные лучше всех на влажной, дождевые — в ливень; на сухой обе дождевые
+// перегреваются (окно ниже) и стираются в разы быстрее (rain — во сколько раз быстрее на сухой).
 export const COMPOUNDS = {
-  soft: { name: 'Мягкие', short: 'М', color: '#E10600', grip: 1.04, wear: 1.7, window: [85, 105] },
-  medium: { name: 'Средние', short: 'С', color: '#FFC400', grip: 1, wear: 1, window: [90, 110] },
-  hard: { name: 'Твёрдые', short: 'Т', color: '#F4F4F2', grip: 0.965, wear: 0.6, window: [95, 115] },
+  soft: { name: 'Мягкие', short: 'М', color: '#E10600', grip: 1.04, wear: 1.7, window: [85, 105], wet: [1, 0.62, 0.45] },
+  medium: { name: 'Средние', short: 'С', color: '#FFC400', grip: 1, wear: 1, window: [90, 110], wet: [1, 0.6, 0.44] },
+  hard: { name: 'Твёрдые', short: 'Т', color: '#F4F4F2', grip: 0.965, wear: 0.6, window: [95, 115], wet: [1, 0.58, 0.42] },
+  intermediate: { name: 'Промежуточные', short: 'П', color: '#43B02A', grip: 1, wear: 1.2, window: [55, 85], wet: [0.88, 0.86, 0.72], rain: 2.5 },
+  wet: { name: 'Дождевые', short: 'Д', color: '#2E8BE6', grip: 1, wear: 1.3, window: [45, 75], wet: [0.79, 0.81, 0.83], rain: 4 },
 }
-export const COMPOUND_ORDER = ['soft', 'medium', 'hard']
+export const COMPOUND_ORDER = ['soft', 'medium', 'hard', 'intermediate', 'wet']
+export const isRainTyre = (c) => !!COMPOUNDS[c]?.rain
+
+// доля сухого сцепления на трассе мокрой на wet (0 — сухо, 1 — ливень)
+export function wetGrip(compound, wet) {
+  const [a, b, c] = COMPOUNDS[compound].wet
+  return wet <= 0.5 ? a + (b - a) * (wet / 0.5) : b + (c - b) * ((wet - 0.5) / 0.5)
+}
 
 const WEAR_RATE = 0.00194 // доля шины в секунду у средних при средней работе (≈13% за круг)
 const WEAR_BASE = 0.3 // износ просто от качения
@@ -32,12 +44,12 @@ export function freshTyres(temp = BLANKET) {
   return [0, 1, 2, 3].map(() => ({ wear: 0, temp, puncture: false }))
 }
 
-// множитель сцепления шины: состав, износ («обрыв» после 70%), температура вне окна, прокол
-export function tyreGrip(t, compound) {
+// множитель сцепления шины: состав, износ («обрыв» после 70%), температура вне окна, прокол, мокрая трасса
+export function tyreGrip(t, compound, wet = 0) {
   if (t.puncture) return 0.35
   const c = COMPOUNDS[compound]
   const w = t.wear
-  let g = c.grip * (1 - 0.08 * w - (w > 0.7 ? (w - 0.7) * 0.6 : 0))
+  let g = c.grip * wetGrip(compound, wet) * (1 - 0.08 * w - (w > 0.7 ? (w - 0.7) * 0.6 : 0))
   const [lo, hi] = c.window
   const off = t.temp < lo ? lo - t.temp : t.temp > hi ? t.temp - hi : 0
   return g * (1 - Math.min(0.15, off * 0.004))
@@ -56,13 +68,16 @@ export function updateTyres(v, dt) {
       const hot = t.temp > c.window[1] + 10 ? 1.3 : 1 // перегретая стирается быстрее
       // шина на повреждённой стороне стирается быстрее: колесо стоит под неправильным углом
       const bent = 1 + 1.2 * suspDamageAt(v.damage, w.front, w.side)
-      t.wear = Math.min(1, t.wear + dt * WEAR_RATE * c.wear * hot * bent * ((w.contact ? WEAR_BASE * Math.min(1, speed / 40) : 0) + work / WORK_REF))
+      // дождевые на подсыхающей трассе «горят»: протектор для воды, на сухом он рвётся
+      const dry = c.rain ? 1 + c.rain * (1 - (v.wet || 0)) : 1
+      t.wear = Math.min(1, t.wear + dt * WEAR_RATE * c.wear * hot * bent * dry * ((w.contact ? WEAR_BASE * Math.min(1, speed / 40) : 0) + work / WORK_REF))
       if (t.wear >= 1) {
         t.puncture = true // стёрта до корда — лопнула
         popped = i
       }
     }
-    t.temp += dt * ((HEAT_WORK * work) / 1000 + HEAT_ROLL * speed - COOL * (t.temp - AMBIENT) * (1 + speed / 40))
+    // вода на трассе остужает шины: слики в дождь выходят из окна и держат ещё хуже
+    t.temp += dt * ((HEAT_WORK * work) / 1000 + HEAT_ROLL * speed - COOL * (t.temp - AMBIENT) * (1 + speed / 40) * (1 + 1.5 * (v.wet || 0)))
   }
   return popped
 }
@@ -102,7 +117,9 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
   const d = v.damage
   const up = (key, x) => (d[key] = Math.min(1, d[key] + x))
   const hits = []
+  let zone // где удар: для обломков (debris.js)
   if (-along > Math.abs(side) * 0.7) {
+    zone = 'front'
     // удар носом: крыло со стороны удара сильнее, тормозные каналы в носу, на сильном ударе — обе передние подвески
     const right = side > 0 ? 0.65 : 0.35
     up('wingR', sev * right * 2.2)
@@ -118,6 +135,7 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
       hits.push('Передняя подвеска')
     }
   } else if (along > Math.abs(side) * 0.7) {
+    zone = 'rear'
     up('rearWing', sev * 1.7)
     up('floor', sev * 0.45)
     hits.push('Заднее крыло')
@@ -130,6 +148,7 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
     // боком: подвеска и бокпод этой стороны, днище, может лопнуть шина, а на сильном ударе — оторваться колесо
     const key = side > 0 ? 'suspR' : 'suspL'
     const pod = side > 0 ? 'sideR' : 'sideL'
+    zone = side > 0 ? 'right' : 'left'
     up(key, sev * 1.2)
     up(pod, sev * 1.4)
     up('floor', sev * 0.3)
@@ -156,7 +175,7 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
     up('chassis', (dv - CHASSIS_DV) * CHASSIS_K)
     hits.push('Монокок')
   }
-  return { sev, hits }
+  return { sev, hits, zone }
 }
 
 // Повреждённая подвеска (Рома 29.10: «что происходит, когда ломаются палки, которые соединяют колесо с болидом?»).

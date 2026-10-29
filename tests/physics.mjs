@@ -10,7 +10,7 @@ import { createStart } from '../src/start.js'
 import { createRaceLine, createAiDriver, makePilots } from '../src/ai.js'
 import { createRace } from '../src/race.js'
 import { wheelsOut, createLimits } from '../src/limits.js'
-import { tyreGrip, aeroDamage, suspDamageAt, freshDamage, repairSeconds, applyRepair, setFuel, fuelForRace, FUEL_PER_KM } from '../src/wear.js'
+import { tyreGrip, aeroDamage, suspDamageAt, freshDamage, repairSeconds, applyRepair, setFuel, fuelForRace, FUEL_PER_KM, wetGrip } from '../src/wear.js'
 import { retireReason, mechanicalFlag, judgeContact, contactPenalty } from '../src/stewards.js'
 import { createFlags, SC_SPEED, VSC_SPEED, RED_SPEED, RED_MAX } from '../src/flags.js'
 import { createSafetyCar } from '../src/safetycar.js'
@@ -1594,6 +1594,85 @@ function hitWall(kmhIn, wallDeg) {
   const tank = fuelForRace(5, len)
   check('топливо за круг LUMEN RING и бак на 5 кругов', `${lapKg.toFixed(2)} кг за круг (${perKm.toFixed(2)} кг/км, в расчёте бака ${FUEL_PER_KM}), бак ${tank} кг — запас ${(tank / lapKg - 5).toFixed(1)} кр.`, lapKg > 0.8 && lapKg < 1.7 && Math.abs(perKm / FUEL_PER_KM - 1) < 0.2 && tank / lapKg - 5 > 0.6)
   check('тормоза за круг в рабочем окне', `до ${Math.round(bmax)}°`, bmax > 450 && bmax < 1000)
+}
+
+// Дождь (Рома 29.10): слики на мокрой почти не держат, промежуточные — лучшие на влажной, дождевые — в ливень;
+// на сухой дождевые медленнее и горят; бот на дождевых по мокрой LUMEN RING едет медленнее и не вылетает
+{
+  const g = (c, w) => wetGrip(c, w)
+  check('сцепление по погоде: сухо — слики, влажно — промежуточные, ливень — дождевые', `сухо ${g('medium', 0).toFixed(2)}/${g('intermediate', 0).toFixed(2)}/${g('wet', 0).toFixed(2)}, влажно ${g('medium', 0.5).toFixed(2)}/${g('intermediate', 0.5).toFixed(2)}/${g('wet', 0.5).toFixed(2)}, ливень ${g('medium', 1).toFixed(2)}/${g('intermediate', 1).toFixed(2)}/${g('wet', 1).toFixed(2)} (средние/промежуточные/дождевые)`, g('medium', 0) > g('intermediate', 0) && g('intermediate', 0) > g('wet', 0) && g('intermediate', 0.5) > g('wet', 0.5) && g('intermediate', 0.5) > g('medium', 0.5) && g('wet', 1) > g('intermediate', 1) && g('intermediate', 1) > g('medium', 1))
+  const brake = (compound, wet) => {
+    const w = fresh()
+    w.v.wearOn = true
+    w.v.compound = compound
+    w.v.wet = wet
+    run(w, NONE, 0.5)
+    accelTo(w, 200)
+    w.v.tyres.forEach((t) => (t.temp = compound === 'medium' ? 100 : 65))
+    const z0 = w.v.body.translation()
+    for (let t = 0; t < 15 && kmh(w) > 80; t += DT) run(w, { brake: 1, abs: true }, DT)
+    const z1 = w.v.body.translation()
+    return Math.hypot(z1.x - z0.x, z1.z - z0.z)
+  }
+  const dry = brake('medium', 0)
+  const slickWet = brake('medium', 0.9)
+  const wetWet = brake('wet', 0.9)
+  check('торможение 200 → 80 км/ч: на мокрой сликах сильно дольше, на дождевых — ближе к сухому', `сухо ${dry.toFixed(0)} м, слики в дождь ${slickWet.toFixed(0)} м, дождевые в дождь ${wetWet.toFixed(0)} м`, slickWet > dry * 1.5 && wetWet < slickWet * 0.8 && wetWet > dry)
+  const wearOn = (compound) => {
+    const w = fresh()
+    w.v.wearOn = true
+    w.v.compound = compound
+    run(w, NONE, 0.5)
+    accelTo(w, 200)
+    run(w, () => ({ ...hold(w, 200), steer: 0.15 }), 20)
+    return Math.max(...w.v.tyres.map((t) => t.wear))
+  }
+  const mWear = wearOn('medium')
+  const iWear = wearOn('intermediate')
+  check('промежуточные на сухой горят', `за 20 с на 200 км/ч: средние ${(mWear * 100).toFixed(1)}%, промежуточные ${(iWear * 100).toFixed(1)}%`, iWear > mWear * 2.5)
+
+  // бот на мокрой LUMEN RING
+  const glb = fs.readFileSync(new URL('../public/models/track.glb', import.meta.url))
+  const json = JSON.parse(glb.slice(20, 20 + glb.readUInt32LE(12)).toString())
+  const P = (n) => n.translation || [n.matrix[12], n.matrix[13], n.matrix[14]]
+  const kids = (name) => json.nodes.find((n) => n.name === name).children.map((i) => json.nodes[i])
+  const axis = kids('Ось трассы').map((n) => ({ x: P(n)[0], z: P(n)[2], ...n.extras })).sort((a, b) => a.distance_m - b.distance_m)
+  const len = axis[axis.length - 1].distance_m + 2
+  const lapOn = (compound, wet) => {
+    const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+    world.timestep = DT
+    const gr = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), gr)
+    const yaw = Math.atan2(axis[1].x - axis[0].x, axis[1].z - axis[0].z)
+    const v = createVehicle(RAPIER, world, { x: axis[0].x, y: 0.05, z: axis[0].z, yaw }, TUNING)
+    v.compound = compound
+    v.wet = wet
+    v.tyres.forEach((t) => (t.temp = compound === 'medium' ? 95 : 60))
+    const d = createAiDriver(createRaceLine(axis, 'hard'), { idx: 0 })
+    let prev = 0
+    let last = null
+    let over = -Infinity
+    for (let t = 0; t < 260; t += DT) {
+      stepVehicle(v, d.update(v, DT), DT, () => 'asphalt')
+      world.step()
+      const p = v.body.translation()
+      const i = d.state.idx
+      const a = axis[i]
+      const b = axis[(i + 1) % axis.length]
+      const tx = b.x - a.x
+      const tz = b.z - a.z
+      if (last !== null) over = Math.max(over, Math.abs(((p.x - a.x) * tz - (p.z - a.z) * tx) / Math.hypot(tx, tz)) - ((a.asphalt_half_width ?? 7) - 0.95))
+      if (prev > len * 0.75 && a.distance_m < len * 0.25) {
+        if (last !== null) return { lap: t - last, over }
+        last = t
+      }
+      prev = a.distance_m
+    }
+    return { lap: Infinity, over }
+  }
+  const dryLap = lapOn('medium', 0)
+  const wetLap = lapOn('wet', 0.9)
+  check('бот в дождь на дождевых: медленнее и в пределах асфальта', `сухо ${dryLap.lap.toFixed(1)} с, дождь ${wetLap.lap.toFixed(1)} с, запас до края в дождь ${(-wetLap.over).toFixed(2)} м`, wetLap.lap > dryLap.lap * 1.05 && wetLap.lap < dryLap.lap * 1.35 && wetLap.over < 0.3)
 }
 
 const failed = results.filter((r) => !r.ok)

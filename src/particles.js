@@ -169,6 +169,7 @@ export function createParticles(scene) {
     return n
   }
 
+  let wetNow = 0
   function emitCar(v, dt, cam) {
     const t = v.body.translation()
     if ((t.x - cam.x) ** 2 + (t.z - cam.z) ** 2 > FAR * FAR) return
@@ -204,6 +205,7 @@ export function createParticles(scene) {
       if (!w.contact || v.damage.lost[i]) continue
       const surf = w.surface
       if (surf === 'asphalt' || surf === 'kerb') {
+        if (wetNow > 0.3) continue // по воде шина не дымит
         // дым шин: блокировка, пробуксовка, сильный занос
         const slide = w.sliding || Math.abs(w.slip) > 0.16
         if (!slide || speed < 4) continue
@@ -232,7 +234,20 @@ export function createParticles(scene) {
       }
     }
 
-    // 4. мотор: отказ — чёрный дым, перегрев — белый пар из выхлопа
+    // 4. мокрая трасса: водяная пыль из-под колёс (задние — шлейфом), тем гуще, чем быстрее и мокрее
+    if (wetNow > 0.12 && speed > 12) {
+      for (let i = 0; i < 4; i++) {
+        const w = v.wheels[i]
+        if (!w.contact || v.damage.lost[i]) continue
+        const n = count(st, 'spray' + i, (w.front ? 10 : 34) * wetNow * Math.min(1, speed / 45), dt)
+        for (let k = 0; k < n; k++) {
+          const g = rnd(0.78, 0.9)
+          smoke.emit(w.point.x + rnd(-0.2, 0.2), w.point.y + 0.25, w.point.z + rnd(-0.2, 0.2), lv.x * rnd(0.45, 0.7) + rnd(-1, 1), rnd(0.4, 1.4), lv.z * rnd(0.45, 0.7) + rnd(-1, 1), rnd(0.7, 1.3), rnd(0.5, 0.8), 2.4, g, g, g + 0.03, 0.2 * Math.min(1, wetNow * 1.3), 0.1, 1.6)
+        }
+      }
+    }
+
+    // 5. мотор: отказ — чёрный дым, перегрев — белый пар из выхлопа
     const failed = v.pu.failed
     if (failed || v.engineHeat > 1.0) {
       const n = count(st, 'engine', failed ? 28 : 18, dt)
@@ -246,8 +261,9 @@ export function createParticles(scene) {
 
   return {
     // раз в кадр после того, как болиды выставлены; dt = 0 на паузе — всё замирает
-    update(dt, player, bots, camera, renderer) {
+    update(dt, player, bots, camera, renderer, wet = 0) {
       if (dt <= 0) return
+      wetNow = wet
       const cam = camera.position
       emitCar(player, dt, cam)
       if (bots) for (const b of bots) if (!b.gone) emitCar(b.v, dt, cam)

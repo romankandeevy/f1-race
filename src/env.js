@@ -59,8 +59,20 @@ export function createEnvironment(renderer, scene) {
   const fill = new THREE.HemisphereLight(0xbcd4ee, 0x5a5d54, 0.45)
   scene.add(fill)
 
+  const fogDry = new THREE.Color(0xcfdde9)
+  const fogWet = new THREE.Color(0x8b939c)
   // тень едет за болидом
   return {
+    // дождь (weather.js): 0 — солнце, 1 — ливень: свет тусклее, небо серее, туман ближе
+    setGloom(k) {
+      sun.intensity = 2.6 * (1 - 0.62 * k)
+      fill.intensity = 0.45 * (1 + 0.35 * k)
+      scene.backgroundIntensity = 1 - 0.55 * k
+      scene.environmentIntensity = 0.9 * (1 - 0.3 * k)
+      scene.fog.color.copy(fogDry).lerp(fogWet, k)
+      scene.fog.near = 700 - 560 * k
+      scene.fog.far = 3200 - 2300 * k
+    },
     follow(pos) {
       sun.target.position.copy(pos)
       sun.position.copy(pos).addScaledVector(SUN_DIR, 70)

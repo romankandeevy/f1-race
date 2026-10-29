@@ -9,11 +9,14 @@ import { CameraRig } from './camera.js'
 import { createHud, createTelemetry } from './hud.js'
 import { scanCar } from './carScan.js'
 import { createParticles } from './particles.js'
+import { createTrackMarks } from './debris.js'
+import { createGhost } from './ghost.js'
+import { createWeather } from './weather.js'
 import { input } from './input.js'
 import { TUNING } from './tuning.js'
 import { createSetupScreen } from './setup.js'
 import { createSound } from './sound.js'
-import { createLaps } from './laps.js'
+import { createLaps, formatTime } from './laps.js'
 import { createStart } from './start.js'
 import { createPauseMenu } from './menu.js'
 import { createBots, BOT_COUNT } from './bots.js'
@@ -21,7 +24,7 @@ import { createRace } from './race.js'
 import { AI_LEVELS } from './ai.js'
 import { wheelsOut, createLimits } from './limits.js'
 import { COMPOUNDS, COMPOUND_ORDER, freshTyres, freshDamage, freshPowerUnit, freshBrakes, setFuel, fuelForRace, FUEL_PER_KM } from './wear.js'
-import { createPitLane, pitEntryHit, createPitStop, defaultPlan, pitLimiter } from './pit.js'
+import { createPitLane, pitEntryHit, createPitStop, defaultPlan, pitLimiter, rainTyreFor } from './pit.js'
 import { RACE_LAPS } from './race.js'
 import { settings, QUALITY } from './settings.js'
 import { createScreens } from './screens.js'
@@ -78,9 +81,14 @@ async function main() {
   const hud = createHud(track)
   hud.setCarScan(scanCar(renderer, car.group)) // схема болида на табло — из той же модели, пока колёса и крылья на месте
   const particles = createParticles(scene)
+  const marks = createTrackMarks(scene) // обломки и следы торможения
+  const weather = createWeather(scene, env) // дождь и мокрая трасса
+  let weatherMode = 'dry'
+  let rainNeed = null // какие шины нужны сейчас (rainTyreFor): смена — подсказка и план пит-стопа
   // круги считаем только на настоящей трассе (у тестовой нет оси); лучший круг — свой для каждой длины трассы.
   // laps2: с 28.10 считаются границы трассы — старые рекорды со срезками не берём
   const laps = track.axis?.length ? createLaps(track, `f1-race.laps2.${Math.round(track.length)}`) : null
+  const ghost = laps ? createGhost(scene, car, `f1-race.laps2.${Math.round(track.length)}.ghost`) : null // призрак лучшего круга
   const start = track.lamps?.length ? createStart(track.lamps) : null
   let goShownUntil = 0
   const limits = createLimits()
@@ -134,6 +142,13 @@ async function main() {
   const nearPitLane = (x, z) => !!lane && lane.near(x, z, PIT_NEAR)
   let raceLaps = RACE_LAPS // из экрана «Гонка»
   let playerSlot = BOT_COUNT // место на решётке: 0 — поул, 11 — последнее
+  // квалификация (Рома 29.10): без соперников разгонный круг и два быстрых, в зачёт лучший; решётку строит время, как в F1
+  const QUALI_LAPS = 3
+  const QUALI_BASE = { light: 80.6, medium: 72.8, hard: 68.9 } // с: круг LUMEN RING пилота с темпом 1 у каждого уровня (замер ботов)
+  let quali = null // идёт квалификация: { level, times, seen, text }
+  let qualiTime // время игрока после квалификации (null — без времени); undefined — гонка без квалификации
+  let qualiFresh = false // квалификация только что кончилась — показать таблицу
+  let qualiShown = false // таблица квалификации на экране — игра стоит
   function removeCar(id) {
     if (id === 'player') {
       car.group.visible = false
@@ -287,6 +302,10 @@ async function main() {
   // в главное меню: гонка закончена, болид на старте, соперников нет, камера-витрина
   function enterMenu() {
     inMenu = true
+    weather.set('dry')
+    quali = null
+    qualiShown = false
+    ghost?.hide()
     document.body.classList.add('menu-mode')
     race = null
     pitCtl = null
@@ -323,6 +342,9 @@ async function main() {
     startCompound = o.compound
     raceLaps = o.laps
     playerSlot = o.mode === 'race' ? o.slot : BOT_COUNT
+    weatherMode = o.weather || 'dry'
+    quali = null
+    qualiTime = undefined
     input.abs = !!o.abs
     try {
       localStorage.setItem(BOTS_KEY, botLevel)
@@ -331,8 +353,34 @@ async function main() {
     } catch {
       // не запомнили — при следующем заходе значения по умолчанию
     }
+    // «По квалификации»: сначала квалификация без соперников, гонка — потом (finishQuali)
+    if (o.mode === 'race' && o.slot === -1 && botLevel !== 'off') {
+      quali = { level: botLevel, times: [], seen: null, text: '' }
+      botLevel = 'off'
+      playerSlot = BOT_COUNT
+    }
     rig.setMode(settings.get('camera'))
     gridStart()
+  }
+
+  // квалификация кончилась: лучшее время игрока, гонка с соперниками, решётка по времени
+  function finishQuali() {
+    qualiTime = quali.times.length ? Math.min(...quali.times) : null
+    botLevel = quali.level
+    quali = null
+    qualiFresh = true
+    gridStart()
+  }
+
+  // решётка по квалификации: время игрока и времена ботов (темп пилота от уровня + разброс), места по времени
+  function qualiGrid() {
+    const base = (QUALI_BASE[botLevel] * track.length) / 3729
+    const rows = [{ id: 'player', name: 'ТЫ', paint: livery.primary, player: true, time: qualiTime ?? Infinity }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, time: base / b.pilot.pace + (Math.random() * 0.6 - 0.2) }))]
+    rows.sort((a, b) => a.time - b.time)
+    rows.forEach((r, i) => {
+      if (!r.player) bots.regrid(r.id, track.grid[i])
+    })
+    return rows
   }
 
   function resetToTrack() {
@@ -370,6 +418,14 @@ async function main() {
     hud.showResults(null)
     // болид к старту: свежие шины выбранного состава, без повреждений; отказавший мотор — на новый
     pitCtl = null
+    if (quali) {
+      quali.times = []
+      quali.seen = null
+    }
+    ghost?.hide()
+    weather.set(weatherMode)
+    vehicle.wet = weather.state.wet
+    rainNeed = rainTyreFor(weather.state.wet)
     if (vehicle.pu.failed) {
       vehicle.pu = freshPowerUnit()
       savePU()
@@ -383,6 +439,7 @@ async function main() {
     vehicle.brakeTemp = freshBrakes()
     vehicle.brakeHot = false
     particles.clear()
+    marks.clear()
     retired = false
     orange = null
     resultsAt = 0
@@ -406,12 +463,32 @@ async function main() {
         [{ id: 'player', name: 'ТЫ', player: true, paint: livery.primary, compound: startCompound }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, compound: b.v.compound }))],
         raceLaps,
       )
+      // дождь со старта: соперники на дождевых шинах, пит-стоп — по погоде, а не по плану
+      if (rainNeed) {
+        for (const b of bots.list) {
+          b.v.compound = rainNeed
+          b.v.tyres = freshTyres(70)
+          b.v.wet = weather.state.wet
+          b.planLap = Infinity
+        }
+      }
+      // после квалификации — все по её времени (и «Ещё раз» с тем же временем игрока)
+      if (qualiTime !== undefined) {
+        const rows = qualiGrid()
+        playerSlot = rows.findIndex((r) => r.player)
+        s = track.grid[playerSlot]
+        if (qualiFresh) {
+          qualiFresh = false
+          qualiShown = true
+          hud.showQuali(rows)
+        }
+      }
     }
     // топливо — только в гонке: бак на дистанцию с запасом в круг, у всех одинаковый (в заезде на время бак не тратится)
     const tank = race ? fuelForRace(raceLaps, track.length) : 0
     setFuel(vehicle, tank)
     for (const b of bots?.list ?? []) setFuel(b.v, tank)
-    hud.setMode(race ? `Гонка · ${AI_LEVELS[botLevel].name.toLowerCase()} соперники` : 'Заезд на время')
+    hud.setMode(race ? `Гонка · ${AI_LEVELS[botLevel].name.toLowerCase()} соперники` : quali ? `Квалификация · круг 1 из ${QUALI_LAPS}` : 'Заезд на время')
     vehicle.body.setTranslation({ x: s.x, y: (s.y || 0) + 0.05, z: s.z }, true)
     vehicle.body.setRotation({ x: 0, y: Math.sin(s.yaw / 2), z: 0, w: Math.cos(s.yaw / 2) }, true)
     vehicle.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
@@ -465,7 +542,11 @@ async function main() {
   }
   for (const k of Object.keys(settings.all())) applySetting(k)
   settings.onChange((k) => applySetting(k))
-  hud.onResultsAction((act) => (act === 'again' ? gridStart() : enterMenu()))
+  const goRace = () => {
+    qualiShown = false
+    hud.showResults(null)
+  }
+  hud.onResultsAction((act) => (act === 'again' ? gridStart() : act === 'race' ? goRace() : enterMenu()))
 
   document.getElementById('loader').classList.add('done')
   // после загрузки — главное меню; гонка начинается по кнопке «Гонка» или «Заезд на время»
@@ -607,7 +688,8 @@ async function main() {
         else if (!inMenu) menu.toggle()
       }
       if (code === 'KeyM') muted = sound.toggleMute()
-      if (code === 'KeyN' && start) gridStart()
+      if (code === 'KeyN' && start && !qualiShown) gridStart()
+      if (code === 'Enter' && qualiShown) goRace()
       if (MFD_KEYS[code]) {
         const [key, step, min, max] = MFD_KEYS[code]
         TUNING.setup[key] = Math.min(max, Math.max(min, TUNING.setup[key] + step))
@@ -639,7 +721,7 @@ async function main() {
     }
 
     // пока открыты гараж или меню — гонка на паузе
-    const paused = setupScreen.isOpen() || menu.isOpen() || ui.isOpen() || inMenu
+    const paused = setupScreen.isOpen() || menu.isOpen() || ui.isOpen() || inMenu || qualiShown
     if (paused) acc = 0
     else acc += dt
     let simDt = 0
@@ -709,13 +791,15 @@ async function main() {
       // сошедший болид: мотор мёртв, педали не работают, катится и останавливается (потом эвакуатор)
       if (retired) lastInput = { ...lastInput, throttle: 0, brake: vehicle.state.fwdSpeed > 1 ? 0.5 : 0.15, steer: 0, boost: false, aero: false, handbrake: false, hold: true }
       car.snapshot(vehicle.body)
+      vehicle.wet = weather.state.wet
       stepVehicle(vehicle, lastInput, STEP, track.surfaceAt)
-      bots?.step(STEP, track.surfaceAt)
+      bots?.step(STEP, track.surfaceAt, weather.state.wet)
       world.step(events)
       collectImpacts(
         events,
         (v, r) => {
           if (v === vehicle) hud.notify(`Повреждение: ${r.hits.join(', ')}`, true, 3)
+          marks.debris.spawn(v, r, v === vehicle ? livery.primary : bots?.list.find((b) => b.v === v)?.paint)
         },
         (a, b) => judgeContactPair(a, b),
       )
@@ -888,6 +972,18 @@ async function main() {
       const q = vehicle.body.rotation()
       const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.x * q.x))
       laps.update(simDt, p.x, p.z, yaw, vehicle.state.fwdSpeed)
+      ghost?.update(simDt, laps.state, vehicle.body, !race && settings.get('ghost'))
+      // квалификация: засчитанные круги, строка режима, конец после QUALI_LAPS кругов
+      if (quali) {
+        if (quali.seen === null) quali.seen = laps.state.completed
+        if (laps.state.completed !== quali.seen) {
+          quali.seen = laps.state.completed
+          quali.times.push(laps.state.lastLap)
+        }
+        const text = `Квалификация · круг ${Math.min(Math.max(laps.state.lap, 1), QUALI_LAPS)} из ${QUALI_LAPS}` + (quali.times.length ? ` · лучший ${formatTime(Math.min(...quali.times))}` : '')
+        if (text !== quali.text) hud.setMode((quali.text = text))
+        if (laps.state.lap > QUALI_LAPS) finishQuali()
+      }
       // едет против хода гонки 3 секунды — возвращаем на трассу носом в нужную сторону
       if (!pitCtl && laps.state.wrongWay > WRONG_WAY_RESET) resetToTrack()
       // границы трассы: все четыре колеса за белой линией (в пит-лейне не считаются)
@@ -946,7 +1042,21 @@ async function main() {
       }
     }
     tow?.update(paused ? 0 : dt)
-    particles.update(paused ? 0 : dt, vehicle, bots?.list, camera, renderer)
+    weather.update(paused ? 0 : dt, camera, !inMenu && !paused)
+    hud.setWeather(inMenu ? null : weather.label())
+    // пошёл дождь или трасса подсохла: подсказка и план пит-стопа на нужные шины
+    if (!inMenu) {
+      const need = rainTyreFor(weather.state.wet)
+      const onRain = vehicle.compound === 'intermediate' || vehicle.compound === 'wet'
+      const now = need ?? (onRain && weather.state.wet > 0.2 ? rainNeed : null)
+      if (now !== rainNeed) {
+        rainNeed = now
+        if (!pitCtl) pitPlan = defaultPlan(vehicle, lapsLeft())
+        if (race) hud.notify(now === 'wet' ? 'Ливень — нужны дождевые шины (L — в боксы)' : now === 'intermediate' ? 'Трасса мокрая — нужны промежуточные (L — в боксы)' : 'Трасса подсохла — пора на слики (L — в боксы)', false, 6)
+      }
+    }
+    particles.update(paused ? 0 : dt, vehicle, bots?.list, camera, renderer, weather.state.wet)
+    marks.update(paused ? 0 : dt, vehicle, bots?.list, camera, weather.state.wet)
     env.follow(car.group.position)
     const view = input.takeLook()
     rig.update(dt, vehicle, paused && !rig.showcase ? null : view)
@@ -973,7 +1083,7 @@ async function main() {
   requestAnimationFrame(frame)
 
   // для проверок и настройки из консоли браузера
-  window.__game = { THREE, scene, camera, renderer, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack }
+  window.__game = { THREE, scene, camera, renderer, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather }
 }
 
 main().catch((e) => {

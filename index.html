@@ -51,6 +51,8 @@
   #sectors span { float: right; color: var(--text); font-weight: 600; letter-spacing: 0; }
   #lapbox .rows { padding: 0 14px; display: grid; gap: 3px; }
   #lapbox .rows .row { font-size: 15px; font-weight: 600; }
+  #lapbox .rows .row[hidden] { display: none; }
+  #wx { color: #8FC8FF; }
   #lapbox .best { color: var(--green); }
   #delta { font-size: 15px; font-weight: 700; padding: 0 8px; background: var(--raise); }
   #delta.ahead { background: var(--green); color: var(--bg); }
@@ -161,7 +163,8 @@
   #rightcol > .panel { position: relative; }
   #carStatus { width: 196px; padding: 8px 12px 10px; }
   #carStatus .cs-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; font-weight: 700; }
-  #csPlan { margin-left: auto; font-size: 10px; }
+  #csPlan { margin-left: auto; font-size: 10px; white-space: nowrap; }
+  #csName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cmp { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 3px solid var(--c, #888); font-size: 10px; font-weight: 900; color: var(--text); }
   /* скан болида сверху (carScan.js): белые контуры всех деталей; ломающиеся части под ними заливаются от жёлтого к красному (hud.js dmgPaint) */
   #carStatus .car { display: block; width: 100%; height: auto; overflow: visible; }
@@ -417,6 +420,7 @@
         <div class="row"><span class="caps">Дельта</span><span id="delta">—</span></div>
         <div class="row"><span class="caps">Лучший</span><span id="bestLap" class="best">—</span></div>
         <div class="row"><span class="caps">Последний</span><span id="lastLap">—</span></div>
+        <div class="row" id="wxRow" hidden><span class="caps">Трасса</span><span id="wx"></span></div>
       </div>
       <div id="lapNote"></div>
     </div>

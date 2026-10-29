@@ -4,9 +4,14 @@
 // под газом — открытый и резкий, при сбросе — глухой; сверху октава выше, она нарастает
 // к отсечке. На переключении передач — короткий провал. На гравии и траве — тихий шорох.
 //
+// Визг шин (блокировка, пробуксовка, занос на асфальте) и скрежет днища по асфальту — петли из настоящих записей
+// (tyre_squeal.wav, scrape.wav — CC0, см. CREDITS.md): громкость и высота тона по физике каждый кадр.
+//
 // Против гула: звук спит, пока открыты настройки, вкладка в фоне или нажата M.
 // Браузер разрешает звук только после действия игрока — включаемся на первую клавишу или клик.
 const URL_ENGINE = '/sounds/engine.wav'
+const URL_SQUEAL = '/sounds/tyre_squeal.wav'
+const URL_SCRAPE = '/sounds/scrape.wav'
 const MASTER = 0.4
 
 const smooth = (a, b, x) => {
@@ -30,8 +35,8 @@ export function createSound() {
     }
     starting = true
     ctx = new AudioContext()
-    const data = await fetch(URL_ENGINE).then((r) => r.arrayBuffer())
-    const buffer = await ctx.decodeAudioData(data)
+    const load = async (url) => ctx.decodeAudioData(await fetch(url).then((r) => r.arrayBuffer()))
+    const [buffer, squealBuf, scrapeBuf] = await Promise.all([load(URL_ENGINE), load(URL_SQUEAL), load(URL_SCRAPE)])
 
     const master = ctx.createGain()
     master.gain.value = MASTER * volume
@@ -107,7 +112,21 @@ export function createSound() {
     gravelSrc.connect(gravelGain)
     gravelGain.connect(master)
 
-    n = { master, shift, sources: [base, high], onGain, offGain, onFilter, highGain, gravelGain }
+    // визг шин и скрежет днища: петли, пока молчат (громкость 0)
+    const loop = (buf) => {
+      const s = ctx.createBufferSource()
+      s.buffer = buf
+      s.loop = true
+      s.start(0, Math.random() * buf.duration)
+      const g = gain(0)
+      s.connect(g)
+      g.connect(master)
+      return { s, g }
+    }
+    const squeal = loop(squealBuf)
+    const scrape = loop(scrapeBuf)
+
+    n = { master, shift, sources: [base, high], onGain, offGain, onFilter, highGain, gravelGain, squeal, scrape }
     starting = false
     wake()
   }
@@ -172,6 +191,19 @@ export function createSound() {
 
       const offTrack = st.surfaces.filter((s) => s !== 'asphalt').length / 4
       set(n.gravelGain.gain, 0.3 * offTrack * smooth(1, 25, speed))
+
+      // визг шин: самое сильное скольжение по асфальту (блокировка/пробуксовка — полный, увод — по мере перебора); по воде не визжит
+      let slide = 0
+      for (const w of v.wheels) {
+        if (!w.contact || (w.surface !== 'asphalt' && w.surface !== 'kerb')) continue
+        slide = Math.max(slide, w.sliding ? 1 : smooth(0.09, 0.22, Math.abs(w.slip)))
+      }
+      const dry = 1 - smooth(0.2, 0.5, v.wet || 0)
+      set(n.squeal.g.gain, 0.32 * slide * dry * smooth(3, 15, speed), 0.06)
+      set(n.squeal.s.playbackRate, 0.9 + 0.25 * Math.min(1, speed / 60), 0.1)
+      // скрежет: днище по асфальту (сила трения планки) — громче при сильном прижатии и на скорости
+      set(n.scrape.g.gain, 0.5 * Math.min(1, st.plankContact / 12000) * smooth(2, 20, speed), 0.05)
+      set(n.scrape.s.playbackRate, 0.8 + 0.5 * Math.min(1, speed / 60), 0.1)
     },
   }
 }

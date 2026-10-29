@@ -161,6 +161,8 @@ export function createHud(track) {
   const csPU = el('csPU')
   const csWorst = el('csWorst')
   const csFuelRow = el('csFuelRow')
+  const wxRow = el('wxRow')
+  const wx = el('wx')
   const csFuel = el('csFuel')
   // скан болида сверху приходит из main.js после загрузки модели (setCarScan); до этого схема пустая
   const csSvg = el('csCar')
@@ -404,6 +406,29 @@ export function createHud(track) {
           ${me.reason && (me.dnf || me.dsq) ? `<p class="res-why">${me.reason}</p>` : ''}
           <ol>${st.order.map((c, i) => `<li class="${c.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${c.paint}"></i><span>${c.name}</span><span class="t">${time(c)}</span></li>`).join('')}</ol>
           <div class="res-actions"><button data-act="again">Ещё раз</button><button data-act="menu">В главное меню</button></div>
+        </div>`
+      for (const b of results.querySelectorAll('[data-act]')) b.addEventListener('click', () => onResults?.(b.dataset.act))
+      results.hidden = false
+    },
+
+    // погода: «дождь · мокрая 64%» или null — строка скрыта
+    setWeather(text) {
+      if (wxRow.hidden !== !text) wxRow.hidden = !text
+      if (text) setText(wx, text)
+    },
+
+    // итоги квалификации: rows — по времени ({ name, paint, time, player }); «На старт гонки» (Enter) или в меню
+    showQuali(rows) {
+      const pos = rows.findIndex((r) => r.player) + 1
+      const lead = rows[0].time
+      const time = (r, i) => (!isFinite(r.time) ? 'без времени' : i === 0 ? formatTime(r.time) : `+${(r.time - lead).toFixed(3)}`)
+      results.innerHTML = `
+        <div class="res">
+          <div class="sheet-kicker">Квалификация · лучший круг</div>
+          <h2>${pos === 1 ? 'Поул-позиция!' : `${pos}-е место на решётке`}</h2>
+          ${isFinite(rows[pos - 1].time) ? '' : '<p class="res-why">Ни одного засчитанного круга — старт с последнего места</p>'}
+          <ol>${rows.map((r, i) => `<li class="${r.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${r.paint}"></i><span>${r.name}</span><span class="t">${time(r, i)}</span></li>`).join('')}</ol>
+          <div class="res-actions"><button data-act="race">На старт гонки</button><button data-act="menu">В главное меню</button></div>
         </div>`
       for (const b of results.querySelectorAll('[data-act]')) b.addEventListener('click', () => onResults?.(b.dataset.act))
       results.hidden = false

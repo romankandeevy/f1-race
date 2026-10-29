@@ -36,6 +36,7 @@ export function createLaps(track, storeKey) {
     idx: 0,
     note: 'Пересеките линию старта',
     wrongWay: 0, // сколько секунд подряд болид едет вперёд, но против хода гонки
+    completed: 0, // сколько засчитанных кругов закрыто (растёт на каждом; призрак и квалификация следят за ним)
   }
   let bestProfile = saved?.profile ? Float32Array.from(saved.profile) : null
   let profile = new Float32Array(N).fill(-1)
@@ -91,6 +92,7 @@ export function createLaps(track, storeKey) {
     // новый старт с решётки: круг заново
     restart() {
       st.running = false
+      st.lap = 0 // после квалификации гонка считает круги с нуля
       st.delta = null
       st.wrongWay = 0
       st.note = ''
@@ -147,6 +149,7 @@ export function createLaps(track, storeKey) {
           st.lastSectors = st.sectors.slice()
           st.lastSectorState = st.sectorState.slice()
           st.lastWasBest = st.bestLap === null || time < st.bestLap
+          st.completed += 1
           for (let i = 0; i < 3; i++) if (st.sectors[i] !== null && (st.bestSectors[i] === null || st.sectors[i] < st.bestSectors[i])) st.bestSectors[i] = st.sectors[i]
           if (st.bestLap === null || time < st.bestLap) {
             st.bestLap = time

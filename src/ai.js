@@ -370,10 +370,11 @@ export function createAiDriver(line, opts = {}) {
       let tg = 1
       if (v.wearOn) {
         tg = 0
-        for (let i = 0; i < 4; i++) tg += tyreGrip(v.tyres[i], v.compound) / 4
+        for (let i = 0; i < 4; i++) tg += tyreGrip(v.tyres[i], v.compound, v.wet) / 4
       }
       const tyreK = Math.sqrt(Math.min(1.04, tg))
-      const maxDec = line.brakeAcc(speed)
+      // мокрая трасса и плохие шины — и тормозить раньше: замедление ∝ сцеплению
+      const maxDec = line.brakeAcc(speed) * Math.min(1, tg)
 
       // ---- соседи: где каждый на линии (расстояние s, боковое l), его скорость
       const nbs = []

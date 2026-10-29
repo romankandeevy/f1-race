@@ -22,6 +22,7 @@ export const DEFAULTS = {
   hud: 82, // размер интерфейса, % (0,82 — как подобрано с Ромой 28.10)
   units: 'kmh', // kmh | mph
   minimap: true, // мини-карта
+  ghost: true, // призрак лучшего круга в заезде на время и квалификации
 }
 
 let data = { ...DEFAULTS }
