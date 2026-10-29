@@ -161,10 +161,10 @@
   /* справа внизу одной колонкой: быстрые настройки (появляются) над состоянием болида — не налезают друг на друга и на таблицу слева */
   #rightcol { position: absolute; right: 16px; bottom: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; transform: scale(var(--hud)); transform-origin: bottom right; }
   #rightcol > .panel { position: relative; }
-  #carStatus { width: 196px; padding: 8px 12px 10px; }
+  #carStatus { width: 204px; padding: 8px 12px 10px; }
   #carStatus .cs-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; font-weight: 700; }
   #csPlan { margin-left: auto; font-size: 10px; white-space: nowrap; }
-  #csName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #csName { min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cmp { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 3px solid var(--c, #888); font-size: 10px; font-weight: 900; color: var(--text); }
   /* скан болида сверху (carScan.js): белые контуры всех деталей; ломающиеся части под ними заливаются от жёлтого к красному (hud.js dmgPaint) */
   #carStatus .car { display: block; width: 100%; height: auto; overflow: visible; }
@@ -192,15 +192,17 @@
   #trackFlag.red { background: var(--red); color: #fff; }
   #trackFlag.sc, #trackFlag.vsc { background: repeating-linear-gradient(135deg, #FFC400 0 16px, #E5B000 16px 32px); }
   #results .res-why { margin: -6px 0 12px; color: #F3A64A; font-size: 17px; font-weight: 700; }
-  #pitPlan { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%) scale(var(--hud)); transform-origin: bottom center; width: 420px; padding: 0 0 8px; pointer-events: auto; }
+  /* план пит-стопа (L): справа над схемой болида, а не по центру — по центру он закрывал болид */
+  #pitPlan { width: 204px; padding: 0 0 8px; pointer-events: auto; }
   #pitPlan[hidden] { display: none; }
-  #pitPlan .caps { display: block; padding: 8px 14px 6px; }
-  #ppTyres { display: flex; gap: 6px; padding: 4px 14px 6px; }
-  #ppTyres button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 4px; background: transparent; color: var(--muted); border: 2px solid var(--muted); font: 700 14px/1 inherit; cursor: pointer; }
-  #ppTyres button i { font-style: normal; font-weight: 900; width: 22px; height: 22px; line-height: 22px; border-radius: 50%; border: 3px solid var(--c); color: var(--text); font-size: 12px; }
-  #ppTyres button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
-  #ppWing { display: block; width: calc(100% - 28px); margin: 0 14px; padding: 8px; background: transparent; color: var(--text); border: 2px solid var(--muted); font: 700 14px/1 inherit; cursor: pointer; }
-  #pitPlan .pp-hint { display: block; padding: 7px 14px 0; font-size: 12px; color: var(--muted); }
+  #pitPlan .caps { display: block; padding: 7px 12px 4px; }
+  #ppTyres { display: flex; justify-content: space-between; padding: 2px 12px 0; }
+  #ppTyres button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; background: transparent; border: 2px solid transparent; border-radius: 50%; cursor: pointer; }
+  #ppTyres button i { font-style: normal; font-weight: 900; width: 22px; height: 22px; line-height: 16px; border-radius: 50%; border: 3px solid var(--c); color: var(--text); font-size: 11px; text-align: center; box-sizing: border-box; }
+  #ppTyres button.on { border-color: var(--text); background: rgba(255, 255, 255, .12); }
+  #pitPlan .pp-name { display: block; padding: 3px 12px 6px; font-size: 12px; font-weight: 700; }
+  #ppWing { display: block; width: calc(100% - 24px); margin: 0 12px; padding: 5px 6px; background: transparent; color: var(--text); border: 1px solid var(--muted); font: 600 11px/1.25 var(--font); text-align: left; cursor: pointer; }
+  #pitPlan .pp-hint { display: block; padding: 6px 12px 0; font-size: 10px; line-height: 1.3; color: var(--muted); }
   #pitInfo.go { background: var(--green); color: #0A0B0D; border-left-color: #fff; font-size: 30px; }
   /* значок состава шин в таблице */
   #twList li .cmp { width: 15px; height: 15px; border-width: 2px; font-size: 8px; }
@@ -435,6 +437,7 @@
   <div id="lights" hidden><i></i><i></i><i></i><i></i><i></i></div>
   <div id="notice" hidden></div>
   <div id="rightcol">
+    <div id="pitPlan" class="panel cut" hidden><span class="caps">Пит-стоп · автопилот</span><div id="ppTyres"></div><span class="pp-name"></span><button id="ppWing" type="button"></button><span class="pp-hint"></span></div>
     <div id="mfd" class="panel cut" hidden><span class="caps">Быстрые настройки</span><div class="mfd-row" data-k="brakeBias"><span>Баланс тормозов</span><b></b></div><div class="mfd-row" data-k="diffOn"><span>Дифференциал</span><b></b></div><div class="mfd-row" data-k="ers"><span>Батарея</span><b></b></div><div class="mfd-row" data-k="pitTyre"><span>Пит-стоп: шины</span><b></b></div><div class="mfd-row" data-k="pitWing"><span>Пит-стоп: ремонт</span><b></b></div></div>
     <div id="carStatus" class="panel cut">
       <div class="cs-head"><span id="csComp" class="cmp"></span><span id="csName"></span><span id="csPlan" class="caps"></span></div>
@@ -447,7 +450,6 @@
   <div id="pitInfo" hidden></div>
   <div id="flagBanner" hidden></div>
   <div id="trackFlag" hidden></div>
-  <div id="pitPlan" class="panel cut" hidden><span class="caps">Пит-стоп · автопилот заведёт в боксы</span><div id="ppTyres"></div><button id="ppWing" type="button"></button><span class="pp-hint"></span></div>
   <div id="dash" class="panel">
     <div class="gauge left">
       <svg viewBox="0 0 120 120"><circle class="outer" cx="60" cy="60" r="58" pathLength="100"/><circle class="track" cx="60" cy="60" r="50" pathLength="100"/><circle id="battArc" class="arc" cx="60" cy="60" r="50" pathLength="100"/></svg>

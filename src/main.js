@@ -707,11 +707,11 @@ async function main() {
       // план пит-стопа (как MFD в F1): I — состав шин, K — менять ли переднее крыло
       if (code === 'KeyI') {
         pitPlan.compound = COMPOUND_ORDER[(COMPOUND_ORDER.indexOf(pitPlan.compound) + 1) % COMPOUND_ORDER.length]
-        hud.showMfd(mfdTexts(), 'pitTyre')
+        if (!pitRequest) hud.showMfd(mfdTexts(), 'pitTyre') // заказан заезд — выбор и так виден на плашке пит-стопа
       }
       if (code === 'KeyK') {
         pitPlan.wing = !pitPlan.wing
-        hud.showMfd(mfdTexts(), 'pitWing')
+        if (!pitRequest) hud.showMfd(mfdTexts(), 'pitWing')
       }
       if (code === 'KeyL' && lane && !pitCtl) {
         pitRequest = !pitRequest

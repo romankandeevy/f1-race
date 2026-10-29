@@ -144,7 +144,10 @@ export function createParticles(scene) {
   const sparks = createPool(scene, 1400, { additive: true, soft: 0.45, order: 12 })
   const smoke = createPool(scene, 700, { soft: 0, order: 10, fadeIn: true })
   const bits = createPool(scene, 700, { soft: 0.55, order: 11 })
-  const pools = [sparks, smoke, bits]
+  // мокрая трасса: водяная пыль за болидом (большие мягкие облака) и капли, которые шина швыряет вверх и назад
+  const mist = createPool(scene, 3200, { soft: 0, order: 9, fadeIn: true })
+  const drips = createPool(scene, 2400, { soft: 0.5, order: 11 })
+  const pools = [sparks, smoke, bits, mist, drips]
   const state = new WeakMap() // свои счётчики у каждого болида: сколько частиц «накопилось» к рождению
   const q = new THREE.Quaternion()
   const p = new THREE.Vector3()
@@ -234,15 +237,42 @@ export function createParticles(scene) {
       }
     }
 
-    // 4. мокрая трасса: водяная пыль из-под колёс (задние — шлейфом), тем гуще, чем быстрее и мокрее
-    if (wetNow > 0.12 && speed > 12) {
+    // 4. мокрая трасса (Рома 29.10: «след от дождя плохой» — были серые клубки у колёс): как в F1 под дождём,
+    // за болидом встаёт высокий шлейф водяной пыли («петушиный хвост») — задние шины и диффузор поднимают воду
+    // на 2–4 м, облако растёт, отстаёт от болида и висит ещё секунду-две; передние кидают воду в стороны.
+    // Плюс капли: шина швыряет их вверх-назад, они падают обратно.
+    if (wetNow > 0.1 && speed > 8) {
+      const k = Math.min(1, (wetNow - 0.1) * 1.6) * Math.min(1, speed / 50)
+      // шлейф из-за кормы: середина между задними колёсами и по их следу
+      const n = count(st, 'mist', 150 * k, dt)
+      for (let j = 0; j < n; j++) {
+        const side = rnd(-0.75, 0.75)
+        const w = local(v, side, rnd(0.2, 0.55), rnd(-2.3, -1.6))
+        const m = rnd(0.35, 0.7)
+        const g = rnd(0.7, 0.82)
+        mist.emit(w.x, w.y, w.z, lv.x * m + rnd(-0.6, 0.6), rnd(0.8, 2.6) * (0.5 + 0.5 * k), lv.z * m + rnd(-0.6, 0.6), rnd(1.2, 2.2), rnd(0.5, 0.9), rnd(1.8, 3), g, g + 0.02, g + 0.05, rnd(0.07, 0.13) * (0.4 + 0.6 * k), 0.3, 1.4)
+      }
       for (let i = 0; i < 4; i++) {
         const w = v.wheels[i]
         if (!w.contact || v.damage.lost[i]) continue
-        const n = count(st, 'spray' + i, (w.front ? 10 : 34) * wetNow * Math.min(1, speed / 45), dt)
-        for (let k = 0; k < n; k++) {
-          const g = rnd(0.78, 0.9)
-          smoke.emit(w.point.x + rnd(-0.2, 0.2), w.point.y + 0.25, w.point.z + rnd(-0.2, 0.2), lv.x * rnd(0.45, 0.7) + rnd(-1, 1), rnd(0.4, 1.4), lv.z * rnd(0.45, 0.7) + rnd(-1, 1), rnd(0.7, 1.3), rnd(0.5, 0.8), 2.4, g, g, g + 0.03, 0.2 * Math.min(1, wetNow * 1.3), 0.1, 1.6)
+        // передние: вода в стороны и чуть вверх, облако меньше
+        if (w.front) {
+          const nf = count(st, 'mistF' + i, 30 * k, dt)
+          const out = i % 2 === 0 ? 1 : -1 // в осях болида: колесо 0 и 2 — левые (+X)
+          for (let j = 0; j < nf; j++) {
+            const p0 = local(v, out * rnd(0.85, 1.05), 0.25, rnd(1.2, 1.6))
+            const sx = p0.x, sy = p0.y, sz = p0.z
+            const d = local(v, out * rnd(1.5, 3), 0, 0) // скорость вбок наружу (в мире)
+            const g = rnd(0.72, 0.84)
+            mist.emit(sx, sy, sz, lv.x * 0.55 + (d.x - t.x), rnd(0.4, 1.4), lv.z * 0.55 + (d.z - t.z), rnd(0.6, 1.1), rnd(0.35, 0.6), 1.6, g, g + 0.02, g + 0.05, 0.08 * k, 0.2, 2)
+          }
+        }
+        // капли: из-под каждой шины по касательной назад-вверх, падают с ускорением свободного падения
+        const nd = count(st, 'drip' + i, (w.front ? 45 : 110) * k, dt)
+        for (let j = 0; j < nd; j++) {
+          const m = rnd(0.3, 0.75)
+          const b = rnd(0.8, 0.95)
+          drips.emit(w.point.x + rnd(-0.18, 0.18), w.point.y + rnd(0.1, 0.5), w.point.z + rnd(-0.18, 0.18), lv.x * m + rnd(-1.2, 1.2), rnd(1.5, 5), lv.z * m + rnd(-1.2, 1.2), rnd(0.35, 0.7), rnd(0.025, 0.045), 0, b, b, b + 0.04, rnd(0.35, 0.6), -9.8, 0.6, w.point.y - 0.05)
         }
       }
     }

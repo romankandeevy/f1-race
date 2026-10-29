@@ -179,7 +179,8 @@ export function createHud(track) {
   const ppTyres = el('ppTyres')
   const ppWing = el('ppWing')
   let onPitPick = null
-  ppTyres.innerHTML = COMPOUND_ORDER.map((c) => `<button type="button" data-c="${c}" style="--c:${COMPOUNDS[c].color}"><i>${COMPOUNDS[c].short}</i>${COMPOUNDS[c].name}</button>`).join('')
+  const ppName = pitPlanEl.querySelector('.pp-name')
+  ppTyres.innerHTML = COMPOUND_ORDER.map((c) => `<button type="button" data-c="${c}" title="${COMPOUNDS[c].name}" style="--c:${COMPOUNDS[c].color}"><i>${COMPOUNDS[c].short}</i></button>`).join('')
   ppTyres.addEventListener('click', (e) => {
     const b = e.target.closest('button')
     if (b) onPitPick?.('compound', b.dataset.c)
@@ -294,9 +295,11 @@ export function createHud(track) {
       if (pitPlanEl.hidden === requested) pitPlanEl.hidden = !requested
       if (!requested) return
       for (const b of ppTyres.children) setClass(b, b.dataset.c === plan.compound ? 'on' : '')
+      setText(ppName, 'Шины: ' + COMPOUNDS[plan.compound].name)
       const jobs = damage ? repairList(damage) : []
-      setText(ppWing, plan.wing ? (jobs.length ? `Ремонт: ${jobs.map((j) => j.name.toLowerCase()).join(', ')} · +${repairSeconds(damage)} с` : 'Ремонт кузова: чинить нечего') : jobs.length ? `Без ремонта (повреждено: ${jobs.map((j) => j.name.toLowerCase()).join(', ')})` : 'Без ремонта')
-      setText(pitPlanEl.lastElementChild, toEntry > 0 ? `До въезда в пит-лейн ${Math.round(toEntry)} м · I — шины · K — ремонт · L — отмена` : 'I — шины · K — ремонт · L — отмена')
+      const list = jobs.map((j) => j.name.toLowerCase()).join(', ')
+      setText(ppWing, plan.wing ? (jobs.length ? `Ремонт: ${list} · +${repairSeconds(damage)} с` : 'Ремонт: чинить нечего') : jobs.length ? `Без ремонта · повреждено: ${list}` : 'Без ремонта')
+      setText(pitPlanEl.lastElementChild, (toEntry > 0 ? `До въезда ${Math.round(toEntry)} м · ` : '') + 'I шины · K ремонт · L отмена')
     },
 
     // состояние болида (4 раза в секунду) и пит-лейн
@@ -308,7 +311,7 @@ export function createHud(track) {
         csComp.style.setProperty('--c', c.color)
         setText(csComp, c.short)
         setText(csName, c.name)
-        setText(csPlan, `пит: ${COMPOUNDS[plan.compound].short}${plan.wing ? ' + ремонт' : ''}`)
+        setText(csPlan, `пит: ${COMPOUNDS[plan.compound].short}${plan.wing ? '+рем' : ''}`)
         const d = v.damage
         const [lo, hi] = c.window
         if (csCar) {

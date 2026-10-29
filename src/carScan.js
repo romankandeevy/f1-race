@@ -69,11 +69,11 @@ export function scanCar(renderer, group) {
   const scene = new T.Scene()
   scene.add(model)
   model.updateMatrixWorld(true)
-  // сверху: нос вниз по кадру (Рома 29.10: «в другую сторону»), левый борт болида (+X) справа
+  // сверху: нос вверх по кадру, как болид едет (Рома 29.10: «нос спереди, зад задом»), правый борт (−X) справа
   const zc = (Z_TOP + Z_BOTTOM) / 2
   const cam = new T.OrthographicCamera(-HALF_X, HALF_X, (Z_TOP - Z_BOTTOM) / 2, -(Z_TOP - Z_BOTTOM) / 2, 0.1, 30)
   cam.position.set(0, 10, zc)
-  cam.up.set(0, 0, -1)
+  cam.up.set(0, 0, 1)
   cam.lookAt(0, 0, zc)
   const r = renderer
   const rt = new T.WebGLRenderTarget(W, H)
@@ -99,7 +99,7 @@ export function scanCar(renderer, group) {
       label[y * W + x] = buf[i] + (buf[i + 1] << 8)
     }
   }
-  const xOf = (px) => -HALF_X + ((px + 0.5) * 2 * HALF_X) / W // координата X болида по столбцу
+  const xOf = (px) => HALF_X - ((px + 0.5) * 2 * HALF_X) / W // координата X болида по столбцу (слева +X)
   const k = VB / H
   const vx = (px) => VB / 2 + (px - W / 2) * k
   const vy = (py) => py * k
@@ -249,11 +249,11 @@ export function scanCar(renderer, group) {
     const disc = model.getObjectByName('brake_disc_' + w)
     const bw = new T.Box3().setFromObject(node)
     const bd = new T.Box3().setFromObject(disc)
-    const sx = (X) => VB / 2 + (X * VB) / (Z_TOP - Z_BOTTOM) // X болида → x viewBox
-    const sy = (Z) => ((Z - Z_BOTTOM) * VB) / (Z_TOP - Z_BOTTOM)
+    const sx = (X) => VB / 2 - (X * VB) / (Z_TOP - Z_BOTTOM) // X болида → x viewBox
+    const sy = (Z) => ((Z_TOP - Z) * VB) / (Z_TOP - Z_BOTTOM)
     wheels[w] = {
       d: toD(loops((x, y) => ids.has(label[y * W + x]))),
-      brake: [sx(bd.min.x), sy(bd.min.z), sx(bd.max.x) - sx(bd.min.x), sy(bd.max.z) - sy(bd.min.z)].map((v) => +v.toFixed(1)),
+      brake: [sx(bd.max.x), sy(bd.max.z), sx(bd.min.x) - sx(bd.max.x), sy(bd.min.z) - sy(bd.max.z)].map((v) => +v.toFixed(1)),
       cx: +sx((bw.min.x + bw.max.x) / 2).toFixed(1),
       cy: +sy((bw.min.z + bw.max.z) / 2).toFixed(1),
       outer: +sx(bw.min.x < 0 ? bw.min.x : bw.max.x).toFixed(1),

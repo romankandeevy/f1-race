@@ -14,8 +14,10 @@ export const WEATHER_ORDER = ['dry', 'rain', 'mixed']
 const WET_MATS = ['Асфальт', 'Пол боксов', 'Поребрик красный', 'Поребрик белый', 'Линия белая', 'Линия чёрная', 'Бетон', 'Разметка мест команд']
 const SOAK = 0.016 // 1/с — насколько быстро намокает под сильным дождём
 const DRY = 0.0035 // 1/с — подсыхает без дождя
-const DROPS = 2400
-const BOX = 36 // м — куб капель вокруг камеры
+const DROPS = 4000
+const BOX = 22 // м — полкуба капель вокруг камеры (по высоте — половина)
+const FALL = 11 // м/с — скорость капли
+const EXPOSE = 0.035 // с — «выдержка»: капля рисуется отрезком, который она проходит относительно камеры
 const rnd = (a, b) => a + Math.random() * (b - a)
 
 export function createWeather(scene, env) {
@@ -27,17 +29,15 @@ export function createWeather(scene, env) {
     for (const m of [].concat(o.material)) if (WET_MATS.includes(m.name) && !mats.some((x) => x.m === m)) mats.push({ m, color: m.color.clone(), rough: m.roughness })
   })
 
-  // капли: отрезки, падают с ветром, по кругу внутри куба вокруг камеры
-  const off = new Float32Array(DROPS * 3)
-  for (let i = 0; i < DROPS; i++) {
-    off[i * 3] = rnd(-BOX, BOX)
-    off[i * 3 + 1] = rnd(-BOX / 2, BOX / 2)
-    off[i * 3 + 2] = rnd(-BOX, BOX)
-  }
+  // капли: отрезки в мире (не привязаны к камере — на скорости несутся навстречу), падают с ветром;
+  // вышла из куба вокруг камеры — переносится на другую его сторону
+  const off = new Float32Array(DROPS * 3) // мировые координаты капель
+  let seeded = false
+  const camPrev = new THREE.Vector3()
   const pos = new Float32Array(DROPS * 6)
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage))
-  const mat = new THREE.LineBasicMaterial({ color: 0xc9d4de, transparent: true, opacity: 0, depthWrite: false })
+  const mat = new THREE.LineBasicMaterial({ color: 0xd5dee6, transparent: true, opacity: 0, depthWrite: false })
   const drops = new THREE.LineSegments(geo, mat)
   drops.frustumCulled = false
   drops.visible = false
@@ -53,7 +53,7 @@ export function createWeather(scene, env) {
       shownWet = st.wet
       for (const { m, color, rough } of mats) {
         m.color.copy(color).multiplyScalar(1 - 0.38 * st.wet)
-        m.roughness = rough * (1 - 0.6 * st.wet)
+        m.roughness = rough * (1 - 0.82 * st.wet) // мокрый асфальт почти зеркальный: в нём небо и огни
       }
     }
   }
@@ -85,29 +85,54 @@ export function createWeather(scene, env) {
       const on = st.rain > 0.02
       drops.visible = on
       if (!on) return
-      mat.opacity = 0.18 + 0.32 * st.rain
-      // падение: 13 м/с вниз, ветер чуть вбок; куб едет за камерой
+      mat.opacity = 0.22 + 0.33 * st.rain
       const c = camera.position
-      const fall = dt * 13
-      const len = 0.35 + 0.35 * st.rain
+      if (!seeded) {
+        seeded = true
+        camPrev.copy(c)
+        for (let i = 0; i < DROPS; i++) {
+          off[i * 3] = c.x + rnd(-BOX, BOX)
+          off[i * 3 + 1] = c.y + rnd(-BOX / 2, BOX / 2)
+          off[i * 3 + 2] = c.z + rnd(-BOX, BOX)
+        }
+      }
+      // скорость камеры (болид): капля рисуется следом относительно неё — на 250 км/ч это длинные штрихи навстречу
+      const inv = dt > 0 ? 1 / dt : 0
+      let cvx = (c.x - camPrev.x) * inv
+      let cvy = (c.y - camPrev.y) * inv
+      let cvz = (c.z - camPrev.z) * inv
+      if (cvx * cvx + cvy * cvy + cvz * cvz > 150 * 150) cvx = cvy = cvz = 0 // перескок камеры (новый старт, смена вида)
+      camPrev.copy(c)
+      const wind = 1.2
+      const fall = dt * FALL
+      const lx = (wind - cvx) * EXPOSE
+      const ly = Math.min(0.9, (FALL + cvy) * EXPOSE + 0.25 * st.rain)
+      const lz = -cvz * EXPOSE
+      const B2 = BOX * 2
       for (let i = 0; i < DROPS; i++) {
         const j = i * 3
-        off[j + 1] -= fall
-        off[j] += fall * 0.12
-        if (off[j + 1] < -BOX / 2) {
-          off[j + 1] += BOX
-          off[j] = rnd(-BOX, BOX)
-        }
-        const x = c.x + off[j]
-        const y = c.y + off[j + 1]
-        const z = c.z + off[j + 2]
+        let x = off[j] + wind * dt
+        let y = off[j + 1] - fall
+        let z = off[j + 2]
+        if (x - c.x > BOX) x -= B2
+        else if (x - c.x < -BOX) x += B2
+        if (z - c.z > BOX) z -= B2
+        else if (z - c.z < -BOX) z += B2
+        if (y - c.y < -BOX / 2) {
+          y += BOX
+          x = c.x + rnd(-BOX, BOX)
+          z = c.z + rnd(-BOX, BOX)
+        } else if (y - c.y > BOX / 2) y -= BOX
+        off[j] = x
+        off[j + 1] = y
+        off[j + 2] = z
         const k = i * 6
         pos[k] = x
         pos[k + 1] = y
         pos[k + 2] = z
-        pos[k + 3] = x - len * 0.12
-        pos[k + 4] = y + len
-        pos[k + 5] = z
+        pos[k + 3] = x - lx
+        pos[k + 4] = y + ly
+        pos[k + 5] = z - lz
       }
       // реже рисуем дальние: в ливень капель видно все, в морось — часть
       geo.setDrawRange(0, Math.round(DROPS * (0.35 + 0.65 * st.rain)) * 2)

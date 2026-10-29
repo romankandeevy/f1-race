@@ -115,7 +115,16 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
   const along = dvx * Math.sin(yaw) + dvz * Math.cos(yaw) // < 0 — толкнуло назад (удар носом)
   const side = dvx * Math.cos(yaw) - dvz * Math.sin(yaw) // > 0 — толкнуло влево (удар справа)
   const d = v.damage
-  const up = (key, x) => (d[key] = Math.min(1, d[key] + x))
+  // broke — сколько всего отломилось за этот удар (сумма прибавок, у разбитой части прибавки нет), big — части, разрушенные сейчас:
+  // по ним debris.js решает, сколько и каких обломков (царапина — ни одного, через 3–4 удара болид не рассыпается)
+  let broke = 0
+  let big = 0
+  const up = (key, x) => {
+    const was = d[key]
+    d[key] = Math.min(1, was + x)
+    if (key !== 'chassis' && !key.startsWith('susp')) broke += d[key] - was
+    if (was < 0.9 && d[key] >= 0.9 && key !== 'chassis') big++
+  }
   const hits = []
   let zone // где удар: для обломков (debris.js)
   if (-along > Math.abs(side) * 0.7) {
@@ -164,9 +173,11 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
     const rear = side > 0 ? 3 : 2
     if (d[key] >= 1 && dv > 12 && !d.lost[front]) {
       d.lost[front] = 1
+      broke += 0.5
       hits.push('Оторвано колесо')
     } else if (d[key] >= 1 && dv > 22 && !d.lost[rear]) {
       d.lost[rear] = 1
+      broke += 0.5
       hits.push('Оторвано колесо')
     }
   }
@@ -175,7 +186,7 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
     up('chassis', (dv - CHASSIS_DV) * CHASSIS_K)
     hits.push('Монокок')
   }
-  return { sev, hits, zone }
+  return { sev, hits, zone, broke, big }
 }
 
 // Повреждённая подвеска (Рома 29.10: «что происходит, когда ломаются палки, которые соединяют колесо с болидом?»).

@@ -6,6 +6,7 @@
 import * as THREE from 'three'
 
 const DEBRIS_MAX = 260
+const DEBRIS_PER_HIT = 14
 const KICK_R = 1.3 // м: ближе — колесо/днище подбрасывает обломок
 const MARKS_MAX = 3000 // отрезков следа
 const MARK_HALF = 0.16 // м, полширины следа (шина F1 ~0,33–0,4 м)
@@ -43,6 +44,7 @@ function createDebris(scene) {
   const tmp = new THREE.Vector3()
   const q = new THREE.Quaternion()
   const color = new THREE.Color()
+  const euler = new THREE.Euler()
 
   const write = (i) => {
     const d = P[i]
@@ -52,10 +54,16 @@ function createDebris(scene) {
   }
 
   return {
-    // удар: r — результат applyImpact (sev, zone); paint — цвет болида
+    // удар: r — результат applyImpact (sev, zone, broke, big); paint — цвет болида.
+    // Обломков столько, сколько реально отломилось (Рома 29.10: «не от мелкого столкновения… пропорционально»):
+    // царапина и касание — ни одного, разбитая часть второй раз не сыплется. В основном мелкая крошка карбона 4–12 см,
+    // крупный кусок (половина крыла, шайба) — только когда часть разрушена этим ударом.
     spawn(v, r, paint) {
       const z = ZONES[r.zone] || ZONES.front
-      const n = Math.round(4 + 26 * r.sev)
+      const broke = r.broke ?? r.sev
+      if (broke < 0.35) return // до ~25 км/ч в стену — только царапины
+      const big = r.big || 0
+      const n = Math.min(DEBRIS_PER_HIT, Math.round(broke * 7) + big)
       const t = v.body.translation()
       const rot = v.body.rotation()
       const lv = v.body.linvel()
@@ -68,10 +76,11 @@ function createDebris(scene) {
         tmp.set(z[0] + rnd(-z[3], z[3]), z[1] + rnd(0, 0.25), z[2] + rnd(-z[4], z[4])).applyQuaternion(q)
         d.p.set(t.x + tmp.x, t.y + tmp.y, t.z + tmp.z)
         const m = rnd(0.2, 0.8)
-        d.v.set(lv.x * m + rnd(-5, 5), rnd(1, 5), lv.z * m + rnd(-5, 5))
-        d.q.setFromEuler(new THREE.Euler(rnd(0, 6.3), rnd(0, 6.3), rnd(0, 6.3)))
+        const kick = 1 + 3 * r.sev
+        d.v.set(lv.x * m + rnd(-kick, kick), rnd(0.5, 1 + 3 * r.sev), lv.z * m + rnd(-kick, kick))
+        d.q.setFromEuler(euler.set(rnd(0, 6.3), rnd(0, 6.3), rnd(0, 6.3)))
         d.w.set(rnd(-14, 14), rnd(-14, 14), rnd(-14, 14))
-        d.s = rnd(0.4, 1.8)
+        d.s = k < big ? rnd(1.6, 2.6) : rnd(0.2, 0.6)
         d.floor = t.y + 0.008
         d.rest = false
         mesh.setColorAt(i, paint && Math.random() < 0.35 ? color.set(paint) : CARBON)
