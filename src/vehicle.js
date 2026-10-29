@@ -5,7 +5,7 @@
 // Rapier только интегрирует кузов как твёрдое тело. Настройка болида — TUNING.setup.
 // Износ шин, повреждения и износ мотора — wear.js: здесь только применяются их множители.
 import { TUNING, setupPhysics } from './tuning.js'
-import { freshTyres, tyreGrip, updateTyres, freshDamage, aeroDamage, applyImpact, freshPowerUnit, updatePowerUnit, powerFactor } from './wear.js'
+import { freshTyres, tyreGrip, updateTyres, freshDamage, aeroDamage, applyImpact, freshPowerUnit, updatePowerUnit, powerFactor, suspDamageAt, SUSP_BROKEN, updateEngineHeat } from './wear.js'
 
 // кузов → болид: по коллайдеру из событий удара Rapier найти, чей это болид
 export const hullOwners = new Map()
@@ -13,23 +13,39 @@ export const hullOwners = new Map()
 // Группы столкновений Rapier: (кто я << 16) | (с кем сталкиваюсь). Трасса — все биты по умолчанию.
 // Лучи подвески и днища видят только трассу: иначе колесо «вставало» на соседний болид и подвеска
 // выстреливала обе машины в небо (Рома 28.10). «Призрак» — после возврата на трассу 3 с сквозь болиды.
+// Два корпуса на болид (Рома 29.10: «столкновения с другими болидами — полное дерьмо»): о стены и поребрики болид бьётся
+// корпусом WALL (скользит почти без трения и не отскакивает), а о другие болиды — корпусом CC: с трением и небольшим
+// упругим откатом, чтобы болиды расходились после удара, а не слипались и ехали вместе.
 const CAR = 0x0002
-const CAR_GROUPS = (CAR << 16) | 0xffff
-const GHOST_GROUPS = (CAR << 16) | (0xffff & ~CAR)
-const RAY_GROUPS = (0x0001 << 16) | (0xffff & ~CAR)
+const CC = 0x0004
+const WALL_GROUPS = (CAR << 16) | (0xffff & ~(CAR | CC))
+const CC_GROUPS = (CC << 16) | CC
+const GHOST_CC = (CC << 16) | 0
+const RAY_GROUPS = (0x0001 << 16) | (0xffff & ~(CAR | CC))
+// трасса, стены и земля: членство только «0001», поэтому корпус CC (он сталкивается лишь с группой CC) их не видит;
+// с группой «все биты» по умолчанию он бился бы о стены с трением 0,3 и отскакивал. Все статичные коллайдеры — с этой маской
+export const STATIC_GROUPS = (0x0001 << 16) | 0xffff
 export function setGhost(v, on) {
-  for (let i = 0; i < v.body.numColliders(); i++) v.body.collider(i).setCollisionGroups(on ? GHOST_GROUPS : CAR_GROUPS)
+  v.hullCar.setCollisionGroups(on ? GHOST_CC : CC_GROUPS)
 }
 
 // После world.step(events): удары по кузову → повреждения. Сила удара и направление — по тому,
 // как резко изменилась скорость кузова за шаг (prevVel — скорость в начале шага; шины и мотор
 // за шаг дают меньше 0,2 м/с, удар о стену — метры в секунду). onImpact(v, { sev, hits }) — для сообщений.
-export function collectImpacts(events, onImpact) {
+export function collectImpacts(events, onImpact, onContact) {
   const hit = new Set()
   events.drainContactForceEvents((e) => {
+    // два болида: сообщаем стюардам, кто с кем (onContact(a, b, сила, Н))
+    const va = hullOwners.get(e.collider1())
+    const vb = hullOwners.get(e.collider2())
+    if (va && vb && va !== vb && onContact) onContact(va, vb, e.totalForceMagnitude())
     for (const h of [e.collider1(), e.collider2()]) {
       const v = hullOwners.get(h)
-      if (v && v.wearOn) hit.add(v)
+      if (!v) continue
+      v.impactT = IMPACT_TIME
+      // тряска камеры: чем сильнее удар, тем резче (200 кН и больше — на полную)
+      v.impactShake = Math.max(v.impactShake, clamp(e.totalForceMagnitude() / 200000, 0.2, 1))
+      if (v.wearOn) hit.add(v)
     }
   })
   for (const v of hit) {
@@ -39,6 +55,13 @@ export function collectImpacts(events, onImpact) {
   }
 }
 
+// после сильного удара, событие контакта (v.impactT секунд) корпус не подпрыгивает, не клюёт и не раскручивается: вертикальная скорость ≤ IMPACT_VY,
+// крен и тангаж гасятся, рыскание ограничено; шины в это время держат хуже (болид скребёт, а не отскакивает)
+const IMPACT_TIME = 0.5 // с
+const IMPACT_VY = 0.4 // м/с
+const IMPACT_TILT = 0.6 // множитель крена и тангажа за шаг
+const IMPACT_YAW = 4 // рад/с
+const IMPACT_GRIP = 0.35 // доля сцепления шин, которая теряется сразу после удара
 const G = 9.81
 const DEG = Math.PI / 180
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v))
@@ -123,7 +146,7 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
   // поворота ~1150 кг·м², как у болида (чем меньше, тем охотнее болид поворачивается)
   world.createCollider(
     RAPIER.ColliderDesc.cuboid(0.55, 0.175, 2.0)
-      .setCollisionGroups(CAR_GROUPS)
+      .setCollisionGroups(WALL_GROUPS) // как корпус: стены видит, других болидов — нет
       .setTranslation(0, T.comY, T.comZ)
       .setMass(T.mass)
       .setFriction(0.1)
@@ -132,12 +155,26 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
   )
   // внешний габарит для столкновений со стенами: массы не имеет. Сильный контакт — событие удара (повреждения)
   const hull = world.createCollider(
-    RAPIER.ColliderDesc.cuboid(0.95, 0.475, 2.85)
-      .setCollisionGroups(CAR_GROUPS)
-      .setTranslation(0, 0.575, 0.17)
+    RAPIER.ColliderDesc.cuboid(0.95, 0.2, 2.68)
+      .setCollisionGroups(WALL_GROUPS)
+      .setTranslation(0, T.comY, 0.16)
       .setDensity(0)
-      .setFriction(0.15)
+      .setFriction(0.05)
+      .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Min)
       .setRestitution(0)
+      .setRestitutionCombineRule(RAPIER.CoefficientCombineRule.Min)
+      .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
+      .setContactForceEventThreshold(15000),
+    body,
+  )
+  // габарит для встречи с другими болидами: такой же, но трение T.carFriction и упругость T.carRestitution
+  const hullCar = world.createCollider(
+    RAPIER.ColliderDesc.cuboid(0.95, 0.2, 2.68)
+      .setCollisionGroups(CC_GROUPS)
+      .setTranslation(0, T.comY, 0.16)
+      .setDensity(0)
+      .setFriction(T.carFriction)
+      .setRestitution(T.carRestitution)
       .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
       .setContactForceEventThreshold(15000),
     body,
@@ -181,6 +218,10 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
     body,
     wheels,
     ray: new RAPIER.Ray({ x: 0, y: 0, z: 0 }, { x: 0, y: -1, z: 0 }),
+    impactT: 0, // сколько ещё секунд идёт «разгрузка» после удара
+    engineHeat: 0.3, // перегрев мотора: 0,6 — норма на полном газу, выше 0,9 мощность падает, выше 1,15 мотор умирает (см. wear.js)
+    hotTime: 0,
+    impactShake: 0, // сила тряски камеры от удара, 0..1; гаснет за ~0,5 с
     throttle: 0, // педали после плавного нажатия, 0..1
     brake: 0,
     steerCmd: 0, // команда руля с клавиатуры, -1..1
@@ -219,7 +260,9 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
     events: [], // что случилось за шаг (прокол, отказ мотора) — main показывает игроку
     wearOn: wear,
   }
+  v.hullCar = hullCar
   hullOwners.set(hull.handle, v)
+  hullOwners.set(hullCar.handle, v)
   return v
 }
 
@@ -286,6 +329,14 @@ function updateSteering(v, input, dt, fwdSpeed, latSpeed) {
   const toeR = T.setup.toeR * DEG
   v.wheels[0].steer = left + toeF
   v.wheels[1].steer = right - toeF
+  // подвеска повреждена: у колеса смещено схождение (смотрит наружу), а у сломанной — перестаёт слушаться руля и болтается
+  for (const w of [v.wheels[0], v.wheels[1]]) {
+    const sd = suspDamageAt(v.damage, true, w.side)
+    if (sd <= 0) continue
+    const broken = clamp((sd - SUSP_BROKEN) / (1 - SUSP_BROKEN), 0, 1)
+    w.steer += w.side * sd * 0.004
+    w.steer = w.steer * (1 - 0.8 * broken) + w.side * 0.025 * 0.8 * broken
+  }
   v.wheels[2].steer = -toeR
   v.wheels[3].steer = toeR
 }
@@ -317,6 +368,15 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
     v.state.gLong += ((ax * fwd.x + az * fwd.z) / G - v.state.gLong) * k
     v.state.gLat += ((ax * left.x + az * left.z) / G - v.state.gLat) * k
   } else v.prevVel = vec()
+  // после сильного удара (collectImpacts ставит impactT): Rapier гасит скорость жёстко, и без «разгрузки» корпус подпрыгивает,
+  // клюёт и крутится, как на пружине (Рома 29.10: «столкновения пружинятся»)
+  v.impactShake *= Math.exp(-dt * 5)
+  if (v.impactT > 0) {
+    v.impactT -= dt
+    const av = body.angvel()
+    if (vel.y > IMPACT_VY) body.setLinvel({ x: vel.x, y: IMPACT_VY, z: vel.z }, true)
+    body.setAngvel({ x: av.x * IMPACT_TILT, y: clamp(av.y, -IMPACT_YAW, IMPACT_YAW), z: av.z * IMPACT_TILT }, true)
+  }
   v.prevVel.x = vel.x
   v.prevVel.y = vel.y
   v.prevVel.z = vel.z
@@ -354,13 +414,14 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
       const map = T.lowSpeedDrive + (1 - T.lowSpeedDrive) * clamp(Math.abs(fwdSpeed) / T.torqueMapSpeed, 0, 1)
       const force = T.maxDriveForce + (T.boostForce * deploy) / T.boostPower // «Зарядка» тягу забирает
       const power = T.power + deploy
-      drive = Math.min(force * map, power / Math.max(Math.abs(fwdSpeed), 1)) * throttle * powerFactor(v.pu)
+      drive = Math.min(force * map, power / Math.max(Math.abs(fwdSpeed), 1)) * throttle * powerFactor(v.pu, v.engineHeat)
     }
   } else if (brakePedal > 0.001) {
-    if (fwdSpeed > 1) brake = brakePedal
+    // hold — стоим в боксе: тормоз держит на месте и не включает задний ход (иначе болид в пит-стопе сам едет назад)
+    if (fwdSpeed > 1 || input.hold) brake = brakePedal
     else if (fwdSpeed > -T.reverseMaxSpeed) drive = -T.reverseForce * brakePedal
   }
-  const brakeTotal = (brake * T.brakeForce * setup.brakePressure) / 100
+  const brakeTotal = (brake * T.brakeForce * setup.brakePressure * (1 - 0.4 * v.damage.brakes)) / 100 // разбитые тормозные каналы — слабее тормоза
 
   // батарея: обгон тратит, торможение заряжает
   const spend = Math.max(0, deploy) * throttle
@@ -373,7 +434,8 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
   // Дифференциал (вкладка «Трансмиссия»): заблокированный перекидывает тягу на медленное (внутреннее) колесо —
   // болид устойчивее на выходе, но ленивее поворачивает. На сбросе газа так же делит торможение мотором.
   const wy = body.angvel().y
-  const engineBrake = throttle < 0.01 && fwdSpeed > 2 ? T.engineBrake * clamp(fwdSpeed / 2, 0, 1) : 0
+  // торможение мотором на сбросе: растёт со скоростью (обороты выше — тормозит сильнее); с 300 км/ч сброс газа даёт около 1 g
+  const engineBrake = throttle < 0.01 && fwdSpeed > 2 ? (T.engineBrake + T.engineBrakeSpeed * fwdSpeed) * clamp(fwdSpeed / 2, 0, 1) : 0
   const rearTotal = drive - engineBrake
   const lock = (throttle > 0.01 ? setup.diffOn : setup.diffOff) / 100
   const dvRear = -2 * wy * T.rear.x // левое минус правое: в левом повороте левое медленнее
@@ -389,8 +451,18 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
   const origin = S.origin
   v.ray.origin = origin
   v.ray.dir = down
-  for (const w of wheels) {
+  for (let wi = 0; wi < 4; wi++) {
+    const w = wheels[wi]
     w.hardY = hardYOf(T, w)
+    // оторванное колесо: у этого угла опоры нет, болид садится на днище
+    if (v.damage.lost[wi]) {
+      w.contact = false
+      w.hitCollider = null
+      w.compression = 0
+      w.centerY = w.hardY - T.suspensionRest
+      w.load = 0
+      continue
+    }
     const o = rot(q, w.x, w.hardY, w.z, S.o)
     origin.x = pos.x + o.x
     origin.y = pos.y + o.y
@@ -420,7 +492,10 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
       continue
     }
     const cdot = clamp((w.compression - w.prevCompression) / dt, -5, 5)
-    const spring = w.front ? P.springF : P.springR
+    // сломанная подвеска: пружина перестаёт держать угол — он проседает до отбойника, днище чиркает по асфальту
+    const sd = suspDamageAt(v.damage, w.front, w.side)
+    const broken = clamp((sd - SUSP_BROKEN) / (1 - SUSP_BROKEN), 0, 1)
+    const spring = (w.front ? P.springF : P.springR) * (1 - 0.9 * broken)
     const damp = cdot > 0 ? T.damperBump : T.damperRebound
     let f = spring * w.compression + damperForce(T, cdot, damp)
     if (w.compression > T.bumpStop) f += (w.compression - T.bumpStop) * T.bumpStopK
@@ -439,7 +514,8 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
     const roll = both ? (wa.compression - wb.compression) / (2 * Math.abs(wa.x)) : 0
     for (const w of [wa, wb]) {
       const stat = (w.front ? setup.camberF : setup.camberR) * DEG
-      w.camberBody = stat + T.camberGain * (w.compression - T.staticSag)
+      // помятая подвеска теряет отрицательный развал (до +1,7° при полном повреждении): шина стоит на кромке, держит хуже
+      w.camberBody = stat + T.camberGain * (w.compression - T.staticSag) + suspDamageAt(v.damage, w.front, w.side) * 0.03
       w.camberGround = w.camberBody + w.side * roll
     }
   }
@@ -484,7 +560,9 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
     // давление шин (вкладка «Шины»): выше нормы — меньше сцепления, но острее отклик; ниже — наоборот
     const pd = (setup[TYRE_KEYS[i]] - (w.front ? T.tyreRef.front : T.tyreRef.rear)) / 3.5
     const mu = T.tireMu * w.grip * (v.wearOn ? tyreGrip(v.tyres[i], v.compound) : 1) * Math.pow(Math.max(w.load, 200) / Fn0, -T.loadSensitivity) * (w.front ? 1 : T.rearGrip) * (1 - T.tyrePressureGrip * pd)
-    const cap = mu * w.load
+    const sdw = suspDamageAt(v.damage, w.front, w.side)
+    const gripLoss = (1 - 0.3 * sdw) * (1 - 0.35 * clamp((sdw - SUSP_BROKEN) / (1 - SUSP_BROKEN), 0, 1))
+    const cap = mu * gripLoss * w.load * (1 - IMPACT_GRIP * clamp(v.impactT / IMPACT_TIME, 0, 1))
     // развал: вбок шина держит лучше всего около оптимума, а для тормоза и газа лучше ровное колесо
     const off = w.camberGround - optimum
     const capY = cap * clamp(1 - T.camberLatLoss * off * off, 0.8, 1)
@@ -645,4 +723,5 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
   const popped = updateTyres(v, dt)
   if (popped >= 0) v.events.push('Прокол — шина стёрта')
   if (updatePowerUnit(v, dt, throttle, Math.max(0, deploy) / T.boostPower)) v.events.push('Отказ силовой установки')
+  if (updateEngineHeat(v, dt, throttle, Math.abs(fwdSpeed))) v.events.push('Отказ силовой установки: перегрев, радиатор разбит')
 }

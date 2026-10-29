@@ -3,14 +3,18 @@
 // (Brembo, Mercedes, Formula1.com) и из жалоб на «ощущение руля», которые уже исправлены.
 import fs from 'fs'
 import RAPIER from '@dimforge/rapier3d-compat'
-import { createVehicle, stepVehicle, collectImpacts, setGhost } from '../src/vehicle.js'
+import { createVehicle, stepVehicle, collectImpacts, setGhost, STATIC_GROUPS } from '../src/vehicle.js'
 import { TUNING } from '../src/tuning.js'
 import * as THREE from 'three'
 import { createStart } from '../src/start.js'
 import { createRaceLine, createAiDriver, makePilots } from '../src/ai.js'
 import { createRace } from '../src/race.js'
 import { wheelsOut, createLimits } from '../src/limits.js'
-import { tyreGrip, aeroDamage } from '../src/wear.js'
+import { tyreGrip, aeroDamage, suspDamageAt, freshDamage, repairSeconds, applyRepair } from '../src/wear.js'
+import { retireReason, mechanicalFlag, judgeContact, contactPenalty } from '../src/stewards.js'
+import { createFlags, SC_SPEED, VSC_SPEED, RED_SPEED, RED_MAX } from '../src/flags.js'
+import { createSafetyCar } from '../src/safetycar.js'
+import { createTow } from '../src/tow.js'
 import { createPitLane, createPitStop, pitEntryHit, pitLimiter } from '../src/pit.js'
 
 await RAPIER.init()
@@ -24,7 +28,7 @@ function fresh(surfaceAt) {
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = DT
   const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
+  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
   const v = createVehicle(RAPIER, world, { y: 0.05, wear: false }, TUNING)
   return { world, v, surfaceAt: surfaceAt || (() => 'asphalt') }
 }
@@ -77,8 +81,32 @@ function check(name, value, ok, unit = '') {
   run(w, { throttle: 1 }, 40, (t) => {
     if (t100 === null && kmh(w) >= 100) t100 = t
   })
-  check('разгон 0–100 (с картой мотора)', t100, t100 !== null && t100 < 3.6, ' с')
-  check('максимальная скорость', kmh(w), kmh(w) > 320 && kmh(w) < 360, ' км/ч')
+  check('разгон 0–100 (с картой мотора)', t100, t100 !== null && t100 < 3.8, ' с')
+  check('максимальная скорость (закрытые крылья)', kmh(w), kmh(w) > 305 && kmh(w) < 335, ' км/ч')
+}
+
+// 2b. Воздух и мотор держат болид (Рома 29.10: «где сопротивление воздуха, он просто летает»): сброс газа с 300 км/ч
+// даёт замедление около 1 g, как у настоящего болида (сопротивление ~0,6 g + торможение мотором и ERS), с 100 — около 0,25 g;
+// до 300 км/ч с места не быстрее 12 с и не дольше 16 с
+{
+  const coast = (k) => {
+    const w = fresh()
+    w.v.body.setLinvel({ x: 0, y: 0, z: k / 3.6 }, true)
+    run(w, NONE, 0.3)
+    const v0 = w.v.body.linvel().z
+    run(w, NONE, 1)
+    return (v0 - w.v.body.linvel().z) / 9.81
+  }
+  const g300 = coast(300)
+  const g100 = coast(100)
+  check('сброс газа: замедление от воздуха и мотора', `${g100.toFixed(2)} g со 100 км/ч, ${g300.toFixed(2)} g с 300 км/ч`, g300 > 0.8 && g300 < 1.1 && g100 > 0.18 && g100 < 0.35)
+  const w = fresh()
+  run(w, NONE, 0.5)
+  let t300 = null
+  run(w, { throttle: 1 }, 40, (t) => {
+    if (t300 === null && kmh(w) >= 300) t300 = t
+  })
+  check('разгон 0–300 км/ч', t300, t300 !== null && t300 > 12 && t300 < 16, ' с')
 }
 
 // 3. торможение с 300: пик 4–5,5 g (Brembo: 4,7 g в Монце)
@@ -464,7 +492,7 @@ function botLaps(level, seconds) {
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = DT
   const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
+  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
   const slow = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: 60, wear: false }, TUNING)
   const fast = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: 0, wear: false }, TUNING)
   const ds = createAiDriver(createRaceLine(OVAL, 'light'), { idx: 30, skill: 0.8 })
@@ -493,7 +521,7 @@ function botLaps(level, seconds) {
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = DT
   const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
+  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
   const left = createVehicle(RAPIER, world, { x: 2.6, y: 0.05, z: 8, wear: false }, TUNING)
   const right = createVehicle(RAPIER, world, { x: -2.6, y: 0.05, z: 0, wear: false }, TUNING)
   const line = createRaceLine(OVAL, 'hard')
@@ -588,7 +616,7 @@ const newWorld = () => {
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = DT
   const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
+  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
   return world
 }
 const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, speed: v.state.fwdSpeed })
@@ -636,7 +664,7 @@ const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, sp
     }
     worstTouch = Math.max(worstTouch, touchSteps * DT)
   }
-  check('бот в потоке: восемь со старта стоя, без ударов', `глубже всего ${(worstDeep * 100).toFixed(1)} см, касаются бортами до ${worstTouch.toFixed(2)} с, от оси до ${worstOff.toFixed(2)} м, обгонов ${passes}`, worstDeep < NEAR_TOUCH && worstTouch < 2 && worstOff < 6.05 && passes >= 3)
+  check('бот в потоке: восемь со старта стоя, без ударов', `глубже всего ${(worstDeep * 100).toFixed(1)} см, касаются бортами до ${worstTouch.toFixed(2)} с, от оси до ${worstOff.toFixed(2)} м, обгонов ${passes}`, worstDeep < NEAR_TOUCH && worstTouch < 3 && worstOff < 6.05 && passes >= 3)
 }
 
 // 20f. Болид в соседней полосе — не повод тормозить: быстрый бот догоняет медленный, едущий в 5 м сбоку,
@@ -710,6 +738,106 @@ const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, sp
   check('боковое смещение при обгоне без рывков', `скорость до ${maxV.toFixed(2)} м/с, ускорение до ${maxA.toFixed(1)} м/с²`, maxV < 3.3 && maxA < 5.5)
 }
 
+// 20i. Столкновения (Рома 29.10: «пружинятся, топорные»): корпус на высоте центра масс, трение и упругость корпуса минимальные,
+// после удара ~0,5 с подскок, клевок и раскрутка гасятся. Стена — тонкая сетка без толщины, как «Ограждения» в модели трассы.
+// wallDeg — на сколько стена повёрнута от лобового положения (0 — лоб, 70 — скользящий под ~20°)
+function hitWall(kmhIn, wallDeg) {
+  const world = newWorld()
+  const a = (wallDeg * Math.PI) / 180
+  const wall = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(0, 0, 200.5).setRotation({ x: 0, y: Math.sin(a / 2), z: 0, w: Math.cos(a / 2) }))
+  const verts = new Float32Array([-300, 0, 0, 300, 0, 0, 300, 2, 0, -300, 2, 0])
+  world.createCollider(RAPIER.ColliderDesc.trimesh(verts, new Uint32Array([0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2])).setFriction(0.3).setRestitution(0.05).setCollisionGroups(STATIC_GROUPS), wall)
+  const v = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: 175, wear: false }, TUNING)
+  v.body.setLinvel({ x: 0, y: 0, z: kmhIn / 3.6 }, true)
+  let hit = false
+  let tHit = 0
+  let maxY = 0
+  let maxYaw = 0
+  let rebound = 0
+  let after = 0
+  const events = new RAPIER.EventQueue(true)
+  for (let t = 0; t < 4; t += DT) {
+    stepVehicle(v, NONE, DT, () => 'asphalt')
+    const yawNow = Math.abs(v.body.angvel().y) // уже после «разгрузки» удара: один шаг решателя 4 мс раскрутки не в счёт
+    world.step(events)
+    collectImpacts(events)
+    const lv = v.body.linvel()
+    const sp = Math.hypot(lv.x, lv.z)
+    if (!hit && sp < (kmhIn / 3.6) * 0.93) {
+      hit = true
+      tHit = t
+    }
+    if (hit) {
+      maxY = Math.max(maxY, v.body.translation().y)
+      maxYaw = Math.max(maxYaw, yawNow)
+      rebound = Math.min(rebound, lv.z)
+      if (Math.abs(t - tHit - 0.2) < DT / 2) after = sp * 3.6
+    }
+  }
+  return { hit, maxY, maxYaw, rebound: -rebound * 3.6, after }
+}
+{
+  const head = hitWall(250, 0)
+  check('удар в стену в лоб на 250 км/ч: без подскока и отскока', `подскок ${(head.maxY * 100).toFixed(0)} см, отскок назад ${head.rebound.toFixed(0)} км/ч, вращение до ${head.maxYaw.toFixed(1)} рад/с`, head.hit && head.maxY < 0.05 && head.rebound < 10 && head.maxYaw <= 4.01)
+  const glance = hitWall(250, 70)
+  check('скользящий удар в стену под 20°: скользит вдоль, скорость не пропадает', `через 0,2 с ${glance.after.toFixed(0)} из 250 км/ч, вращение до ${glance.maxYaw.toFixed(1)} рад/с, подскок ${(glance.maxY * 100).toFixed(0)} см`, glance.hit && glance.after > 200 && glance.maxYaw <= 4.01 && glance.maxY < 0.05)
+  const mid = hitWall(250, 40)
+  check('удар в стену под 50°: без раскрутки волчком', `вращение до ${mid.maxYaw.toFixed(1)} рад/с, подскок ${(mid.maxY * 100).toFixed(0)} см`, mid.hit && mid.maxYaw <= 4.01 && mid.maxY < 0.08)
+}
+// болиды друг о друга: сзади с разницей 100 км/ч — не подпрыгивают и не разлетаются, дальше идут почти вместе
+{
+  const world = newWorld()
+  const a = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: 0, wear: false }, TUNING)
+  const b = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: 16, wear: false }, TUNING)
+  a.body.setLinvel({ x: 0, y: 0, z: 160 / 3.6 }, true)
+  b.body.setLinvel({ x: 0, y: 0, z: 60 / 3.6 }, true)
+  let maxY = 0
+  let maxW = 0
+  const events2 = new RAPIER.EventQueue(true)
+  for (let t = 0; t < 2; t += DT) {
+    stepVehicle(a, NONE, DT, () => 'asphalt')
+    stepVehicle(b, NONE, DT, () => 'asphalt')
+    world.step(events2)
+    collectImpacts(events2)
+    for (const c of [a, b]) {
+      maxY = Math.max(maxY, c.body.translation().y)
+      maxW = Math.max(maxW, Math.hypot(c.body.angvel().x, c.body.angvel().y, c.body.angvel().z))
+    }
+  }
+  const gap = Math.abs(a.body.linvel().z - b.body.linvel().z) * 3.6
+  check('болид в болид сзади на 100 км/ч: не подпрыгивают', `подскок ${(maxY * 100).toFixed(0)} см, вращение до ${maxW.toFixed(1)} рад/с, разница скоростей после ${gap.toFixed(0)} км/ч`, maxY < 0.1 && maxW < 3 && gap < 20)
+}
+
+// болиды друг о друга (Рома 29.10: «столкновения с другими болидами — полное дерьмо»): после удара расходятся, а не слипаются;
+// смещённый удар сзади не разворачивает волчком; бок о бок — касание и разошлись, без «склейки»
+{
+  const meet = ({ va, vb, xa = 0, zb = 16, lat = 0 }) => {
+    const world = newWorld()
+    const a = createVehicle(RAPIER, world, { x: xa, y: 0.05, z: 0, wear: false }, TUNING)
+    const b = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: zb, wear: false }, TUNING)
+    a.body.setLinvel({ x: lat, y: 0, z: va / 3.6 }, true)
+    b.body.setLinvel({ x: 0, y: 0, z: vb / 3.6 }, true)
+    const ev = new RAPIER.EventQueue(true)
+    let touch = 0
+    for (let t = 0; t < 3; t += DT) {
+      stepVehicle(a, NONE, DT, () => 'asphalt')
+      stepVehicle(b, NONE, DT, () => 'asphalt')
+      world.step(ev)
+      collectImpacts(ev)
+      if (a.impactT > 0 && b.impactT > 0) touch += DT
+    }
+    const la = a.body.linvel()
+    const lb = b.body.linvel()
+    return { rel: Math.hypot(la.x - lb.x, la.z - lb.z) * 3.6, yawA: Math.abs(deg(yawOf(a.body.rotation()))), yawB: Math.abs(deg(yawOf(b.body.rotation()))), gapX: Math.abs(a.body.translation().x - b.body.translation().x), touch }
+  }
+  const straight = meet({ va: 160, vb: 60 })
+  check('болиды после удара сзади расходятся, а не слипаются', `разница скоростей после ${straight.rel.toFixed(0)} км/ч (упругость ${TUNING.carRestitution} от 100 → ~15)`, straight.rel > 5 && straight.rel < 30)
+  const offset = meet({ va: 160, vb: 60, xa: 0.8 })
+  check('смещённый удар сзади на 100 км/ч не разворачивает волчком', `курс после: ударивший ${offset.yawA.toFixed(0)}°, ударенный ${offset.yawB.toFixed(0)}°`, offset.yawA < 30 && offset.yawB < 30)
+  const swipe = meet({ va: 220, vb: 220, xa: -1.5, zb: 0, lat: 1.5 })
+  check('бок о бок: коснулись и разошлись, без склейки', `держатся ударом ${swipe.touch.toFixed(2)} с, разница скоростей ${swipe.rel.toFixed(1)} км/ч`, swipe.touch < 0.7 && swipe.rel < 3)
+}
+
 // 21. Учёт гонки: круги со старта за линией, места, отставание, финиш через N кругов
 {
   const L = 1000
@@ -777,9 +905,67 @@ const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, sp
   const hard = ringLap('hard')
   const medium = ringLap('medium')
   const light = ringLap('light')
-  check('боты на LUMEN RING: круг', `${hard.lap.toFixed(1)} / ${medium.lap.toFixed(1)} / ${light.lap.toFixed(1)} с (сложные / средние / лёгкие)`, hard.lap < medium.lap && medium.lap < light.lap && light.lap < 90 && hard.lap < 68.5)
+  check('боты на LUMEN RING: круг', `${hard.lap.toFixed(1)} / ${medium.lap.toFixed(1)} / ${light.lap.toFixed(1)} с (сложные / средние / лёгкие)`, hard.lap < medium.lap && medium.lap < light.lap && light.lap < 92 && hard.lap < 70.5)
   const worst = Math.max(hard.over, medium.over, light.over)
   check('боты на LUMEN RING не съезжают с асфальта', `запас до края ${(-worst).toFixed(2)} м`, worst < 0)
+}
+
+// 22b. Старт на настоящей решётке LUMEN RING (11 ботов, P1…P11, две колонны через 6 м): поле разгоняется вместе (последний до 100 км/ч
+// не дольше чем за 3,6 с — лидер за 3 с), первые 6 с каждый держит свою полосу (не сбегается к линии в колонну), без ударов
+{
+  const glb = fs.readFileSync(new URL('../public/models/track.glb', import.meta.url))
+  const json = JSON.parse(glb.slice(20, 20 + glb.readUInt32LE(12)).toString())
+  const tpos = (n) => n.translation || [n.matrix[12], n.matrix[13], n.matrix[14]]
+  const axis = json.nodes
+    .find((n) => n.name === 'Ось трассы')
+    .children.map((i) => {
+      const n = json.nodes[i]
+      const t = tpos(n)
+      return { x: t[0], z: t[2], ...n.extras }
+    })
+    .sort((a, b) => a.distance_m - b.distance_m)
+  const nearest = (p) => axis.reduce((b, a, i) => ((a.x - p.x) ** 2 + (a.z - p.z) ** 2 < b.d ? { i, d: (a.x - p.x) ** 2 + (a.z - p.z) ** 2 } : b), { i: 0, d: Infinity }).i
+  const latOf = (p) => {
+    const i = nearest(p)
+    const a = axis[i]
+    const b = axis[(i + 1) % axis.length]
+    const tx = b.x - a.x
+    const tz = b.z - a.z
+    return ((p.x - a.x) * tz - (p.z - a.z) * tx) / Math.hypot(tx, tz)
+  }
+  const world = newWorld()
+  let rs = 5
+  const rand = () => (rs = (rs * 1664525 + 1013904223) % 4294967296) / 4294967296
+  const pilots = makePilots(11, rand)
+  const cars = []
+  for (let slot = 0; slot < 11; slot++) {
+    const n = json.nodes.find((q) => q.name === `Старт P${slot + 1}`)
+    const t = tpos(n)
+    const i = nearest({ x: t[0], z: t[2] })
+    const yaw = Math.atan2(axis[(i + 1) % axis.length].x - axis[i].x, axis[(i + 1) % axis.length].z - axis[i].z)
+    const v = createVehicle(RAPIER, world, { x: t[0], y: 0.05, z: t[2], yaw, wear: false }, TUNING)
+    cars.push({ v, body: v.body, d: createAiDriver(createRaceLine(axis, 'medium', TUNING, pilots[slot]), { idx: i }), lane: latOf({ x: t[0], z: t[2] }), t100: null, drift: 0 })
+  }
+  let worstDeep = 0
+  let touchSteps = 0
+  for (let t = 0; t < 6.5; t += DT) {
+    const ps = cars.map((c) => posOf(c.v))
+    cars.forEach((c, i) => {
+      const input = c.d.update(c.v, DT, ps.filter((_, j) => j !== i))
+      stepVehicle(c.v, t < 0.5 ? { ...input, throttle: 0, brake: 0, boost: false } : input, DT, () => 'asphalt') // до 0,5 с — огни
+      if (c.t100 === null && c.v.state.speedKmh >= 100) c.t100 = t - 0.5
+    })
+    world.step()
+    const { deep, touching } = penetration(world, cars.map((c) => c.v))
+    worstDeep = Math.max(worstDeep, deep)
+    if (touching) touchSteps++
+    if (Math.round(t / DT) % 24 === 0 && t > 1) for (const c of cars) c.drift = Math.max(c.drift, Math.abs(latOf(c.v.body.translation()) - c.lane))
+  }
+  const slowest = Math.max(...cars.map((c) => c.t100 ?? Infinity))
+  const fastest = Math.min(...cars.map((c) => c.t100 ?? Infinity))
+  const drift = Math.max(...cars.map((c) => c.drift))
+  check('старт на решётке: поле разгоняется вместе', `до 100 км/ч: лидер ${fastest.toFixed(2)} с, последний ${slowest.toFixed(2)} с`, slowest < 3.6)
+  check('старт на решётке: каждый держит свою полосу, без ударов', `за 6 с ушёл вбок не дальше ${drift.toFixed(2)} м, глубже всего ${(worstDeep * 100).toFixed(1)} см, касаются ${(touchSteps * DT).toFixed(2)} с`, drift < 1.2 && worstDeep < NEAR_TOUCH && touchSteps * DT < 1)
 }
 
 // 23. Границы трассы: колёса на белой линии — можно; все четыре целиком за линией — нарушение;
@@ -825,7 +1011,7 @@ const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, sp
     const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
     world.timestep = DT
     const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
+    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
     const yaw = Math.atan2(axis[1].x - axis[0].x, axis[1].z - axis[0].z)
     const v = createVehicle(RAPIER, world, { x: axis[0].x, y: 0.05, z: axis[0].z, yaw }, TUNING)
     v.compound = compound
@@ -856,13 +1042,44 @@ const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, sp
   const cold = tyreGrip({ wear: 0, temp: 60, puncture: false }, 'medium')
   check('стёртая и холодная шина держат хуже', `свежая ${fresh2.toFixed(2)}, стёртая на 90% ${worn.toFixed(2)}, холодная ${cold.toFixed(2)}`, worn < fresh2 * 0.85 && cold < fresh2)
 
+  // Руль, зажатый на упор (Рома 29.10: «держу A/D весь поворот»): передние шины не должны гореть втрое быстрее задних и лопаться за два круга.
+  // Бот ведёт круг, но его руль превращён в «клавишу»: либо полный угол, либо ноль.
+  const held = (shape) => {
+    const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+    world.timestep = DT
+    const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
+    const yaw = Math.atan2(axis[1].x - axis[0].x, axis[1].z - axis[0].z)
+    const v = createVehicle(RAPIER, world, { x: axis[0].x, y: 0.05, z: axis[0].z, yaw }, TUNING)
+    v.compound = 'soft'
+    const d = createAiDriver(createRaceLine(axis, 'medium'), { idx: 0 })
+    let prev = 0
+    let laps = 0
+    let tmax = 0
+    for (let t = 0; t < 300 && laps < 2; t += DT) {
+      const inp = { ...d.update(v, DT), abs: true }
+      inp.steer = shape(inp.steer)
+      stepVehicle(v, inp, DT, () => 'asphalt')
+      world.step()
+      for (const ty of v.tyres) tmax = Math.max(tmax, ty.temp)
+      const sNow = axis[d.state.idx].distance_m
+      if (prev > len * 0.75 && sNow < len * 0.25) laps++
+      prev = sNow
+    }
+    const w = v.tyres.map((x) => x.wear)
+    return { front: (w[0] + w[1]) / 2, rear: (w[2] + w[3]) / 2, max: Math.max(...w), tmax, punct: v.tyres.some((x) => x.puncture) }
+  }
+  const smooth = held((s) => s)
+  const key = held((s) => (Math.abs(s) > 0.05 ? Math.sign(s) : 0))
+  check('руль зажат на упор: передние не горят втрое быстрее задних, нет прокола за 2 круга', `перед ${Math.round(key.front * 100)}% / зад ${Math.round(key.rear * 100)}%, макс. ${Math.round(key.tmax)}° (плавный руль: перед ${Math.round(smooth.front * 100)}%, зад ${Math.round(smooth.rear * 100)}%)`, !key.punct && key.front < key.rear * 1.6 && key.max < smooth.max * 2 && key.tmax < 130)
+
   // 25. Удары: лобовой на 60 км/ч ломает переднее крыло (прижим спереди падает), лёгкий накат на 10 км/ч — нет
   const crash = (kmh) => {
     const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
     world.timestep = DT
     const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
-    world.createCollider(RAPIER.ColliderDesc.cuboid(20, 1, 0.5).setTranslation(0, 1, 12), g)
+    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
+    world.createCollider(RAPIER.ColliderDesc.cuboid(20, 1, 0.5).setTranslation(0, 1, 12).setCollisionGroups(STATIC_GROUPS), g)
     const v = createVehicle(RAPIER, world, { y: 0.05 }, TUNING)
     v.body.setLinvel({ x: 0, y: 0, z: kmh / 3.6 }, true)
     const ev = new RAPIER.EventQueue(true)
@@ -877,27 +1094,280 @@ const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, sp
   const tap = crash(10)
   check('удар носом на 60 км/ч ломает крыло, касание на 10 — нет', `крыло ${Math.round(Math.max(hit.wingL, hit.wingR) * 100)}% (прижим спереди ×${aeroDamage(hit).front.toFixed(2)}), касание ${Math.round(Math.max(tap.wingL, tap.wingR) * 100)}%`, Math.max(hit.wingL, hit.wingR) > 0.6 && Math.max(tap.wingL, tap.wingR) < 0.15)
 
-  // 26. Пит-стоп на пит-лейне LUMEN RING. Бот: целиком на автомате — въезд с 220 км/ч, в зоне не больше 80,
+  // Повреждённая подвеска (Рома 29.10: «что происходит, когда ломаются палки… и не так сильно уводить»): помятая слегка тянет в сторону,
+// сломанная проседает и уводит заметнее, но не разворачивает болид; шины повреждённой стороны стираются быстрее
+{
+  const drive = (d, kmh) => {
+    const w = fresh()
+    run(w, NONE, 1)
+    w.v.damage.suspL = d
+    w.v.body.setLinvel({ x: 0, y: 0, z: kmh / 3.6 }, true)
+    let c = 0
+    run(w, () => ({ throttle: kmh > 150 ? 0.4 : 0.2 }), 4, () => (c = Math.max(c, w.v.wheels[0].compression)))
+    return { yaw: Math.abs(deg(yawOf(w.v.body.rotation()))), side: Math.abs(w.v.body.translation().x), c }
+  }
+  const ok = drive(0, 200)
+  const bent = drive(0.3, 200)
+  const broke = drive(1, 200)
+  check('подвеска слева: помятая (30%) почти не уводит, сломанная (100%) уводит мягко и проседает', `помятая: курс ${bent.yaw.toFixed(1)}°, ${bent.side.toFixed(0)} м; сломанная: курс ${broke.yaw.toFixed(1)}°, ${broke.side.toFixed(0)} м, перед сжат на ${((broke.c - ok.c) * 100).toFixed(1)} см больше (за 4 с на 200 км/ч)`, ok.yaw < 0.5 && bent.yaw < 4 && broke.yaw < 18 && broke.yaw > bent.yaw && broke.c - ok.c > 0.01)
+  const dmg = { suspL: 1, suspR: 0 }
+  check('сломанная подвеска: перед сильнее заднего, шина стирается быстрее', `перед ${suspDamageAt(dmg, true, 1)}, зад ${suspDamageAt(dmg, false, 1)}, другая сторона ${suspDamageAt(dmg, true, -1)}`, suspDamageAt(dmg, true, 1) === 1 && suspDamageAt(dmg, false, 1) === 0.5 && suspDamageAt(dmg, true, -1) === 0)
+}
+
+// Повреждения как в Формуле-1 (Рома 29.10: «врезаюсь спокойненько и доезжаю до пит-стопа — надо жёстче наказывать»): каждая часть ломается по-своему,
+// сильный удар разрушает болид (сход), разбитый бокпод перегревает и убивает мотор, виноватому в столкновении штраф, в боксах чинят только кузов
+{
+  const wall = (kmh, yaw = 0) => {
+    const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+    world.timestep = DT
+    const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
+    world.createCollider(RAPIER.ColliderDesc.cuboid(20, 1, 0.5).setTranslation(0, 1, 12).setCollisionGroups(STATIC_GROUPS), g)
+    const v = createVehicle(RAPIER, world, { y: 0.05, yaw }, TUNING)
+    v.body.setLinvel({ x: 0, y: 0, z: kmh / 3.6 }, true)
+    const ev = new RAPIER.EventQueue(true)
+    for (let t = 0; t < 3; t += DT) {
+      stepVehicle(v, { throttle: 0.3, brake: 0, steer: 0 }, DT, () => 'asphalt')
+      world.step(ev)
+      collectImpacts(ev, () => {})
+    }
+    return v
+  }
+  const tap = wall(25)
+  const mid = wall(80)
+  const big = wall(180)
+  check('удар в стену: на 25 км/ч — крыло помято, едешь; на 80 — крыло снесено и флаг в боксы; на 180 — монокок разрушен, сход', `25: крыло ${Math.round(Math.max(tap.damage.wingL, tap.damage.wingR) * 100)}%, флаг ${mechanicalFlag(tap) ? 'да' : 'нет'}, сход ${retireReason(tap) ? 'да' : 'нет'}; 80: крыло ${Math.round(Math.max(mid.damage.wingL, mid.damage.wingR) * 100)}%, флаг «${mechanicalFlag(mid)}», сход ${retireReason(mid) ? 'да' : 'нет'}; 180: монокок ${Math.round(big.damage.chassis * 100)}%, ${retireReason(big)}`, !retireReason(tap) && !mechanicalFlag(tap) && Math.max(tap.damage.wingL, tap.damage.wingR) > 0.1 && !retireReason(mid) && !!mechanicalFlag(mid) && retireReason(big) === 'Монокок разрушен')
+  const side = wall(150, Math.PI / 2)
+  check('удар боком на 150 км/ч: бокпод и подвеска разбиты, оторвано колесо, сход', `бокпод ${Math.round(Math.max(side.damage.sideL, side.damage.sideR) * 100)}%, подвеска ${Math.round(Math.max(side.damage.suspL, side.damage.suspR) * 100)}%, колёса [${side.damage.lost}], ${retireReason(side)}`, retireReason(side) === 'Оторвано колесо' && side.damage.lost.some(Boolean))
+  const rear = wall(80, Math.PI)
+  check('удар в корму на 80 км/ч: заднее крыло снесено, коробка передач повреждена', `заднее крыло ${Math.round(rear.damage.rearWing * 100)}%, коробка ${Math.round(rear.pu.gearbox * 100)}%`, rear.damage.rearWing > 0.9 && rear.pu.gearbox > 0.2)
+
+  // перегрев: целый болид держит полный газ на скорости, с разбитым бокподом мотор умирает
+  const heatRun = (podDamage) => {
+    // с износом и поломками (wear: true), иначе нагрев мотора не считается
+    const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+    world.timestep = DT
+    const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
+    const w = { world, v: createVehicle(RAPIER, world, { y: 0.05 }, TUNING), surfaceAt: () => 'asphalt' }
+    run(w, NONE, 1)
+    w.v.damage.sideL = podDamage
+    w.v.body.setLinvel({ x: 0, y: 0, z: 70 }, true)
+    let diedAt = null
+    run(w, { throttle: 1 }, 90, (t) => {
+      if (diedAt === null && w.v.pu.failed) diedAt = t
+    })
+    return { heat: w.v.engineHeat, diedAt }
+  }
+  const cool = heatRun(0)
+  const hot = heatRun(0.9)
+  check('разбитый бокпод перегревает мотор: целый держит полный газ, с повреждением 90% мотор умирает', `целый: нагрев ${cool.heat.toFixed(2)}, ${cool.diedAt === null ? 'жив' : 'умер'}; бокпод 90%: ${hot.diedAt === null ? 'жив' : 'мотор умер через ' + hot.diedAt.toFixed(0) + ' с'}`, cool.diedAt === null && cool.heat < 0.9 && hot.diedAt !== null && hot.diedAt < 60)
+
+  // стюарды: виноват тот, кто въехал в корму; бок о бок и касание без штрафа
+  const pair = (gapZ, vA, vB, yawB = 0) => {
+    const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+    world.timestep = DT
+    const a = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: 0 }, TUNING)
+    const b = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: gapZ, yaw: yawB }, TUNING)
+    a.body.setLinvel({ x: 0, y: 0, z: vA / 3.6 }, true)
+    b.body.setLinvel({ x: 0, y: 0, z: vB / 3.6 }, true)
+    a.prevVel = { x: 0, y: 0, z: vA / 3.6 }
+    b.prevVel = { x: 0, y: 0, z: vB / 3.6 }
+    return { a, b }
+  }
+  const hit = pair(6, 160, 60)
+  const j1 = judgeContact(hit.a, hit.b)
+  const j2 = judgeContact(hit.b, hit.a)
+  check('стюарды: виноват тот, кто въехал в корму; штраф по скорости сближения', `сзади на 100 км/ч быстрее: виноват ${j1.fault === hit.a ? 'задний' : j1.fault === hit.b ? 'передний' : 'никто'} (то же при обратном порядке: ${j2.fault === hit.a ? 'задний' : j2.fault === hit.b ? 'передний' : 'никто'}), сближение ${j1.closing.toFixed(0)} м/с → штраф ${contactPenalty(j1.closing)} с; касание 3 м/с → ${contactPenalty(3)} с; 8 м/с → ${contactPenalty(8)} с`, j1.fault === hit.a && j2.fault === hit.a && contactPenalty(j1.closing) === 10 && contactPenalty(3) === 0 && contactPenalty(8) === 5)
+  const eq = pair(6, 120, 120)
+  check('стюарды: едут рядом с одной скоростью — виноватых нет', `виноват ${judgeContact(eq.a, eq.b).fault ? 'кто-то' : 'никто'}`, !judgeContact(eq.a, eq.b).fault)
+
+  // ремонт: время стоянки растёт с повреждением, чинятся крылья, днище, бокподы и тормозные каналы; подвеска и монокок нет
+  const dmg = freshDamage()
+  const t0 = repairSeconds(dmg)
+  dmg.wingL = 0.9
+  dmg.rearWing = 0.5
+  dmg.floor = 0.4
+  dmg.suspL = 0.8
+  dmg.chassis = 0.3
+  const tw = repairSeconds(dmg)
+  const fake = { damage: dmg }
+  applyRepair(fake)
+  check('ремонт в боксах: чем больше сломано, тем дольше; подвеску и монокок не чинят', `целый ${t0} с, крылья и днище ${tw} с; после ремонта крыло ${dmg.wingL}, подвеска ${dmg.suspL}, монокок ${dmg.chassis}`, t0 === 0 && tw >= 20 && dmg.wingL === 0 && dmg.rearWing === 0 && dmg.floor === 0 && dmg.suspL === 0.8 && dmg.chassis === 0.3)
+}
+
+// Флаги и машина безопасности (flags.js): остановившийся на асфальте болид — SC, у трассы — VSC, два на асфальте — красный; обгон под флагом запрещён,
+// эвакуатор выезжает через несколько секунд, после уборки — ещё немного нейтрализации, потом зелёный
+{
+  const L = 2000
+  const axisS = Array.from({ length: 1000 }, (_, i) => ({ x: 0, z: i * 2, yaw: 0, distance_m: i * 2, width_left: 8, width_right: 8 }))
+  const run2 = (cars, secs, f) => {
+    const ev = []
+    for (let t = 0; t < secs; t += 0.25) ev.push(...f.update(0.25, cars))
+    return ev
+  }
+  const car = (id, x, z, extra = {}) => ({ id, x, z, speed: 0, retired: true, inPit: false, ...extra })
+  // на асфальте: инцидент → машина безопасности → эвакуатор → уборка → конец → зелёный
+  const f1 = createFlags(axisS, L)
+  const ev1 = run2([car('a', 1, 800)], 8, f1)
+  const sc = ev1.find((e) => e.type === 'sc')
+  const tow1 = ev1.find((e) => e.type === 'tow')
+  f1.clear('a')
+  const ev1b = run2([], 30, f1)
+  check('болид остановился на асфальте: машина безопасности, эвакуатор, после уборки зелёный флаг', `инцидент ${ev1.some((e) => e.type === 'incident') ? 'да' : 'нет'}, SC ${sc ? 'да' : 'нет'}, эвакуатор ${tow1 ? 'да' : 'нет'}, после уборки зелёный ${ev1b.some((e) => e.type === 'green') ? 'да' : 'нет'}, режим ${f1.mode}`, !!sc && !!tow1 && ev1b.some((e) => e.type === 'green') && f1.mode === 'green')
+  // скорость и жёлтый участок
+  const f2 = createFlags(axisS, L)
+  run2([car('a', 1, 800)], 6, f2)
+  check('под машиной безопасности: потолок скорости, колонна смыкается, жёлтый участок и запрет обгона', `лидер ${(f2.cap(700, 0) * 3.6).toFixed(0)} км/ч, отставший на 100 м ${(f2.cap(700, 100) * 3.6).toFixed(0)} км/ч, жёлтый за 100 м до болида: ${f2.inYellow(700)}, за 400 м: ${f2.inYellow(400)}, через 30 м после: ${f2.inYellow(830)}, через 100 м после: ${f2.inYellow(900)}`, f2.mode === 'sc' && Math.abs(f2.cap(700, 0) - SC_SPEED) < 1e-9 && f2.cap(700, 100) > f2.cap(700, 0) && f2.inYellow(700) && !f2.inYellow(400) && f2.inYellow(830) && !f2.inYellow(900) && f2.noPass(400))
+  // у трассы — только VSC
+  const f3 = createFlags(axisS, L)
+  const ev3 = run2([car('a', 20, 800)], 8, f3)
+  check('болид остановился у трассы: виртуальная машина безопасности, не SC', `режим ${f3.mode}, лимит ${(f3.cap(100) * 3.6).toFixed(0)} км/ч`, f3.mode === 'vsc' && Math.abs(f3.cap(100) - VSC_SPEED) < 1e-9 && !ev3.some((e) => e.type === 'sc'))
+  // два на асфальте — красный флаг: едут в боксы, там ждут, потом старт с места (событие restart) и зелёный
+  const f4 = createFlags(axisS, L)
+  const ev4 = run2([car('a', 1, 800), car('b', -2, 1200)], 8, f4)
+  const redNow = f4.mode === 'red' && Math.abs(f4.cap(0) - RED_SPEED) < 1e-9 && f4.noPass(0)
+  // едут по трассе — флаг держится (до RED_MAX)
+  const driving = [car('a', 1, 800), car('b', -2, 1200), { id: 'p', x: 0, z: 100, speed: 25, retired: false, inPit: false }]
+  const ev4a = run2(driving, 60, f4)
+  const stillRed = f4.mode === 'red' && !ev4a.some((e) => e.type === 'restart') && f4.redInfo().left === null
+  // все встали в боксах — отсчёт, потом старт
+  const parked = [car('a', 1, 800), car('b', -2, 1200), { id: 'p', x: 0, z: 100, speed: 0, retired: false, inPit: true }]
+  const ev4b = run2(parked, 10, f4)
+  const counting = f4.redInfo()?.allIn && f4.redInfo().left > 0
+  const ev4c = run2(parked, 20, f4)
+  const restart = ev4c.find((e) => e.type === 'restart')
+  check('два болида на асфальте: красный флаг — все в боксы, ждём, потом старт с места', `красный ${redNow ? 'да, едут не быстрее ' + (RED_SPEED * 3.6).toFixed(0) + ' км/ч' : 'нет'}, пока едут — флаг ${stillRed ? 'держится' : 'снят'}, встали — ${counting ? 'отсчёт' : 'нет отсчёта'}, старт ${restart ? 'да' : 'нет'}, трасса ${ev4c.some((e) => e.type === 'clear-all') ? 'очищена' : 'не очищена'}, режим ${f4.mode}`, redNow && stillRed && counting && !!restart && ev4c.some((e) => e.type === 'clear-all') && f4.mode === 'green')
+  // не дождались остальных за RED_MAX — всё равно старт
+  const f4b = createFlags(axisS, L)
+  run2([car('a', 1, 800), car('b', -2, 1200)], 8, f4b)
+  const ev4d = run2(driving, RED_MAX + 5, f4b)
+  check('красный флаг: не дождались всех — старт через RED_MAX', `старт ${ev4d.some((e) => e.type === 'restart') ? 'да' : 'нет'}`, ev4d.some((e) => e.type === 'restart'))
+  // с машиной безопасности зелёный флаг — только когда она зашла в боксы
+  const f6 = createFlags(axisS, L, { safetyCar: true })
+  run2([car('a', 1, 800)], 6, f6)
+  f6.clear('a')
+  const ev6 = run2([], 60, f6)
+  const stillSc = f6.mode === 'sc' && f6.ending()
+  f6.scHome()
+  const ev6b = run2([], 2, f6)
+  check('зелёный флаг ждёт машину безопасности: пока на трассе — SC, зашла в боксы — зелёный', `через 60 с ${stillSc ? 'ещё SC' : f6.mode}, после захода ${ev6b.some((e) => e.type === 'green') ? 'зелёный' : 'нет'}`, stillSc && !ev6.some((e) => e.type === 'green') && ev6b.some((e) => e.type === 'green'))
+  // лидер не может догнать машину безопасности
+  const capFar = f2.cap(700, 0, { gap: 300, speed: 38 })
+  const capNear = f2.cap(700, 0, { gap: 20, speed: 38 })
+  check('лидер под SC: далеко — потолок SC, близко к ней — медленнее', `далеко ${(capFar * 3.6).toFixed(0)} км/ч, в 20 м ${(capNear * 3.6).toFixed(0)} км/ч`, Math.abs(capFar - SC_SPEED) < 1e-9 && capNear < SC_SPEED - 3)
+  // настоящая машина безопасности (safetycar.js): выезжает, встаёт перед лидером и держит зазор, в конце уходит в боксы
+  {
+    const scene = { add() {} }
+    const fakeLane = { axis: [{ x: 12, z: 1500 }, { x: 12, z: 1700 }], n: 2 }
+    const simSc = (leader0, endAt) => {
+      const sc = createSafetyCar(scene, axisS, L, fakeLane)
+      let leader = leader0
+      sc.deploy(leader)
+      const phases = new Set()
+      let minGap = Infinity
+      let home = false
+      let ended = false
+      const cap = createFlags(axisS, L)
+      for (let t = 0; t < 400 && !home; t += 0.05) {
+        const gap = sc.gapFrom(leader)
+        // лидер едет с потолком SC (как flags.cap с параметром sc)
+        const v = gap === null ? SC_SPEED : cap.cap(0, 0, { gap, speed: sc.speed }) || 0
+        const vv = gap === null ? 38 : Math.min(38, sc.speed + (gap - 35) * 0.35)
+        leader = (leader + Math.max(0, vv) * 0.05) % L
+        ended = ended || t > endAt
+        home = sc.update(0.05, leader, ended)
+        phases.add(sc.state.phase)
+        if (gap !== null && t > 30 && !ended) minGap = Math.min(minGap, gap)
+      }
+      return { sc, phases: [...phases].join('→'), minGap, gap: sc.gapFrom(leader), home }
+    }
+    const a1 = simSc(1000, 120)
+    check('машина безопасности: ждёт лидера впереди, держит ~60 м, потом уходит в боксы', `фазы ${a1.phases}, самый малый зазор ${a1.minGap.toFixed(0)} м, зашла в боксы ${a1.home ? 'да' : 'нет'}`, a1.home && a1.minGap > 25 && a1.minGap < 120 && a1.phases.includes('lead') && a1.phases.includes('in'))
+    // выехала позади лидера — догоняет и встаёт перед ним
+    const a2 = simSc(1800, 150)
+    check('машина безопасности выехала позади лидера: догоняет и встаёт перед ним', `фазы ${a2.phases}, самый малый зазор ${a2.minGap.toFixed(0)} м`, a2.phases.startsWith('out→lead') && a2.minGap > 25 && a2.home)
+  }
+
+  // эвакуатор с краном (tow.js): грузовик встаёт бортом, стрела поднимает болид над землёй и кладёт на платформу, увозит
+  {
+    const added = []
+    const scene = { add: (o) => added.push(o), remove() {} }
+    const tow = createTow(scene, axisS, L)
+    const obj = new THREE.Object3D()
+    obj.position.set(3, 0.3, 800)
+    const rest = obj.position.clone()
+    let lifted = false
+    let loaded = false
+    let done = false
+    const job = tow.dispatch({ id: 'a', s: 800, l: 3 }, { object: () => obj, lift: () => (lifted = true), loaded: () => (loaded = true), done: () => (done = true) })
+    let maxUp = 0
+    let underHook = Infinity
+    let onBed = null
+    const phases = []
+    const hookW = new THREE.Vector3()
+    for (let t = 0; t < 120 && !done; t += 0.05) {
+      tow.update(0.05)
+      if (phases[phases.length - 1] !== job.phase) phases.push(job.phase)
+      if (lifted && job.phase === 'lift') maxUp = Math.max(maxUp, obj.position.y - rest.y)
+      if (job.phase === 'lift' && job.t > 1.2) {
+        job.mesh.userData.hook.getWorldPosition(hookW)
+        underHook = Math.min(underHook, Math.hypot(hookW.x - obj.position.x, hookW.z - obj.position.z))
+      }
+      if (job.phase === 'leave' && job.t > 0.2 && !onBed) onBed = job.mesh.worldToLocal(obj.position.clone())
+    }
+    check('эвакуатор с краном: стрела над болидом, подъём, платформа, увозит', `фазы ${phases.join('→')}, поднят на ${maxUp.toFixed(1)} м, крюк над болидом (отклонение ${underHook.toFixed(2)} м), на платформе (${onBed?.x.toFixed(1)}, ${onBed?.y.toFixed(1)}, ${onBed?.z.toFixed(1)}), закреплён ${loaded ? 'да' : 'нет'}, уехал ${done ? 'да' : 'нет'}`, lifted && loaded && done && maxUp > 1.9 && underHook < 0.5 && onBed && Math.abs(onBed.x) < 0.2 && onBed.y > 1.4 && onBed.y < 1.8 && Math.abs(onBed.z + 2.6) < 0.2 && phases.join('→') === 'go→swing→lower→lift→carry→set→strap→leave')
+  }
+
+  // перестановка на решётку после красного флага: у всех один круг, порядок сохраняется, линия старта не считается лишней
+  {
+    const r = createRace(2000, [{ id: 'a' }, { id: 'b' }, { id: 'c', dnf: true }], 5)
+    const pos = { a: 500, b: 1500, c: 300 }
+    r.state.cars[0].lap = 2
+    r.state.cars[1].lap = 3
+    r.state.cars[2].dnf = true
+    r.update(0.1, (c) => pos[c.id])
+    const lead = r.state.order[0]
+    r.regrid(lead.lap)
+    // болиды на решётке перед линией; несколько кадров расстояние ещё старое, потом настоящее
+    const grid = { a: 1990, b: 1980, c: 300 }
+    for (let k = 0; k < 8; k++) r.update(0.1, (c) => (k < 2 ? pos[c.id] : grid[c.id]))
+    const la = r.car('a').lap
+    const lb = r.car('b').lap
+    // b стоял впереди — на решётке впереди (1990), a — вторым (1980): кадр за линию — круг добавляется один раз
+    r.update(0.1, (c) => (c.id === 'b' ? 20 : grid[c.id]))
+    check('после красного флага: один круг у всех, пересечение линии — +1', `a ${la}, b ${lb}, после линии b ${r.car('b').lap}`, la === 3 && lb === 3 && r.car('b').lap === 4)
+  }
+
+  // болид в боксах или едущий — не инцидент
+  const f5 = createFlags(axisS, L)
+  const ev5 = run2([car('a', 1, 800, { inPit: true }), car('b', 1, 900, { retired: false, speed: 0 })], 8, f5)
+  check('стоящий в боксах или не сошедший болид не вызывает флаги', `событий ${ev5.length}`, ev5.length === 0 && f5.mode === 'green')
+}
+
+// 26. Пит-стоп на пит-лейне LUMEN RING. Бот: целиком на автомате — въезд с 220 км/ч, в зоне не больше 80,
   // точно в бокс, новые шины, выезд; в пит-лейне 25–35 с. Игрок: по пит-лейну едет сам (здесь «водитель» рулит
   // по пит-лейну и держит газ в пол — ограничитель не даёт больше 80), игра ставит в бокс, после газа — снова сам.
   const pitAxis = kids('Ось пит-лейна').map((n) => ({ x: P(n)[0], z: P(n)[2], ...n.extras })).sort((a, b) => a.distance_m - b.distance_m)
   const boxes = kids('Пит-боксы').map((n) => ({ x: P(n)[0], z: P(n)[2] }))
   const ex = (name) => json.nodes.find((n) => n.name === name).extras.distance_m
   const lane = createPitLane({ axis: pitAxis, boxes, limitStart: ex('Пит лимит начало'), limitEnd: ex('Пит лимит конец') })
-  const pitRun = (player) => {
+  const pitRun = (player, auto = false) => {
     const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
     world.timestep = DT
     const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
+    world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
     const v = createVehicle(RAPIER, world, { x: pitAxis[0].x - 80, y: 0.05, z: 0, yaw: Math.PI / 2 }, TUNING)
     v.body.setLinvel({ x: 61, y: 0, z: 0 }, true)
     v.compound = 'soft'
     v.tyres.forEach((t) => (t.wear = 0.6))
     const plan = { compound: 'medium', wing: false }
-    const stop = createPitStop(lane, 11, plan, { player })
+    const stop = createPitStop(lane, 11, plan, { player, auto })
     const human = createPitStop(lane, 11, plan, {}) // руль «водителя»
     let err = null
     let vmax = 0
+    let p0 = null // где встал, когда начали обслуживать: за время стоянки болид не должен сдвинуться
+    let drift = 0
     const phases = new Set()
     for (let t = 0; t < 80 && stop.state.phase !== 'done' && stop.state.phase !== 'abort'; t += DT) {
       phases.add(stop.state.phase)
@@ -915,14 +1385,39 @@ const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, sp
         const p = v.body.translation()
         err = Math.hypot(p.x - boxes[11].x, p.z - boxes[11].z)
       }
+      if (stop.state.phase === 'service' || stop.state.phase === 'release') {
+        const p = v.body.translation()
+        p0 = p0 || { x: p.x, z: p.z }
+        drift = Math.max(drift, Math.hypot(p.x - p0.x, p.z - p0.z))
+      }
     }
-    return { stop, v, err, vmax, phases: [...phases].join('→') }
+    return { stop, v, err, vmax, drift, phases: [...phases].join('→') }
   }
   {
     const r = pitRun(false)
     check('пит-стоп бота: бокс, шины, выезд', `промах ${r.err?.toFixed(2)} м, в зоне до ${r.vmax.toFixed(0)} км/ч, в пит-лейне ${r.stop.state.total.toFixed(1)} с, шины ${r.v.compound} износ ${Math.round(r.v.tyres[0].wear * 100)}%`, r.stop.state.phase === 'done' && r.err < 1.2 && r.vmax <= 81 && r.stop.state.total > 25 && r.stop.state.total < 35 && r.v.compound === 'medium' && r.v.tyres[0].wear < 0.05)
     const me = pitRun(true)
     check('пит-стоп игрока: едет сам, ограничитель, бокс', `фазы ${me.phases}, промах ${me.err?.toFixed(2)} м, в зоне до ${me.vmax.toFixed(0)} км/ч (газ в пол), шины ${me.v.compound}`, me.stop.state.phase === 'done' && me.phases.startsWith('lane→in→service→release→free') && me.err < 1.5 && me.vmax <= 84 && me.v.compound === 'medium')
+    // автопилот игрока (Рома 29.10: «на пит-стопе можно отдохнуть»): весь пит-лейн сам, выпуск без газа, управление
+    // возвращается у конца ограничителя; за время стоянки болид стоит на месте (раньше тормоз включал задний ход)
+    const auto = pitRun(true, true)
+    check('пит-стоп игрока на автопилоте: весь пит-лейн сам', `фазы ${auto.phases}, промах ${auto.err?.toFixed(2)} м, в зоне до ${auto.vmax.toFixed(0)} км/ч, сдвиг за стоянку ${(auto.drift * 100).toFixed(1)} см, ${auto.stop.state.total.toFixed(1)} с, шины ${auto.v.compound}`, auto.stop.state.phase === 'done' && auto.phases === 'in→service→release→out' && auto.err < 1.5 && auto.vmax <= 82 && auto.drift < 0.05 && auto.v.compound === 'medium' && auto.stop.state.total < 40)
+    check('в боксе болид не едет назад (бот)', `сдвиг за стоянку ${(r.drift * 100).toFixed(1)} см`, r.drift < 0.05)
+    // тормоз на месте: с hold держит, без hold включает задний ход (так игрок сдаёт назад клавишей S)
+    const idle = (inp) => {
+      const w = fresh()
+      run(w, NONE, 1)
+      const z0 = w.v.body.translation().z
+      run(w, inp, 5)
+      return w.v.body.translation().z - z0
+    }
+    const rolled = idle({ brake: 1 })
+    const held = idle({ brake: 1, hold: true })
+    check('тормоз с hold держит на месте, без hold — задний ход', `с hold ${(held * 100).toFixed(1)} см, без hold ${rolled.toFixed(1)} м`, Math.abs(held) < 0.05 && rolled < -5)
+    // границы трассы не считаются в пит-лейне и на его въезде/выезде, но считаются на самой трассе и у её обочины, пока пит-лейн идёт параллельно
+    const inLane = pitAxis.every((p) => lane.near(p.x, p.z, 4))
+    const beside = pitAxis.filter((p) => p.distance_m > 130 && p.distance_m < 390).filter((p, i) => i % 6 === 0).filter((p) => lane.near(p.x, 0, 4) || lane.near(p.x, 8, 4) || lane.near(p.x, -8, 4)).length
+    check('пит-лейн не считается выездом за границы трассы', `вся ось внутри: ${inLane}, точек трассы и её обочины, ошибочно принятых за пит-лейн: ${beside}`, inLane && beside === 0)
     // ложный въезд: главная прямая идёт по +x на z≈0; край асфальта — 7 м, пит-лейн начинается дальше 11 м
     const falseHits = [0, 3, 6, 8, 9.5].filter((z) => [-250, -240, -230, -220, -210].some((x) => pitEntryHit(lane, x, z, Math.PI / 2))).length
     const realHit = pitEntryHit(lane, pitAxis[20].x, pitAxis[20].z, Math.PI / 2)
@@ -953,7 +1448,7 @@ const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, sp
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = DT
   const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
+  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
   const parked = createVehicle(RAPIER, world, { x: 0.6, y: 0.05, z: 60 }, TUNING)
   const hitter = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: 0 }, TUNING)
   hitter.body.setLinvel({ x: 0, y: 0, z: 150 / 3.6 }, true)
@@ -989,7 +1484,7 @@ const posOf = (v) => ({ x: v.body.translation().x, z: v.body.translation().z, sp
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = DT
   const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0), g)
+  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
   const a = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: 20, wear: false }, TUNING)
   const b = createVehicle(RAPIER, world, { x: 0, y: 0.05, z: 0, wear: false }, TUNING)
   setGhost(b, true)

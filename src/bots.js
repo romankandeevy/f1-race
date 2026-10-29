@@ -10,6 +10,7 @@ import { TUNING, SETUP_DEFAULT } from './tuning.js'
 import { createRaceLine, createAiDriver, makePilots } from './ai.js'
 import { freshTyres } from './wear.js'
 import { createPitStop, defaultPlan } from './pit.js'
+import { retireReason, mechanicalFlag } from './stewards.js'
 
 export const BOT_COUNT = 11 // с игроком 12 болидов (Рома 28.10)
 // трёхбуквенные коды, как в таблице F1; имена выдуманные
@@ -19,6 +20,7 @@ const STUCK_RESET = 3 // с: стоит на месте после старта 
 const LOST_RESET = 25 // м от линии — улетел, вернуть
 const PIT_DECIDE = [100, 25] // м до въезда в пит-лейн, где бот решает заехать
 const GHOST_TIME = 3 // с: после возврата на трассу бот проходит сквозь болиды (как в F1 25)
+const RECOVERY_TIME = 90 // с: запасной срок; обычно болид убирает эвакуатор (flags.js, tow.js), и bots.remove(id) срабатывает раньше
 
 // lane — пит-лейн (pit.js) или null
 export function createBots({ RAPIER, world, scene, track, car, lane }) {
@@ -74,7 +76,9 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
     const t = b.v.tyres
     const wear = (t[0].wear + t[1].wear + t[2].wear + t[3].wear) / 4
     if (t.some((x) => x.puncture)) return true
-    if (Math.max(b.v.damage.wingL, b.v.damage.wingR) > 0.4) return true
+    // чёрно-оранжевый флаг или заметно побитый болид: в боксы, как делает команда в F1
+    const dm = b.v.damage
+    if (mechanicalFlag(b.v) || Math.max(dm.wingL, dm.wingR, dm.rearWing, dm.floor, dm.sideL, dm.sideR) > 0.4) return true
     if (b.stops === 0 && (lap >= b.planLap || lap >= laps - 1)) return true
     return wear > 0.62 && lap < laps
   }
@@ -127,21 +131,31 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
         return { x: t.x, z: t.z, speed: b.v.state.fwdSpeed }
       })
       list.forEach((b, i) => {
+        if (b.gone) return
         // призрак снимается, только когда рядом никого: иначе болиды окажутся друг в друге
         if (b.ghost > 0 && (b.ghost -= dt) <= 0) {
           const me = pos[i]
-          const near = [...pos.filter((_, j) => j !== i), player].some((o) => Math.hypot(o.x - me.x, o.z - me.z) < 6)
+          const near = [...pos.filter((_, j) => j !== i && !list[j].gone), player].some((o) => Math.hypot(o.x - me.x, o.z - me.z) < 6)
           if (near) b.ghost = 0.3
           else setGhost(b.v, false)
         }
-        // отказ мотора — катится и встаёт, сошёл
-        if (b.v.pu.failed) {
+        // отказ мотора или разрушенный болид — катится и встаёт, сошёл; через RECOVERY_TIME с его убирает эвакуатор
+        const why = b.v.pu.failed ? 'Отказ силовой установки' : retireReason(b.v)
+        if (why) {
           b.input = b.d.input
           b.input.throttle = 0
-          b.input.brake = 0.3
+          b.input.brake = b.v.state.fwdSpeed > 1 ? 0.5 : 0.1
           if (!b.retired) {
             b.retired = true
-            race?.onRetire(b.id)
+            b.retiredT = 0
+            b.pit = null
+            race?.onRetire(b.id, why)
+          }
+          b.retiredT += dt
+          if (b.retiredT > RECOVERY_TIME) {
+            b.gone = true
+            b.car.group.visible = false
+            b.v.body.setEnabled(false)
           }
           return
         }
@@ -159,8 +173,12 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
           }
           return
         }
-        const others = pos.filter((_, j) => j !== i)
+        const others = pos.filter((_, j) => j !== i && !list[j].gone)
         others.push(player)
+        // флаги: потолок скорости и запрет обгона (race.limit — из main.js, там знают флаги и порядок)
+        const lim = race?.limit?.(b)
+        b.d.state.cap = lim ? lim.cap : Infinity
+        b.d.state.noPass = lim ? lim.noPass : false
         b.input = b.d.update(b.v, dt, others)
         if (hold) hold(b.input)
         const st = b.d.state
@@ -176,8 +194,9 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
         if (race && racing && entryS !== null) {
           const s = track.axis[st.idx].distance_m
           const toEntry = (entryS - s + L) % L
-          if (toEntry < PIT_DECIDE[0] && toEntry > PIT_DECIDE[1] && wantsPit(b, race.lapOf(b.id), race.laps)) {
-            b.pit = createPitStop(lane, b.box, defaultPlan(b.v, race.laps - race.lapOf(b.id)), { T: b.v.T })
+          if (toEntry < PIT_DECIDE[0] && toEntry > PIT_DECIDE[1] && (lim?.redPit || wantsPit(b, race.lapOf(b.id), race.laps))) {
+            // красный флаг: все в боксы, там стоят, пока флаг не снимут (race.hold)
+            b.pit = createPitStop(lane, b.box, defaultPlan(b.v, Math.max(1, race.laps - race.lapOf(b.id))), { T: b.v.T, damage: b.v.damage, hold: race.hold })
             b.mainIdx = st.idx
           }
         }
@@ -186,6 +205,7 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
 
     step(dt, surfaceAt) {
       for (const b of list) {
+        if (b.gone) continue
         b.car.snapshot(b.v.body)
         stepVehicle(b.v, b.input, dt, surfaceAt)
         b.v.events.length = 0 // события ботов игроку не показываем
@@ -193,11 +213,59 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
     },
 
     sync(alpha) {
-      for (const b of list) b.car.sync(alpha, b.v, b.input)
+      for (const b of list) {
+        if (b.gone) continue
+        b.car.setCompound(b.v.compound)
+        b.car.sync(alpha, b.v, b.input)
+      }
     },
 
     // расстояние по оси трассы: точки гоночной линии идут в том же порядке, что и ось;
     // в пит-лейне — по ближайшей точке оси (пит-лейн идёт вдоль главной прямой)
+    // эвакуатор поднял болид краном: тело отключено, водитель не думает, а рисует болид уже эвакуатор (tow.js)
+    lift(id) {
+      const b = list.find((x) => x.id === id)
+      if (!b || b.gone) return null
+      b.gone = true
+      b.v.body.setEnabled(false)
+      return b.car.group
+    },
+
+    // красный флаг кончился: болид на место решётки, пит-стоп и разгон забыты
+    regrid(id, p) {
+      const b = list.find((x) => x.id === id)
+      if (!b || b.gone) return
+      const v = b.v
+      v.body.setTranslation({ x: p.x, y: (p.y || 0) + 0.05, z: p.z }, true)
+      v.body.setRotation({ x: 0, y: Math.sin(p.yaw / 2), z: 0, w: Math.cos(p.yaw / 2) }, true)
+      v.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+      v.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+      v.steerIn = v.steerCmd = v.steerVel = v.delta = 0
+      b.pit = null
+      b.d.reset()
+      // расстояние по оси у водителя — по новой точке, иначе на кадр остаётся прежнее
+      let bi = 0
+      let bd = Infinity
+      track.axis.forEach((a, i) => {
+        const d = (a.x - p.x) ** 2 + (a.z - p.z) ** 2
+        if (d < bd) {
+          bd = d
+          bi = i
+        }
+      })
+      b.d.state.idx = bi
+      b.mainIdx = bi
+    },
+
+    // эвакуатор забрал болид: убираем с трассы
+    remove(id) {
+      const b = list.find((x) => x.id === id)
+      if (!b || b.gone) return
+      b.gone = true
+      b.car.group.visible = false
+      b.v.body.setEnabled(false)
+    },
+
     distanceOf: (b) => track.axis[b.pit ? mainIdx(b) : b.d.state.idx].distance_m,
   }
   return api

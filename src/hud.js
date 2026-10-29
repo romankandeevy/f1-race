@@ -1,6 +1,6 @@
 import { formatTime } from './laps.js'
 import { TUNING } from './tuning.js'
-import { COMPOUNDS } from './wear.js'
+import { COMPOUNDS, COMPOUND_ORDER, repairList, repairSeconds } from './wear.js'
 
 const el = (id) => document.getElementById(id)
 
@@ -164,6 +164,22 @@ export function createHud(track) {
   const wingF = [...el('wFront').children]
   const wingR = el('wRear').firstElementChild
   const pitInfo = el('pitInfo')
+  const flagBanner = el('flagBanner')
+  const trackFlag = el('trackFlag')
+  const speedUnit = el('speedUnit')
+  let unitK = 1
+  let onResults = null
+  // план пит-стопа: состав и крыло выбираются кликом или клавишами I и K, пока игрок едет к въезду (L)
+  const pitPlanEl = el('pitPlan')
+  const ppTyres = el('ppTyres')
+  const ppWing = el('ppWing')
+  let onPitPick = null
+  ppTyres.innerHTML = COMPOUND_ORDER.map((c) => `<button type="button" data-c="${c}" style="--c:${COMPOUNDS[c].color}"><i>${COMPOUNDS[c].short}</i>${COMPOUNDS[c].name}</button>`).join('')
+  ppTyres.addEventListener('click', (e) => {
+    const b = e.target.closest('button')
+    if (b) onPitPick?.('compound', b.dataset.c)
+  })
+  ppWing.addEventListener('click', () => onPitPick?.('wing'))
   let lastCar = 0
   const dmgColor = (d) => (d < 0.15 ? '#22D36B' : d < 0.5 ? '#FFC400' : '#E10600')
   const badge = (c) => `<span class="cmp" style="--c:${COMPOUNDS[c].color}">${COMPOUNDS[c].short}</span>`
@@ -213,6 +229,19 @@ export function createHud(track) {
     },
 
 
+    // выбор шин и крыла на пит-стоп: виден, пока заказан заезд (клавиша L)
+    setPitPickHandler(fn) {
+      onPitPick = fn
+    },
+    updatePitPlan(requested, plan, toEntry, damage) {
+      if (pitPlanEl.hidden === requested) pitPlanEl.hidden = !requested
+      if (!requested) return
+      for (const b of ppTyres.children) setClass(b, b.dataset.c === plan.compound ? 'on' : '')
+      const jobs = damage ? repairList(damage) : []
+      setText(ppWing, plan.wing ? (jobs.length ? `Ремонт: ${jobs.map((j) => j.name.toLowerCase()).join(', ')} · +${repairSeconds(damage)} с` : 'Ремонт кузова: чинить нечего') : jobs.length ? `Без ремонта (повреждено: ${jobs.map((j) => j.name.toLowerCase()).join(', ')})` : 'Без ремонта')
+      setText(pitPlanEl.lastElementChild, toEntry > 0 ? `До въезда в пит-лейн ${Math.round(toEntry)} м · I — шины · K — ремонт · L — отмена` : 'I — шины · K — ремонт · L — отмена')
+    },
+
     // состояние болида (4 раза в секунду) и пит-лейн
     updateCar(v, plan, pit) {
       const now = performance.now()
@@ -222,7 +251,7 @@ export function createHud(track) {
         csComp.style.setProperty('--c', c.color)
         setText(csComp, c.short)
         setText(csName, c.name)
-        setText(csPlan, `пит: ${COMPOUNDS[plan.compound].short}${plan.wing ? ' + крыло' : ''}`)
+        setText(csPlan, `пит: ${COMPOUNDS[plan.compound].short}${plan.wing ? ' + ремонт' : ''}`)
         v.tyres.forEach((t, i) => {
           const node = tyreEls[i]
           const [lo, hi] = c.window
@@ -234,9 +263,13 @@ export function createHud(track) {
         wingF[0].style.background = dmgColor(d.wingL)
         wingF[1].style.background = dmgColor(d.wingR)
         wingR.style.background = dmgColor(d.rearWing)
-        const body = Math.max(d.floor, d.suspL, d.suspR)
-        setClass(csBody, 'cs-body' + (body > 0.15 ? ' dmg' : ''))
-        setText(csBody, body > 0.15 ? (d.floor >= Math.max(d.suspL, d.suspR) ? 'дн' : 'подв') : '')
+        // самое побитое из остального кузова: подпись и цвет по тяжести
+        const parts = [['дн', d.floor], ['кузов', Math.max(d.sideL, d.sideR)], ['подв', Math.max(d.suspL, d.suspR)], ['торм', d.brakes], ['шасси', d.chassis], ['мотор', Math.max(0, v.engineHeat - 0.8) * 2.5]]
+        if (d.lost.some(Boolean)) parts.push(['колесо', 1])
+        const worst = parts.reduce((a, b) => (b[1] > a[1] ? b : a))
+        setClass(csBody, 'cs-body' + (worst[1] > 0.15 ? ' dmg' : ''))
+        csBody.style.background = worst[1] > 0.15 ? dmgColor(worst[1]) : ''
+        setText(csBody, worst[1] > 0.15 ? worst[0] : '')
         setText(csPU, v.pu.failed ? 'отказ' : Math.round(v.pu.ice * 100) + '%')
       }
       // пит-лейн: фаза, выпуск
@@ -246,7 +279,7 @@ export function createHud(track) {
       }
       pitInfo.hidden = false
       const s = pit.state
-      const text = s.phase === 'lane' ? `Пит-лейн · ограничитель ${pit.inLimit ? 'включён' : '80'}` : s.phase === 'in' ? 'Заезд в бокс' : s.phase === 'service' ? `Обслуживание · ${Math.max(0, s.service - s.t).toFixed(1)} с` : s.phase === 'release' ? 'Жми газ!' : 'Ограничитель 80 · до конца зоны'
+      const text = s.phase === 'lane' ? `Пит-лейн · ограничитель ${pit.inLimit ? 'включён' : '80'}` : s.phase === 'in' ? 'Заезд в бокс' : s.phase === 'service' ? `Обслуживание · ${Math.max(0, s.service - s.t).toFixed(1)} с` : s.phase === 'release' ? 'Выпуск' : 'Ограничитель 80 · до конца зоны'
       setText(pitInfo, text)
       setClass(pitInfo, s.phase === 'release' ? 'go' : '')
     },
@@ -289,19 +322,67 @@ export function createHud(track) {
       const lead = st.order[0]
       const pen = (c) => (c.penalty ? ` (штраф +${c.penalty} с)` : '')
       const time = (c) =>
-        c.dsq ? 'ДСК · один состав шин' : c.dnf ? 'Сход' : c.finished ? (c === lead ? formatTime(c.finishTime + c.penalty) : `+${(c.finishTime + c.penalty - lead.finishTime - lead.penalty).toFixed(3)}`) + pen(c) : `${c.lap >= st.laps ? 'последний круг' : `−${st.laps + 1 - c.lap} кр.`}`
+        c.dsq ? `ДСК · ${c.reason || 'один состав шин'}` : c.dnf ? `Сход${c.reason ? ' · ' + c.reason : ''}` : c.finished ? (c === lead ? formatTime(c.finishTime + c.penalty) : `+${(c.finishTime + c.penalty - lead.finishTime - lead.penalty).toFixed(3)}`) + pen(c) : `${c.lap >= st.laps ? 'последний круг' : `−${st.laps + 1 - c.lap} кр.`}`
       results.innerHTML = `
         <div class="res">
           <div class="sheet-kicker">Финиш · ${st.laps} кругов</div>
           <h2>${me.dsq ? 'Дисквалификация' : me.dnf ? 'Сход' : pos === 1 ? 'Победа!' : `${pos}-е место`}</h2>
+          ${me.reason && (me.dnf || me.dsq) ? `<p class="res-why">${me.reason}</p>` : ''}
           <ol>${st.order.map((c, i) => `<li class="${c.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${c.paint}"></i><span>${c.name}</span><span class="t">${time(c)}</span></li>`).join('')}</ol>
-          <p>N — новый старт · Esc — меню</p>
+          <div class="res-actions"><button data-act="again">Ещё раз</button><button data-act="menu">В главное меню</button></div>
         </div>`
+      for (const b of results.querySelectorAll('[data-act]')) b.addEventListener('click', () => onResults?.(b.dataset.act))
       results.hidden = false
     },
 
+    // единицы скорости из настроек: kmh или mph
+    setUnits(u) {
+      unitK = u === 'mph' ? 0.621371 : 1
+      speedUnit.textContent = u === 'mph' ? 'миль/ч' : 'км/ч'
+      lastSpeed = -1
+    },
+
+    // флаги трассы: жёлтый, машина безопасности (sc), виртуальная (vsc), красный; kind — класс цвета, null — убрать
+    setTrackFlag(text, kind) {
+      if (!text) {
+        if (!trackFlag.hidden) trackFlag.hidden = true
+        return
+      }
+      trackFlag.hidden = false
+      setClass(trackFlag, kind || '')
+      setText(trackFlag, text)
+    },
+
+    // чёрно-оранжевый флаг: строка над табло; null — убрать
+    setFlag(text) {
+      if (!text) {
+        if (!flagBanner.hidden) flagBanner.hidden = true
+        return
+      }
+      flagBanner.hidden = false
+      setText(flagBanner, text)
+    },
+
+    // сход в заезде на время (гонки нет): те же кнопки, что у итогов
+    showRetire(text) {
+      results.innerHTML = `
+        <div class="res">
+          <div class="sheet-kicker">Заезд окончен</div>
+          <h2>${text.split(':')[0]}</h2>
+          <p class="res-why">${text.includes(':') ? text.split(':').slice(1).join(':').trim() : ''}</p>
+          <div class="res-actions"><button data-act="again">Ещё раз</button><button data-act="menu">В главное меню</button></div>
+        </div>`
+      for (const b of results.querySelectorAll('[data-act]')) b.addEventListener('click', () => onResults?.(b.dataset.act))
+      results.hidden = false
+    },
+
+    // кнопки экрана итогов: fn('again' | 'menu')
+    onResultsAction(fn) {
+      onResults = fn
+    },
+
     update(state, aeroOpen, laps, carPos, absOn, others) {
-      const s = Math.round(state.speedKmh)
+      const s = Math.round(state.speedKmh * unitK)
       if (s !== lastSpeed) {
         speed.textContent = s
         lastSpeed = s

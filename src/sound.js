@@ -21,6 +21,7 @@ export function createSound() {
   let paused = false
   let lastGear = 1
   let starting = false
+  let volume = 1 // общая громкость из настроек, 0…1
 
   async function start() {
     if (starting || ctx) {
@@ -33,7 +34,7 @@ export function createSound() {
     const buffer = await ctx.decodeAudioData(data)
 
     const master = ctx.createGain()
-    master.gain.value = MASTER
+    master.gain.value = MASTER * volume
     master.connect(ctx.destination)
     const shift = ctx.createGain() // провал на переключении
     shift.connect(master)
@@ -126,6 +127,12 @@ export function createSound() {
   const set = (param, value, time = 0.04) => param.setTargetAtTime(value, ctx.currentTime, time)
 
   return {
+    // громкость 0…1: действует сразу, а если звук ещё не запущен — при запуске
+    setVolume(v) {
+      volume = Math.min(1, Math.max(0, v))
+      if (n) n.master.gain.setTargetAtTime(MASTER * volume, ctx.currentTime, 0.05)
+    },
+
     toggleMute() {
       muted = !muted
       wake()

@@ -7,6 +7,7 @@
 // Служебные точки: «Старт P1…P20», «Ось трассы» (каждые 2 м, ширина в extras), «Финиш и сектора».
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { STATIC_GROUPS } from './vehicle.js'
 
 const nameOf = (s) => THREE.PropertyBinding.sanitizeNodeName(s)
 
@@ -61,7 +62,7 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
     }
     const index = mesh.geometry.index
     const idx = index ? Uint32Array.from(index.array) : Uint32Array.from({ length: pos.count }, (_, i) => i)
-    const collider = world.createCollider(RAPIER.ColliderDesc.trimesh(verts, idx).setFriction(friction).setRestitution(0.05), body)
+    const collider = world.createCollider(RAPIER.ColliderDesc.trimesh(verts, idx).setFriction(friction).setRestitution(0.05).setCollisionGroups(STATIC_GROUPS), body)
     if (surface) surfaceOf.set(collider.handle, surface)
   }
   const meshesIn = (obj, skip) => {
@@ -85,7 +86,7 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
   for (const m of meshesIn(find('Ограждения (коллизия)'), (o) => fence && isInside(o, fence))) addTrimesh(m, null, 0.3)
 
   // страховочная земля чуть ниже всего: если между деталями есть щель, болид не провалится
-  const floor = world.createCollider(RAPIER.ColliderDesc.cuboid(3000, 0.5, 3000).setTranslation(0, -0.52, 0).setFriction(1), body)
+  const floor = world.createCollider(RAPIER.ColliderDesc.cuboid(3000, 0.5, 3000).setTranslation(0, -0.52, 0).setFriction(1).setCollisionGroups(STATIC_GROUPS), body)
   surfaceOf.set(floor.handle, 'grass')
 
   // служебные точки

@@ -40,6 +40,11 @@ export function createRace(length, entries, laps = RACE_LAPS) {
       for (const c of st.cars) {
         if (c.dnf) continue // сошедший стоит
         const s = sOf(c)
+        // несколько кадров после новой расстановки не считаем пересечение линии: расстояние у водителей ещё прежнее
+        if (c.settle > 0) {
+          c.settle--
+          c.prevS = null
+        }
         if (c.prevS !== null) {
           if (c.prevS > length * 0.75 && s < length * 0.25) {
             c.lap++
@@ -67,6 +72,16 @@ export function createRace(length, entries, laps = RACE_LAPS) {
       for (const c of st.cars) if (c.finished && !c.dsq && winner.finished) c.gap = c.finishTime + c.penalty - (winner.finishTime + winner.penalty)
     },
 
+    // новый старт с места после красного флага: у всех один круг (засчитанные круги лидера), дальше они идут по решётке в порядке гонки
+    regrid(lap) {
+      for (const c of st.cars) {
+        if (c.dnf) continue
+        c.lap = lap
+        c.prevS = null
+        c.settle = 4
+      }
+    },
+
     // штраф к итоговому времени (границы трассы), с
     addPenalty(id, seconds) {
       const c = st.cars.find((x) => x.id === id)
@@ -81,11 +96,22 @@ export function createRace(length, entries, laps = RACE_LAPS) {
       c.compounds.add(compound)
     },
 
-    // сход (отказ мотора); если это игрок — гонка для него окончена
-    retire(id) {
+    // сход (отказ мотора, разрушенный болид); если это игрок — гонка для него окончена
+    retire(id, reason = '') {
       const c = st.cars.find((x) => x.id === id)
       if (!c || c.finished || c.dnf) return
       c.dnf = true
+      c.reason = reason
+      if (c.player) st.playerDone = true
+    },
+
+    // чёрный флаг: дисквалификация посреди гонки (небезопасный болид не заехал в боксы)
+    disqualify(id, reason = '') {
+      const c = st.cars.find((x) => x.id === id)
+      if (!c || c.finished || c.dsq) return
+      c.dsq = true
+      c.dnf = true
+      c.reason = reason
       if (c.player) st.playerDone = true
     },
 

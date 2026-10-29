@@ -18,6 +18,11 @@ const WEAR_BASE = 0.3 // износ просто от качения
 const WORK_REF = 6000 // Вт
 const AMBIENT = 25 // °C
 const HEAT_WORK = 0.25 // °C/с на кВт работы
+// Потолок скольжения, которое считается «работой» шины (нагрев и износ). Рома 29.10: «держу A/D весь поворот» — на упоре клавиши
+// передняя шина идёт на ~4,6° скольжения вместо ~2,2° у плавного руля, работа вырастала вчетверо, перед перегревался до 140°,
+// стирался втрое быстрее задних и лопался за два круга. Сцепление не меняем — только счёт износа и нагрева: клавиатура не должна
+// наказываться за то, что руль нельзя держать «на полшага».
+const SLIP_CAP = 0.03 // рад (~1,7°)
 const HEAT_ROLL = 0.045 // °C/с на м/с скорости
 const COOL = 0.02 // охлаждение, 1/с (на скорости сильнее); шина тяжёлая — греется и остывает за десятки секунд
 export const BLANKET = 75 // °C — шины из грелок, чуть холоднее рабочего окна
@@ -46,10 +51,12 @@ export function updateTyres(v, dt) {
   for (let i = 0; i < 4; i++) {
     const w = v.wheels[i]
     const t = v.tyres[i]
-    const work = w.contact ? Math.abs(w.fy * Math.sin(w.slip)) * speed + (w.sliding ? Math.abs(w.fx) * Math.min(speed, 30) * 0.3 : 0) : 0
+    const work = w.contact ? Math.abs(w.fy) * Math.min(Math.abs(Math.sin(w.slip)), SLIP_CAP) * speed + (w.sliding ? Math.abs(w.fx) * Math.min(speed, 30) * 0.3 : 0) : 0
     if (!t.puncture) {
       const hot = t.temp > c.window[1] + 10 ? 1.3 : 1 // перегретая стирается быстрее
-      t.wear = Math.min(1, t.wear + dt * WEAR_RATE * c.wear * hot * ((w.contact ? WEAR_BASE * Math.min(1, speed / 40) : 0) + work / WORK_REF))
+      // шина на повреждённой стороне стирается быстрее: колесо стоит под неправильным углом
+      const bent = 1 + 1.2 * suspDamageAt(v.damage, w.front, w.side)
+      t.wear = Math.min(1, t.wear + dt * WEAR_RATE * c.wear * hot * bent * ((w.contact ? WEAR_BASE * Math.min(1, speed / 40) : 0) + work / WORK_REF))
       if (t.wear >= 1) {
         t.puncture = true // стёрта до корда — лопнула
         popped = i
@@ -61,42 +68,72 @@ export function updateTyres(v, dt) {
 }
 
 // ——— повреждения ———
+// Рома 29.10: «я врезаюсь спокойненько и доезжаю до пит-стопа, так обгоню всех. Надо жёстче наказывать: чтобы ломалась любая часть,
+// и это влияло на игру — как в настоящей Формуле-1». Теперь болид состоит из частей, у каждой своё повреждение 0…1 и своя роль:
+//   wingL, wingR   переднее крыло (две половины) — прижим спереди
+//   rearWing       заднее крыло — прижим сзади
+//   floor          днище — граунд-эффект
+//   sideL, sideR   бокподы с радиаторами — охлаждение мотора: разбитый бокпод перегревает и убивает мотор
+//   brakes         тормозные каналы — слабее тормоза
+//   suspL, suspR   подвеска стороны (см. ниже) — сцепление, схождение, проседание
+//   chassis        монокок — от самых сильных ударов; 100% — болид разрушен, сход
+//   lost[4]        оторванное колесо (ПЛ, ПП, ЗЛ, ЗП): болид дальше ехать не может
+// Крыло, днище, бокподы и тормозные каналы меняют в боксах (время стоянки растёт с повреждением), подвеску, монокок и колесо — нет.
 
 export function freshDamage() {
-  return { wingL: 0, wingR: 0, rearWing: 0, floor: 0, suspL: 0, suspR: 0 }
+  return { wingL: 0, wingR: 0, rearWing: 0, floor: 0, suspL: 0, suspR: 0, sideL: 0, sideR: 0, brakes: 0, chassis: 0, lost: [0, 0, 0, 0] }
 }
 
 const IMPACT_MIN = 2.5 // м/с за шаг (~9 км/ч): слабее — касание без последствий (толкнулись с соседом, задел стену)
-const IMPACT_K = 0.037 // доля поломки на 1 м/с удара: на ~25 км/ч в стену крыло помято наполовину, на 60 — снесено
+const CHASSIS_DV = 14 // м/с (~50 км/ч): слабее монокок держит без последствий
+const CHASSIS_K = 0.035 // доля монокока на 1 м/с сверх: на 100 км/ч в стену −49%, на 160 — болид разрушен
 
 // удар: dvx, dvz — изменение скорости кузова за шаг сверх того, что дают шины и мотор (мир, м/с).
 // Направление удара в осях болида решает, что ломается. rand — для прокола. Возвращает, что сломалось.
 export function applyImpact(v, dvx, dvz, rand = Math.random) {
   const dv = Math.hypot(dvx, dvz)
   if (dv < IMPACT_MIN) return null
-  const sev = Math.min(1, (dv - IMPACT_MIN) * IMPACT_K * 3)
+  // тяжесть 0…1: слабый контакт — царапины, ~90 км/ч в стену — всё, что может сломаться по этому направлению, разрушено
+  const sev = Math.min(1, (dv - IMPACT_MIN) / 22)
   const q = v.body.rotation()
   const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.x * q.x))
   const along = dvx * Math.sin(yaw) + dvz * Math.cos(yaw) // < 0 — толкнуло назад (удар носом)
   const side = dvx * Math.cos(yaw) - dvz * Math.sin(yaw) // > 0 — толкнуло влево (удар справа)
   const d = v.damage
+  const up = (key, x) => (d[key] = Math.min(1, d[key] + x))
   const hits = []
   if (-along > Math.abs(side) * 0.7) {
-    // удар носом: крыло со стороны удара сильнее
+    // удар носом: крыло со стороны удара сильнее, тормозные каналы в носу, на сильном ударе — обе передние подвески
     const right = side > 0 ? 0.65 : 0.35
-    d.wingR = Math.min(1, d.wingR + sev * right * 2)
-    d.wingL = Math.min(1, d.wingL + sev * (1 - right) * 2)
+    up('wingR', sev * right * 2.2)
+    up('wingL', sev * (1 - right) * 2.2)
     hits.push('Переднее крыло')
+    if (sev > 0.4) {
+      up('brakes', sev * 0.5)
+      hits.push('Тормозные каналы')
+    }
+    if (dv > 12) {
+      up('suspL', (dv - 12) * 0.04)
+      up('suspR', (dv - 12) * 0.04)
+      hits.push('Передняя подвеска')
+    }
   } else if (along > Math.abs(side) * 0.7) {
-    d.rearWing = Math.min(1, d.rearWing + sev * 1.4)
-    d.floor = Math.min(1, d.floor + sev * 0.4)
+    up('rearWing', sev * 1.7)
+    up('floor', sev * 0.45)
     hits.push('Заднее крыло')
+    // коробка передач стоит сзади: сильный удар в корму её ломает, и это остаётся до новой силовой установки
+    if (dv > 10 && v.pu) {
+      v.pu.gearbox = Math.min(1, v.pu.gearbox + (dv - 10) * 0.03)
+      hits.push('Коробка передач')
+    }
   } else {
-    // боком: подвеска этой стороны, может лопнуть шина
+    // боком: подвеска и бокпод этой стороны, днище, может лопнуть шина, а на сильном ударе — оторваться колесо
     const key = side > 0 ? 'suspR' : 'suspL'
-    d[key] = Math.min(1, d[key] + sev * 1.2)
-    d.floor = Math.min(1, d.floor + sev * 0.3)
-    hits.push(side > 0 ? 'Подвеска справа' : 'Подвеска слева')
+    const pod = side > 0 ? 'sideR' : 'sideL'
+    up(key, sev * 1.2)
+    up(pod, sev * 1.4)
+    up('floor', sev * 0.3)
+    hits.push(side > 0 ? 'Подвеска справа' : 'Подвеска слева', side > 0 ? 'Бокпод справа' : 'Бокпод слева')
     if (sev > 0.25 && rand() < sev) {
       const i = side > 0 ? (rand() < 0.5 ? 1 : 3) : rand() < 0.5 ? 0 : 2
       if (!v.tyres[i].puncture) {
@@ -104,20 +141,83 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
         hits.push('Прокол')
       }
     }
+    const front = side > 0 ? 1 : 0
+    const rear = side > 0 ? 3 : 2
+    if (d[key] >= 1 && dv > 12 && !d.lost[front]) {
+      d.lost[front] = 1
+      hits.push('Оторвано колесо')
+    } else if (d[key] >= 1 && dv > 22 && !d.lost[rear]) {
+      d.lost[rear] = 1
+      hits.push('Оторвано колесо')
+    }
+  }
+  // монокок: любой удар сильнее ~50 км/ч по нему тоже бьёт
+  if (dv > CHASSIS_DV) {
+    up('chassis', (dv - CHASSIS_DV) * CHASSIS_K)
+    hits.push('Монокок')
   }
   return { sev, hits }
 }
 
+// Повреждённая подвеска (Рома 29.10: «что происходит, когда ломаются палки, которые соединяют колесо с болидом?»).
+// d.suspL / d.suspR — 0…1 для левой и правой стороны; страдает в основном переднее колесо, заднее вдвое слабее.
+// До SUSP_BROKEN подвеска «помята»: смещаются развал и схождение, сцепление чуть ниже, шина стирается быстрее.
+// Выше — «сломана»: сторона проседает (пружина не работает), сцепление колеса падает почти вдвое, колесо перестаёт слушаться руля.
+export const SUSP_BROKEN = 0.7
+export const suspDamageAt = (d, front, side) => (side > 0 ? d.suspL : d.suspR) * (front ? 1 : 0.5)
+
 // множители аэродинамики от повреждений
 export function aeroDamage(d) {
   const front = (d.wingL + d.wingR) / 2
+  const pods = (d.sideL + d.sideR) / 2
   return {
-    front: 1 - 0.45 * front,
-    rear: 1 - 0.5 * d.rearWing,
-    ground: 1 - 0.3 * d.floor,
-    drag: 1 + 0.08 * (front + d.rearWing),
-    pull: (d.suspL - d.suspR) * 0.035 + (d.wingL - d.wingR) * 0.01, // рад: болид тянет в сторону
+    front: 1 - 0.65 * front,
+    rear: 1 - 0.7 * d.rearWing,
+    ground: 1 - 0.5 * d.floor - 0.1 * pods,
+    drag: 1 + 0.15 * (front + d.rearWing) + 0.12 * pods,
+    pull: (d.suspL - d.suspR) * 0.002 + (d.wingL - d.wingR) * 0.001, // рад: чуть тянет в сторону (Рома 29.10: «не так сильно уводить»); остальное делают сами колёса
   }
+}
+
+// ——— перегрев мотора: радиаторы стоят в бокподах ———
+// Мотор греется от газа и остывает потоком воздуха через бокподы. Целая машина на полном газу на скорости держит ~0,6;
+// разбитый бокпод режет охлаждение: при 80% повреждения на скорости уже >1,8 — мощность падает, а через ~10 с мотор умирает (сход).
+export const ENGINE_HOT = 0.9
+export const ENGINE_DEAD = 1.15
+export const coolingOf = (d) => 1 - 0.85 * Math.max(d.sideL, d.sideR)
+export const heatPowerFactor = (heat) => 1 - Math.min(0.5, Math.max(0, heat - ENGINE_HOT) * 1.5)
+
+// за шаг; возвращает true, когда мотор только что умер
+export function updateEngineHeat(v, dt, throttle, speed) {
+  if (v.pu.failed) return false
+  const air = 0.4 + 0.6 * Math.min(1, speed / 60)
+  const target = Math.min(1.8, (0.2 + 0.4 * throttle) / (coolingOf(v.damage) * air))
+  v.engineHeat += (target - v.engineHeat) * (1 - Math.exp(-dt / 12))
+  if (v.engineHeat > ENGINE_DEAD) {
+    v.hotTime += dt
+    if (v.hotTime > 3) {
+      v.pu.failed = true
+      return true
+    }
+  } else v.hotTime = Math.max(0, v.hotTime - dt)
+  return false
+}
+
+// ——— ремонт на пит-стопе ———
+// Сколько секунд стоянки добавляет каждая часть (в F1 одна замена носа — ~7–10 с, кузов — дольше).
+const REPAIR = [
+  ['Переднее крыло', 7, (d) => Math.max(d.wingL, d.wingR) > 0.1],
+  ['Заднее крыло', 9, (d) => d.rearWing > 0.1],
+  ['Днище и бокподы', 8, (d) => Math.max(d.floor, d.sideL, d.sideR) > 0.15],
+  ['Тормозные каналы', 4, (d) => d.brakes > 0.2],
+]
+export const repairList = (d) => REPAIR.filter(([, , need]) => need(d)).map(([name, sec]) => ({ name, sec }))
+export const repairSeconds = (d) => repairList(d).reduce((a, r) => a + r.sec, 0)
+export const needsRepair = (d) => repairList(d).length > 0
+// механики поменяли всё, что можно поменять; подвеску, монокок и оторванное колесо не чинят
+export function applyRepair(v) {
+  const d = v.damage
+  d.wingL = d.wingR = d.rearWing = d.floor = d.sideL = d.sideR = d.brakes = 0
 }
 
 // ——— силовая установка (копится между гонками) ———
@@ -147,7 +247,7 @@ export function updatePowerUnit(v, dt, throttle, deployShare, rand = Math.random
 }
 
 // множитель мощности от износа (после 70% — заметно слабее); отказавший — 0
-export function powerFactor(pu) {
+export function powerFactor(pu, heat = 0) {
   if (pu.failed) return 0
-  return 1 - Math.max(0, pu.ice - 0.7) * 0.4
+  return (1 - Math.max(0, pu.ice - 0.7) * 0.4) * heatPowerFactor(heat)
 }

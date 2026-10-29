@@ -178,6 +178,23 @@
   /* ── пит-лейн: фаза и выпуск ── */
   #pitInfo { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%) scale(var(--hud)); transform-origin: bottom center; background: var(--panel); padding: 10px 22px; font-size: 18px; font-weight: 900; font-style: italic; letter-spacing: .08em; text-transform: uppercase; border-left: 5px solid var(--yellow); white-space: nowrap; }
   #pitInfo[hidden] { display: none; }
+  #flagBanner { position: absolute; left: 50%; top: 110px; transform: translateX(-50%) scale(var(--hud)); transform-origin: top center; max-width: 62vw; background: repeating-linear-gradient(135deg, #15171B 0 14px, #E87500 14px 28px); border: 3px solid #E87500; padding: 4px; font: 900 italic 18px/1.15 var(--font); letter-spacing: .05em; text-transform: uppercase; white-space: normal; text-align: center; }
+  #flagBanner { color: #fff; text-shadow: 0 1px 3px #000, 0 0 6px #000; padding: 8px 20px; }
+  #flagBanner[hidden] { display: none; }
+  #trackFlag { position: absolute; left: 50%; top: 16px; transform: translateX(-50%) scale(var(--hud)); transform-origin: top center; max-width: 62vw; padding: 9px 30px; font: 900 italic 19px/1.15 var(--font); letter-spacing: .05em; text-transform: uppercase; white-space: normal; text-align: center; background: #FFC400; color: #0A0B0D; clip-path: polygon(14px 0, 100% 0, calc(100% - 14px) 100%, 0 100%); }
+  #trackFlag[hidden] { display: none; }
+  #trackFlag.red { background: var(--red); color: #fff; }
+  #trackFlag.sc, #trackFlag.vsc { background: repeating-linear-gradient(135deg, #FFC400 0 16px, #E5B000 16px 32px); }
+  #results .res-why { margin: -6px 0 12px; color: #F3A64A; font-size: 17px; font-weight: 700; }
+  #pitPlan { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%) scale(var(--hud)); transform-origin: bottom center; width: 420px; padding: 0 0 8px; pointer-events: auto; }
+  #pitPlan[hidden] { display: none; }
+  #pitPlan .caps { display: block; padding: 8px 14px 6px; }
+  #ppTyres { display: flex; gap: 6px; padding: 4px 14px 6px; }
+  #ppTyres button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 9px 4px; background: transparent; color: var(--muted); border: 2px solid var(--muted); font: 700 14px/1 inherit; cursor: pointer; }
+  #ppTyres button i { font-style: normal; font-weight: 900; width: 22px; height: 22px; line-height: 22px; border-radius: 50%; border: 3px solid var(--c); color: var(--text); font-size: 12px; }
+  #ppTyres button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  #ppWing { display: block; width: calc(100% - 28px); margin: 0 14px; padding: 8px; background: transparent; color: var(--text); border: 2px solid var(--muted); font: 700 14px/1 inherit; cursor: pointer; }
+  #pitPlan .pp-hint { display: block; padding: 7px 14px 0; font-size: 12px; color: var(--muted); }
   #pitInfo.go { background: var(--green); color: #0A0B0D; border-left-color: #fff; font-size: 30px; }
   /* значок состава шин в таблице */
   #twList li .cmp { width: 15px; height: 15px; border-width: 2px; font-size: 8px; }
@@ -306,6 +323,77 @@
   #loader.done { opacity: 0; pointer-events: none; }
   #bar { width: 220px; height: 3px; background: var(--line); }
   #bar i { display: block; height: 3px; width: 0; background: var(--red); }
+
+  /* ===== Экраны вне гонки (Рома 29.10): главное меню, гараж, настройка гонки, настройки, рекорды, управление ===== */
+  body.menu-mode #hud { display: none; }
+  body.no-minimap #mapbox { display: none; }
+  #screens { position: fixed; inset: 0; z-index: 8; pointer-events: none; color: var(--text); font-family: var(--font); user-select: none; }
+  #screens[hidden] { display: none; }
+  #screens .sc-shade { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(4, 5, 7, .96) 0%, rgba(4, 5, 7, .88) 30%, rgba(4, 5, 7, .4) 52%, rgba(4, 5, 7, 0) 72%), linear-gradient(0deg, rgba(4, 5, 7, .7) 0%, rgba(4, 5, 7, 0) 26%); }
+  #screens[data-screen=keys] .sc-shade { background: rgba(4, 5, 7, .94); }
+  #screens .sc-col { position: absolute; left: 0; top: 0; bottom: 0; width: min(600px, 100vw); box-sizing: border-box; padding: 5vh 28px 0 clamp(24px, 4vw, 64px); display: flex; flex-direction: column; pointer-events: auto; overflow-y: auto; }
+  #screens .sc-col.wide { width: min(1040px, 100vw); }
+  .sc-tag { display: inline-block; background: var(--red); padding: 4px 26px 4px 12px; font: 900 italic 12px var(--font); letter-spacing: .12em; text-transform: uppercase; clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%); }
+  .sc-title { margin: 10px 0 18px; font: 900 italic 46px/.96 var(--font); text-transform: uppercase; }
+  .sc-brand.big .sc-title { margin-bottom: 0; font-size: clamp(64px, 12vh, 112px); line-height: .88; }
+  .sc-sub { margin: 14px 0 0; color: var(--muted); font-size: 15px; font-weight: 600; letter-spacing: .03em; }
+  .sc-sub b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .sc-nav { display: flex; flex-direction: column; gap: 4px; margin: 26px 0 0; }
+  .sc-item { appearance: none; border: 0; border-left: 5px solid transparent; background: transparent; color: #C5C8CD; padding: 11px 18px; text-align: left; cursor: pointer; font: 900 italic 25px var(--font); text-transform: uppercase; letter-spacing: .02em; transition: transform .12s, background .12s; width: 100%; }
+  .sc-item.on { background: var(--text); color: var(--bg); border-left-color: var(--red); transform: translateX(10px); }
+  .sc-about { min-height: 3.2em; margin: 22px 0 0; padding-left: 14px; border-left: 3px solid var(--red); color: #AEB3BB; font-size: 15px; line-height: 1.45; max-width: 46ch; font-weight: 500; }
+  .sc-foot { margin-top: auto; padding: 18px 0 3vh; display: flex; flex-wrap: wrap; gap: 6px 20px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+  .sc-foot kbd { display: inline-block; min-width: 18px; margin-right: 7px; padding: 1px 6px; font: 700 11px var(--font); color: var(--text); border: 1px solid #4A4F58; border-bottom-width: 2px; text-align: center; }
+  .sc-rows { display: flex; flex-direction: column; gap: 3px; }
+  .sc-row { appearance: none; display: grid; grid-template-columns: minmax(120px, 1fr) max-content; align-items: center; gap: 14px; width: 100%; box-sizing: border-box; padding: 9px 14px 9px 16px; border: 0; border-left: 4px solid transparent; background: rgba(255, 255, 255, .035); color: #C5C8CD; font: 700 15px var(--font); letter-spacing: .03em; text-transform: uppercase; text-align: left; cursor: default; }
+  .sc-row.on { background: rgba(255, 255, 255, .1); border-left-color: var(--red); color: var(--text); }
+  button.sc-row { cursor: pointer; }
+  .sc-row.cta { margin-top: 12px; background: var(--red); color: #fff; font: 900 italic 22px var(--font); padding: 14px 22px; clip-path: polygon(0 0, 100% 0, calc(100% - 14px) 100%, 0 100%); display: block; }
+  .sc-row.cta.on { background: var(--text); color: var(--bg); }
+  .sc-seg { display: flex; gap: 3px; justify-content: flex-end; }
+  .sc-seg button { appearance: none; border: 1px solid #3A3F47; background: transparent; color: var(--muted); padding: 6px 10px; font: 700 13px var(--font); letter-spacing: .03em; cursor: pointer; text-transform: none; white-space: nowrap; }
+  .sc-seg button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .sc-ctl { display: flex; align-items: center; gap: 12px; }
+  .sc-ctl output { min-width: 52px; text-align: right; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+  .sc-ctl input[type=range] { width: 200px; accent-color: var(--red); }
+  .sc-tabs { display: flex; gap: 3px; margin: -6px 0 14px; flex-wrap: wrap; }
+  .sc-tabs button { appearance: none; border: 0; border-bottom: 3px solid #2B2F36; background: transparent; color: var(--muted); padding: 8px 14px; font: 700 14px var(--font); letter-spacing: .04em; cursor: pointer; text-transform: uppercase; }
+  .sc-tabs button.on { color: var(--text); border-bottom-color: var(--red); }
+  .sc-team { appearance: none; display: flex; align-items: center; gap: 14px; border: 0; border-left: 4px solid transparent; background: rgba(255, 255, 255, .035); padding: 8px 14px; color: #C5C8CD; font: 700 16px var(--font); letter-spacing: .03em; text-align: left; cursor: pointer; text-transform: uppercase; }
+  .sc-team i { width: 34px; height: 20px; background: linear-gradient(105deg, var(--a) 0 58%, var(--b) 58% 100%); border: 1px solid rgba(255, 255, 255, .2); }
+  .sc-team.on { background: rgba(255, 255, 255, .1); border-left-color: var(--red); color: var(--text); }
+  .sc-team.cur::after { content: 'твой'; margin-left: auto; font-size: 11px; color: var(--bg); background: var(--green); padding: 1px 7px; letter-spacing: .08em; }
+  .sc-sw .sc-ctl { flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 340px; }
+  .sc-chip { width: 22px; height: 22px; border-radius: 50%; border: 2px solid #20242A; background: var(--c); padding: 0; cursor: pointer; box-shadow: 0 0 0 1px rgba(255, 255, 255, .28); position: relative; display: inline-block; box-sizing: border-box; }
+  .sc-chip.on { box-shadow: 0 0 0 2px var(--text); }
+  .sc-chip.pick { background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red); overflow: hidden; }
+  .sc-chip.pick.on { background: var(--c); }
+  .sc-chip.pick input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+  .sc-plaque { position: absolute; right: clamp(24px, 4vw, 64px); bottom: 7vh; width: min(380px, 40vw); pointer-events: auto; background: rgba(8, 9, 11, .82); border-left: 4px solid var(--red); padding: 14px 20px 16px; box-sizing: border-box; }
+  .sc-plaque-t { font: 900 italic 26px/1.05 var(--font); text-transform: uppercase; }
+  .sc-plaque p { margin: 8px 0 0; color: #AEB3BB; font-size: 14px; line-height: 1.45; }
+  .sc-pu { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 12px; align-items: center; margin-top: 14px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .sc-pu-t { grid-column: 1 / -1; font: 700 12px var(--font); letter-spacing: .12em; text-transform: uppercase; color: var(--text); }
+  .sc-pu em { font-style: normal; color: var(--text); font-variant-numeric: tabular-nums; }
+  .sc-bar { display: block; height: 6px; background: #262A31; }
+  .sc-bar b { display: block; height: 100%; background: var(--green); }
+  .sc-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 0 0 10px; }
+  .sc-card { background: rgba(255, 255, 255, .05); border-top: 3px solid var(--red); padding: 10px 12px 12px; }
+  .sc-card span { display: block; font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .sc-card b { display: block; margin-top: 4px; font: 900 italic 22px var(--font); font-variant-numeric: tabular-nums; }
+  .sc-keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 6px 36px; overflow: auto; }
+  .sc-keys h3 { margin: 12px 0 6px; font: 700 12px var(--font); letter-spacing: .14em; text-transform: uppercase; color: var(--red); }
+  .sc-keys dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 5px 14px; font-size: 14px; }
+  .sc-keys dt { font-weight: 700; color: var(--text); white-space: nowrap; }
+  .sc-keys dd { margin: 0; color: #AEB3BB; }
+  #results .res { pointer-events: auto; }
+  #results .res-actions { display: flex; gap: 8px; margin-top: 14px; }
+  #results .res-actions button { flex: 1; appearance: none; border: 0; padding: 12px 16px; font: 900 italic 16px var(--font); text-transform: uppercase; letter-spacing: .04em; cursor: pointer; background: rgba(255, 255, 255, .1); color: var(--text); }
+  #results .res-actions button:first-child { background: var(--red); color: #fff; }
+  #results .res-actions button:hover { background: var(--text); color: var(--bg); }
+  @media (max-height: 780px) { .sc-title { font-size: 36px; margin-bottom: 12px; } .sc-brand.big .sc-title { font-size: clamp(52px, 11vh, 84px); } .sc-nav { margin-top: 16px; gap: 2px; } .sc-item { padding: 7px 18px; font-size: 20px; } .sc-about { margin-top: 14px; min-height: 2.8em; font-size: 14px; } .sc-row { padding: 7px 14px 7px 16px; } .sc-row.cta { padding: 11px 22px; font-size: 19px; } .sc-foot { padding: 12px 0 2vh; } }
+  @media (max-width: 760px) { .sc-plaque { display: none; } .sc-cards { grid-template-columns: repeat(2, 1fr); } }
+  @media (prefers-reduced-motion: reduce) { .sc-item { transition: none; } }
 </style>
 </head>
 <body>
@@ -340,7 +428,7 @@
   <div id="lights" hidden><i></i><i></i><i></i><i></i><i></i></div>
   <div id="notice" hidden></div>
   <div id="rightcol">
-    <div id="mfd" class="panel cut" hidden><span class="caps">Быстрые настройки</span><div class="mfd-row" data-k="brakeBias"><span>Баланс тормозов</span><b></b></div><div class="mfd-row" data-k="diffOn"><span>Дифференциал</span><b></b></div><div class="mfd-row" data-k="ers"><span>Батарея</span><b></b></div><div class="mfd-row" data-k="pitTyre"><span>Пит-стоп: шины</span><b></b></div><div class="mfd-row" data-k="pitWing"><span>Пит-стоп: крыло</span><b></b></div></div>
+    <div id="mfd" class="panel cut" hidden><span class="caps">Быстрые настройки</span><div class="mfd-row" data-k="brakeBias"><span>Баланс тормозов</span><b></b></div><div class="mfd-row" data-k="diffOn"><span>Дифференциал</span><b></b></div><div class="mfd-row" data-k="ers"><span>Батарея</span><b></b></div><div class="mfd-row" data-k="pitTyre"><span>Пит-стоп: шины</span><b></b></div><div class="mfd-row" data-k="pitWing"><span>Пит-стоп: ремонт</span><b></b></div></div>
     <div id="carStatus" class="panel cut">
       <div class="cs-head"><span id="csComp" class="cmp"></span><span id="csName"></span><span id="csPlan" class="caps"></span></div>
       <div class="cs-grid">
@@ -352,6 +440,9 @@
     </div>
   </div>
   <div id="pitInfo" hidden></div>
+  <div id="flagBanner" hidden></div>
+  <div id="trackFlag" hidden></div>
+  <div id="pitPlan" class="panel cut" hidden><span class="caps">Пит-стоп · автопилот заведёт в боксы</span><div id="ppTyres"></div><button id="ppWing" type="button"></button><span class="pp-hint"></span></div>
   <div id="dash" class="panel">
     <div class="gauge left">
       <svg viewBox="0 0 120 120"><circle class="outer" cx="60" cy="60" r="58" pathLength="100"/><circle class="track" cx="60" cy="60" r="50" pathLength="100"/><circle id="battArc" class="arc" cx="60" cy="60" r="50" pathLength="100"/></svg>
@@ -366,11 +457,12 @@
     </div>
     <div class="gauge right">
       <svg viewBox="0 0 120 120"><circle class="outer" cx="60" cy="60" r="58" pathLength="100"/><circle class="track" cx="60" cy="60" r="50" pathLength="100"/><circle id="revArc" class="arc" cx="60" cy="60" r="50" pathLength="100"/></svg>
-      <div class="g-text"><span class="caps">км/ч</span><span id="speed" class="num">0</span><span class="caps">об/мин</span><span id="rpmNum" class="num">0</span></div>
+      <div class="g-text"><span class="caps" id="speedUnit">км/ч</span><span id="speed" class="num">0</span><span class="caps">об/мин</span><span id="rpmNum" class="num">0</span></div>
     </div>
   </div>
 </div>
 <div id="setup" hidden></div>
+<div id="screens" hidden></div>
 <div id="menu" hidden></div>
 <div id="results" hidden></div>
 <div id="loader"><div class="caps">Загрузка болида…</div><div id="bar"><i></i></div></div>

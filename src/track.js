@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { STATIC_GROUPS } from './vehicle.js'
 
 // Простая плоская трасса для обкатки машины. Центральная линия — замкнутая кривая.
 const CONTROL = [
@@ -202,7 +203,7 @@ export function buildTrack(scene, RAPIER, world) {
 
   // физика: плоский пол
   const floor = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
-  world.createCollider(RAPIER.ColliderDesc.cuboid(4000, 0.5, 4000).setTranslation(0, -0.5, 0).setFriction(1), floor)
+  world.createCollider(RAPIER.ColliderDesc.cuboid(4000, 0.5, 4000).setTranslation(0, -0.5, 0).setFriction(1).setCollisionGroups(STATIC_GROUPS), floor)
 
   function nearest(x, z) {
     let best = Infinity

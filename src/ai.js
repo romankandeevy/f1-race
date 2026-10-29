@@ -242,10 +242,13 @@ export function createAiDriver(line, opts = {}) {
     defendTgt: null,
     noAttack: 0,
     tRun: 0, // сколько уже едем после старта; на разгоне в куче не обгоняем
+    lane: 0, // полоса, с которой стартовали (от гоночной линии, м): держим её, пока до торможения далеко
     vl: 0, // боковая скорость болида (по месту), сглажена
     lPrev: null,
     stuck: 0,
     dist: 0,
+    cap: Infinity, // потолок скорости, м/с: машина безопасности, VSC, жёлтый участок, красный флаг (0 — стоять); ставит bots.js
+    noPass: false, // обгон запрещён (флаги)
     slip: 0,
     lost: opts.idx == null,
     placed: false,
@@ -318,6 +321,7 @@ export function createAiDriver(line, opts = {}) {
       st.block = false
       st.oppBrake = 0
       st.tRun = 0
+      st.lane = 0
       st.vl = 0
       st.lPrev = null
       st.stuck = 0
@@ -348,6 +352,7 @@ export function createAiDriver(line, opts = {}) {
         st.offset = lMe
         st.tgt = lMe
         st.latV = 0
+        st.lane = lMe
         st.placed = true
       }
       // в повороте болид идёт шире линии: зазоры с соседями считаем по месту, где он на самом деле
@@ -429,7 +434,7 @@ export function createAiDriver(line, opts = {}) {
             const lp = predict(horizon, st.tgt) + lag * Math.exp(-horizon / 0.8)
             if (Math.abs(lp - nb.l) < HIT_AHEAD && (block === null || gap < block.gap)) block = { gap, vc, tc, v: nb.v, l: nb.l, s: nb.s, j: nb.j }
           }
-        } else if (nb.s < -8 && nb.s > -30 && Math.abs(nb.l - lMe) < 7 && nb.v - speed > 1.5 && (attack === null || Math.abs(nb.l - lMe) < Math.abs(attack))) {
+        } else if (nb.s < -8 && nb.s > -30 && Math.abs(nb.l - lMe) < 7 && nb.v - speed > 1.5 && nb.v - speed < 14 && st.tRun > 6 && (attack === null || Math.abs(nb.l - lMe) < Math.abs(attack))) {
           attack = nb.l - lMe // догоняющий сзади (влево +)
         }
         if (nb.s > -(CAR_L + 4) && nb.s < 18 && Math.abs(nb.l - lMe) < 4.2) busy = true
@@ -463,6 +468,7 @@ export function createAiDriver(line, opts = {}) {
       // решение «обгонять или нет» (USR canOvertake): хватает разницы в скорости и места до торможения
       const canOvertake = (b) => {
         if (st.cool > 0) return false
+        if (st.noPass && !isObstacle(b)) return false // под флагами не обгоняем, стоящее объезжаем
         // стоящую или совсем медленную помеху объезжаем всегда; а вот обгонять в куче на разгоне и на малой скорости не начинаем
         if (!isObstacle(b) && (speed < 25 || st.tRun < 6)) return false
         const vfree = line.speed[at(i0 + Math.round(Math.max(0, b.s) / 2))] * skill * tyreK
@@ -481,7 +487,7 @@ export function createAiDriver(line, opts = {}) {
         const step = (half[0] + half[1]) / (LANES - 1)
         const occ = new Array(LANES).fill(false)
         for (const nb of nbs) {
-          if (nb.s <= -(CAR_L + 8) || nb.s > b.s + 14 || nb.s > 70) continue
+          if (nb.s <= -(CAR_L + 8) || nb.s > b.s + 14) continue
           const lax = nb.l + line.off[nb.j]
           for (let c = 0; c < LANES; c++) if (Math.abs(lowest + c * step - lax) < CAR_W / 2 + 0.3) occ[c] = true
         }
@@ -506,12 +512,21 @@ export function createAiDriver(line, opts = {}) {
         return best
       }
 
+      // со стартовой решётки не бежим сразу на гоночную линию (все 12 в одну колонну): своя полоса держится, пока до
+      // торможения далеко, и плавно уходит на линию на последних ~250 м перед ним; обгон и возврат её отменяют
+      const laneWant = () => {
+        if (st.lane === 0) return 0
+        const k = Math.max(0, Math.min(1, (brakePoint() - 120) / 130))
+        if (k === 0) st.lane = 0
+        return st.lane * k
+      }
+
       // ---- автомат: линия → следом → обгон → возврат (DanDroid), защита от догоняющего
       st.evalT -= dt
       let want = 0
       switch (st.mode) {
         case 'line':
-          want = 0
+          want = laneWant()
           if (block) {
             setMode('follow')
             st.clear = 0
@@ -522,7 +537,7 @@ export function createAiDriver(line, opts = {}) {
           }
           break
         case 'follow':
-          want = 0
+          want = laneWant()
           if (!block) {
             st.clear += dt
             if (st.clear > 0.7) setMode(Math.abs(st.offset) > 0.25 ? 'return' : 'line')
@@ -588,6 +603,7 @@ export function createAiDriver(line, opts = {}) {
           break
       }
       if (st.mode !== 'pass' && st.mode !== 'defend') st.side = 0
+      if (st.mode === 'pass' || st.mode === 'defend' || st.mode === 'return') st.lane = 0
 
       // сдвиг от линии в пределах асфальта (и в пределах боковой линии)
       const room = (side) => Math.min(side > 0 ? line.wl[i0] - MARGIN + 0.6 - line.off[i0] : line.wr[i0] - MARGIN + 0.6 + line.off[i0], 1.4 * (side > 0 ? line.left : line.right).S[i0])
@@ -606,7 +622,8 @@ export function createAiDriver(line, opts = {}) {
       // ---- руль: самая дальняя точка линии, до которой прямая не выходит за трассу (findNonCrashingPoint)
       const dir = st.offset >= 0 ? 1 : -1
       const side = dir > 0 ? line.left : line.right
-      const w = Math.min(1, Math.abs(st.offset) / Math.max(1, side.S[i0]))
+      // вес боковой линии: смещение больше SIDE (стартовая полоса, окно обгона у края) — продолжаем её форму, но не дальше асфальта
+      const w = Math.min(2.5, Math.abs(st.offset) / Math.max(1, side.S[i0]))
       const look = (6 + 0.32 * speed) * L.look * (pilot.look ?? 1)
       let tx = 0
       let tz = 0
@@ -617,8 +634,10 @@ export function createAiDriver(line, opts = {}) {
         let j = i0
         for (let acc = 0; acc < dist; j++) acc += line.ds[at(j)]
         const jt = at(j)
-        const ax = line.x[jt] + dir * w * side.S[jt] * line.nx[jt]
-        const az = line.z[jt] + dir * w * side.S[jt] * line.nz[jt]
+        const room = Math.max(0, dir > 0 ? line.wl[jt] - 1.3 - line.off[jt] : line.wr[jt] - 1.3 + line.off[jt])
+        const sh = dir * Math.min(w * side.S[jt], room)
+        const ax = line.x[jt] + sh * line.nx[jt]
+        const az = line.z[jt] + sh * line.nz[jt]
         tx = ax - p.x
         tz = az - p.z
         if (mult === 1) break
@@ -641,12 +660,14 @@ export function createAiDriver(line, opts = {}) {
       input.steer = Math.sign(delta) * Math.pow(Math.min(1, demand), 1 / T.steerCurve)
 
       // ---- педали: скорость по профилю здесь (смесь линий) и замедление, нужное, чтобы к точке впереди выйти на её скорость
+      // на старте поле разгоняется вместе (как в F1): за болидом впереди скорость не держим, это делает прогноз удара
+      const launching = st.tRun < 5 && speed < 40
       let follow = yieldV
       let oppBrake = 0
       if (block) {
         const gapRem = block.gap - safe
         // держим зазор: чем он больше, тем быстрее можно ехать относительно болида впереди
-        follow = Math.min(follow, block.v + Math.max(-4, 0.3 * gapRem))
+        if (!launching) follow = Math.min(follow, block.v + Math.max(-1.5, 0.3 * gapRem))
         if (block.vc > 0.2) {
           const tcs = Math.max(0.15, gapRem / block.vc)
           const decel = block.vc / tcs // (моя скорость − его) / время до догона
@@ -664,11 +685,11 @@ export function createAiDriver(line, opts = {}) {
       // в потоке идеальной линии нет (чужой воздух, чужие траектории) — чуть меньше предела, чтобы не выносило в поворотах
       // (на прямой не режем: там обгон и не нужно терять в скорости; чем медленнее поворот — тем сильнее)
       const packK = inTraffic ? 1 - (1 - PACK_K) * Math.max(0, Math.min(1, (75 - spd(i0)) / 30)) : 1
-      const now = Math.min(spd(i0) * skill * tyreK * packK, follow, wide)
+      const now = Math.min(spd(i0) * skill * tyreK * packK, follow, wide, st.cap)
       let k = i0
       let ahead = 0
       while (ahead < Math.max(8, speed * 0.5)) ahead += line.ds[at(k++)]
-      const later = Math.min(spd(at(k)) * skill * tyreK * packK, follow)
+      const later = Math.min(spd(at(k)) * skill * tyreK * packK, follow, st.cap)
       const need = (speed * speed - later * later) / (2 * ahead) // м/с², > 0 — тормозить
       const err = now - speed
       if (speed > now + 0.5 || need > 0.3 * maxDec) {
@@ -677,6 +698,11 @@ export function createAiDriver(line, opts = {}) {
       } else {
         input.throttle = Math.max(0, Math.min(1, 0.6 + err * 0.4))
         input.brake = 0
+      }
+      // красный флаг: стоим (с нулём в качестве цели газ всё равно давал бы 60%)
+      if (st.cap < 0.5) {
+        input.throttle = 0
+        input.brake = Math.max(input.brake, speed > 1 ? 0.7 : 0.4)
       }
       oppBrake = Math.max(oppBrake, st.oppBrake - 3 * dt)
       st.oppBrake = oppBrake
