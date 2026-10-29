@@ -159,10 +159,11 @@ export function createHud(track) {
   const csName = el('csName')
   const csPlan = el('csPlan')
   const csPU = el('csPU')
-  const csBody = el('csBody')
-  const tyreEls = ['tFL', 'tFR', 'tRL', 'tRR'].map(el)
-  const wingF = [...el('wFront').children]
-  const wingR = el('wRear').firstElementChild
+  const csWorst = el('csWorst')
+  // скан болида сверху приходит из main.js после загрузки модели (setCarScan); до этого схема пустая
+  const csSvg = el('csCar')
+  let csCar = null
+  let wheelEls = []
   const pitInfo = el('pitInfo')
   const flagBanner = el('flagBanner')
   const trackFlag = el('trackFlag')
@@ -182,6 +183,22 @@ export function createHud(track) {
   ppWing.addEventListener('click', () => onPitPick?.('wing'))
   let lastCar = 0
   const dmgColor = (d) => (d < 0.15 ? '#22D36B' : d < 0.5 ? '#FFC400' : '#E10600')
+  // часть болида: без повреждения — прозрачная (стиль из CSS), дальше от жёлтого к красному
+  const YELLOW = [0xff, 0xc4, 0x00]
+  const RED = [0xe1, 0x06, 0x00]
+  const dmgPaint = (node, d) => {
+    if (d < 0.15) {
+      node.style.fill = ''
+      node.style.stroke = ''
+      node.style.fillOpacity = ''
+      return
+    }
+    const t = Math.min(1, (d - 0.15) / 0.85)
+    const c = `rgb(${YELLOW.map((y, i) => Math.round(y + (RED[i] - y) * t)).join(',')})`
+    node.style.fill = c
+    node.style.stroke = c
+    node.style.fillOpacity = String(0.55 + 0.45 * t)
+  }
   const badge = (c) => `<span class="cmp" style="--c:${COMPOUNDS[c].color}">${COMPOUNDS[c].short}</span>`
 
 
@@ -199,11 +216,39 @@ export function createHud(track) {
       node.textContent = value
     }
   }
+  // setAttribute, а не className: у SVG-элементов className только для чтения
   const setClass = (node, value) => {
-    if (node.className !== value) node.className = value
+    if (node.getAttribute('class') !== value) node.setAttribute('class', value)
   }
 
   return {
+    // скан болида сверху (carScan.js): заливки ломающихся частей, шины, белые контуры, тормоза, подписи шин сбоку
+    setCarScan(scan) {
+      const fills = Object.entries(scan.fills).map(([id, d]) => `<path class="fill" id="${id}" d="${d}" fill-rule="evenodd"/>`).join('')
+      const wheels = Object.entries(scan.wheels)
+      const tyres = wheels.map(([k, w]) => `<path class="tyre" id="tyre${k}" d="${w.d}" fill-rule="evenodd"/>`).join('')
+      const brakes = wheels
+        .map(([k, w]) => {
+          const [x, y, bw, bh] = w.brake
+          const width = Math.max(bw, 2)
+          return `<rect class="fill" id="brk${k}" x="${x + bw / 2 - width / 2}" y="${y}" width="${width}" height="${bh}" rx="1"/>`
+        })
+        .join('')
+      // подписи снаружи колёс: у колёс слева на схеме — слева от шины, справа — справа
+      const labels = wheels
+        .map(([k, w]) => {
+          const left = w.outer < w.cx // колесо на левой стороне схемы
+          const x = left ? w.outer - 3 : w.outer + 3
+          const anchor = left ? 'end' : 'start'
+          return `<text class="wheel-v" id="wear${k}" x="${x}" y="${w.cy}" text-anchor="${anchor}"></text><text class="wheel-t" id="temp${k}" x="${x}" y="${w.cy + 10}" text-anchor="${anchor}"></text>`
+        })
+        .join('')
+      csSvg.setAttribute('viewBox', scan.viewBox)
+      csSvg.innerHTML = fills + tyres + `<path class="lines" d="${scan.lines}"/><path class="outline" d="${scan.outline}"/>` + brakes + labels
+      csCar = { floor: el('pFloor'), sideL: el('pSideL'), sideR: el('pSideR'), chassis: el('pChassis'), engine: el('pEngine'), wingL: el('pWingL'), wingR: el('pWingR'), rearWing: el('pRearWing'), suspL: el('pSuspL'), suspR: el('pSuspR') }
+      wheelEls = ['FL', 'FR', 'RL', 'RR'].map((k) => ({ tyre: el('tyre' + k), brk: el('brk' + k), wear: el('wear' + k), temp: el('temp' + k) }))
+    },
+
     // плашка сверху по центру: фальстарт, штраф и т. п.
     notify(text, bad = false, seconds = 4) {
       notice.textContent = text
@@ -252,24 +297,36 @@ export function createHud(track) {
         setText(csComp, c.short)
         setText(csName, c.name)
         setText(csPlan, `пит: ${COMPOUNDS[plan.compound].short}${plan.wing ? ' + ремонт' : ''}`)
-        v.tyres.forEach((t, i) => {
-          const node = tyreEls[i]
-          const [lo, hi] = c.window
-          setClass(node, 'tyre' + (t.puncture ? ' pop' : t.temp < lo ? ' cold' : t.temp > hi ? ' hot' : ''))
-          setText(node.firstElementChild, t.puncture ? 'ПРОК' : Math.round(t.wear * 100) + '%')
-          setText(node.lastElementChild, Math.round(t.temp) + '°')
-        })
         const d = v.damage
-        wingF[0].style.background = dmgColor(d.wingL)
-        wingF[1].style.background = dmgColor(d.wingR)
-        wingR.style.background = dmgColor(d.rearWing)
-        // самое побитое из остального кузова: подпись и цвет по тяжести
-        const parts = [['дн', d.floor], ['кузов', Math.max(d.sideL, d.sideR)], ['подв', Math.max(d.suspL, d.suspR)], ['торм', d.brakes], ['шасси', d.chassis], ['мотор', Math.max(0, v.engineHeat - 0.8) * 2.5]]
-        if (d.lost.some(Boolean)) parts.push(['колесо', 1])
+        const [lo, hi] = c.window
+        if (csCar) {
+          v.tyres.forEach((t, i) => {
+            const w = wheelEls[i]
+            const gone = d.lost[i]
+            setClass(w.tyre, 'tyre' + (gone ? ' gone' : t.puncture ? ' pop' : t.temp < lo ? ' cold' : t.temp > hi ? ' hot' : ''))
+            setText(w.wear, gone ? '' : t.puncture ? 'ПРОК' : Math.round(t.wear * 100) + '%')
+            setText(w.temp, gone || t.puncture ? '' : Math.round(t.temp) + '°')
+            dmgPaint(w.brk, d.brakes)
+          })
+          dmgPaint(csCar.wingL, d.wingL)
+          dmgPaint(csCar.wingR, d.wingR)
+          dmgPaint(csCar.rearWing, d.rearWing)
+          dmgPaint(csCar.floor, d.floor)
+          dmgPaint(csCar.sideL, d.sideL)
+          dmgPaint(csCar.sideR, d.sideR)
+          dmgPaint(csCar.chassis, d.chassis)
+          dmgPaint(csCar.suspL, d.suspL)
+          dmgPaint(csCar.suspR, d.suspR)
+          dmgPaint(csCar.engine, v.pu.failed ? 1 : Math.min(1, Math.max(0, v.engineHeat - 0.8) * 2.5))
+        }
+        // самая побитая часть: подпись и цвет по тяжести
+        const parts = [
+          ['переднее крыло', Math.max(d.wingL, d.wingR)], ['заднее крыло', d.rearWing], ['днище', d.floor], ['бокпод', Math.max(d.sideL, d.sideR)],
+          ['подвеска', Math.max(d.suspL, d.suspR)], ['тормоза', d.brakes], ['монокок', d.chassis], ['мотор', v.pu.failed ? 1 : Math.max(0, v.engineHeat - 0.8) * 2.5], ['колесо', d.lost.some(Boolean) ? 1 : 0],
+        ]
         const worst = parts.reduce((a, b) => (b[1] > a[1] ? b : a))
-        setClass(csBody, 'cs-body' + (worst[1] > 0.15 ? ' dmg' : ''))
-        csBody.style.background = worst[1] > 0.15 ? dmgColor(worst[1]) : ''
-        setText(csBody, worst[1] > 0.15 ? worst[0] : '')
+        setText(csWorst, worst[1] > 0.15 ? `Повреждено: ${worst[0]} · ${Math.round(worst[1] * 100)}%` : 'Без повреждений')
+        csWorst.style.color = worst[1] > 0.15 ? dmgColor(worst[1]) : ''
         setText(csPU, v.pu.failed ? 'отказ' : Math.round(v.pu.ice * 100) + '%')
       }
       // пит-лейн: фаза, выпуск

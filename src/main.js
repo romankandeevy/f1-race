@@ -7,6 +7,7 @@ import { loadCar, PAINTS } from './car.js'
 import { createVehicle, stepVehicle, collectImpacts, setGhost } from './vehicle.js'
 import { CameraRig } from './camera.js'
 import { createHud, createTelemetry } from './hud.js'
+import { scanCar } from './carScan.js'
 import { input } from './input.js'
 import { TUNING } from './tuning.js'
 import { createSetupScreen } from './setup.js'
@@ -74,6 +75,7 @@ async function main() {
   const vehicle = createVehicle(RAPIER, world, { x: pose.x, y: (pose.y || 0) + 0.05, z: pose.z, yaw: pose.yaw })
   const rig = new CameraRig(camera, car)
   const hud = createHud(track)
+  hud.setCarScan(scanCar(renderer, car.group)) // схема болида на табло — из той же модели, пока колёса и крылья на месте
   // круги считаем только на настоящей трассе (у тестовой нет оси); лучший круг — свой для каждой длины трассы.
   // laps2: с 28.10 считаются границы трассы — старые рекорды со срезками не берём
   const laps = track.axis?.length ? createLaps(track, `f1-race.laps2.${Math.round(track.length)}`) : null

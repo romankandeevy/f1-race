@@ -163,17 +163,19 @@
   #carStatus .cs-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; font-weight: 700; }
   #csPlan { margin-left: auto; font-size: 10px; }
   .cmp { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 3px solid var(--c, #888); font-size: 10px; font-weight: 900; color: var(--text); }
-  #carStatus .cs-grid { display: grid; grid-template-columns: 46px 1fr 46px; grid-template-rows: 54px 26px 54px; gap: 6px; align-items: center; }
-  #carStatus .tyre { height: 54px; border-radius: 8px; background: #22D36B; color: #0A0B0D; display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1; }
-  #carStatus .tyre b { font-size: 15px; font-weight: 900; }
-  #carStatus .tyre i { font-style: normal; font-size: 10px; font-weight: 700; margin-top: 3px; opacity: .8; }
-  #carStatus .tyre.cold { background: #33B4FF; }
-  #carStatus .tyre.hot { background: #FF7A1A; }
-  #carStatus .tyre.pop { background: var(--red); color: #fff; }
-  #carStatus .wing { display: flex; gap: 3px; height: 12px; align-self: center; }
-  #carStatus .wing i { flex: 1; background: var(--green); }
-  #carStatus .cs-body { justify-self: center; width: 26px; height: 100%; border-radius: 6px; background: #2A2E35; font-size: 9px; font-weight: 700; color: var(--muted); display: grid; place-items: center; text-align: center; }
-  #carStatus .cs-body.dmg { background: var(--yellow); color: #0A0B0D; }
+  /* скан болида сверху (carScan.js): белые контуры всех деталей; ломающиеся части под ними заливаются от жёлтого к красному (hud.js dmgPaint) */
+  #carStatus .car { display: block; width: 100%; height: auto; overflow: visible; }
+  #carStatus .fill { fill: none; stroke: none; stroke-width: .6; transition: fill .3s, stroke .3s, fill-opacity .3s; }
+  #carStatus .lines { fill: none; stroke: rgba(255, 255, 255, .62); stroke-width: .55; stroke-linejoin: round; }
+  #carStatus .outline { fill: none; stroke: #FFFFFF; stroke-width: 1.4; stroke-linejoin: round; filter: drop-shadow(0 0 2px rgba(255, 255, 255, .35)); }
+  #carStatus .tyre { fill: rgba(34, 211, 107, .6); stroke: #FFFFFF; stroke-width: .9; transition: fill .3s, stroke .3s; }
+  #carStatus .tyre.cold { fill: rgba(51, 180, 255, .65); }
+  #carStatus .tyre.hot { fill: rgba(255, 122, 26, .75); }
+  #carStatus .tyre.pop { fill: var(--red); }
+  #carStatus .tyre.gone { fill: none; stroke: var(--red); stroke-dasharray: 3 2; }
+  #carStatus .wheel-v { font: 800 10px var(--font); fill: #FFFFFF; letter-spacing: .02em; }
+  #carStatus .wheel-t { font: 600 8px var(--font); fill: #9AA1AB; }
+  #carStatus .cs-worst { margin-top: 6px; min-height: 14px; font-size: 11px; font-weight: 700; color: var(--muted); }
   #carStatus .cs-pu { display: flex; justify-content: space-between; align-items: baseline; margin-top: 8px; font-size: 13px; font-weight: 700; }
   /* ── пит-лейн: фаза и выпуск ── */
   #pitInfo { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%) scale(var(--hud)); transform-origin: bottom center; background: var(--panel); padding: 10px 22px; font-size: 18px; font-weight: 900; font-style: italic; letter-spacing: .08em; text-transform: uppercase; border-left: 5px solid var(--yellow); white-space: nowrap; }
@@ -431,11 +433,8 @@
     <div id="mfd" class="panel cut" hidden><span class="caps">Быстрые настройки</span><div class="mfd-row" data-k="brakeBias"><span>Баланс тормозов</span><b></b></div><div class="mfd-row" data-k="diffOn"><span>Дифференциал</span><b></b></div><div class="mfd-row" data-k="ers"><span>Батарея</span><b></b></div><div class="mfd-row" data-k="pitTyre"><span>Пит-стоп: шины</span><b></b></div><div class="mfd-row" data-k="pitWing"><span>Пит-стоп: ремонт</span><b></b></div></div>
     <div id="carStatus" class="panel cut">
       <div class="cs-head"><span id="csComp" class="cmp"></span><span id="csName"></span><span id="csPlan" class="caps"></span></div>
-      <div class="cs-grid">
-        <div class="tyre" id="tFL"><b></b><i></i></div><div class="wing" id="wFront"><i></i><i></i></div><div class="tyre" id="tFR"><b></b><i></i></div>
-        <div></div><div class="cs-body" id="csBody"></div><div></div>
-        <div class="tyre" id="tRL"><b></b><i></i></div><div class="wing" id="wRear"><i></i></div><div class="tyre" id="tRR"><b></b><i></i></div>
-      </div>
+      <svg class="car" id="csCar" aria-hidden="true"></svg>
+      <div class="cs-worst" id="csWorst"></div>
       <div class="cs-pu"><span class="caps">Мотор</span><span id="csPU"></span></div>
     </div>
   </div>
