@@ -608,6 +608,14 @@ async function main() {
     hud.setTrackFlag(null)
   }
 
+  // громкость звука болида по расстоянию до камеры: рядом — полная, к 80 м — тишина
+  const nearCam = (v) => {
+    if (v === vehicle) return 1
+    const t = v.body.translation()
+    const c = camera.position
+    return Math.max(0, 1 - Math.hypot(t.x - c.x, t.z - c.z) / 80)
+  }
+
   function judgeContactPair(a, b) {
     if (!race?.state.running) return
     const ia = idOf(a)
@@ -800,8 +808,12 @@ async function main() {
         (v, r) => {
           if (v === vehicle) hud.notify(`Повреждение: ${r.hits.join(', ')}`, true, 3)
           marks.debris.spawn(v, r, v === vehicle ? livery.primary : bots?.list.find((b) => b.v === v)?.paint)
+          sound.hit(r.sev, nearCam(v))
         },
-        (a, b) => judgeContactPair(a, b),
+        (a, b, force) => {
+          judgeContactPair(a, b)
+          if (a === vehicle || b === vehicle) sound.touch(Math.min(1, force / 120000), 1)
+        },
       )
       acc -= STEP
     }

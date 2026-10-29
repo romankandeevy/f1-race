@@ -12,6 +12,8 @@
 const URL_ENGINE = '/sounds/engine.wav'
 const URL_SQUEAL = '/sounds/tyre_squeal.wav'
 const URL_SCRAPE = '/sounds/scrape.wav'
+// удары (CC0, «75 CC0 breaking / falling / hit sfx», rubberduck): хруст — сильный удар, металл — стена и корпус, глухие — касания
+const HITS = { crunch: ['breaking_01', 'breaking_02'], metal: ['metal_hit_02', 'metal_hit_03', 'metal_hit_06'], touch: ['hit_04', 'hit_05'] }
 const MASTER = 0.4
 
 const smooth = (a, b, x) => {
@@ -37,6 +39,8 @@ export function createSound() {
     ctx = new AudioContext()
     const load = async (url) => ctx.decodeAudioData(await fetch(url).then((r) => r.arrayBuffer()))
     const [buffer, squealBuf, scrapeBuf] = await Promise.all([load(URL_ENGINE), load(URL_SQUEAL), load(URL_SCRAPE)])
+    const hitBufs = {}
+    for (const [kind, names] of Object.entries(HITS)) hitBufs[kind] = await Promise.all(names.map((nm) => load(`/sounds/hits/${nm}.mp3`)))
 
     const master = ctx.createGain()
     master.gain.value = MASTER * volume
@@ -126,7 +130,7 @@ export function createSound() {
     const squeal = loop(squealBuf)
     const scrape = loop(scrapeBuf)
 
-    n = { master, shift, sources: [base, high], onGain, offGain, onFilter, highGain, gravelGain, squeal, scrape }
+    n = { master, shift, sources: [base, high], onGain, offGain, onFilter, highGain, gravelGain, squeal, scrape, hitBufs }
     starting = false
     wake()
   }
@@ -144,12 +148,44 @@ export function createSound() {
   document.addEventListener('visibilitychange', wake)
 
   const set = (param, value, time = 0.04) => param.setTargetAtTime(value, ctx.currentTime, time)
+  let lastHit = 0
+  const play = (kind, volume) => {
+    const list = n.hitBufs[kind]
+    const s = ctx.createBufferSource()
+    s.buffer = list[Math.floor(Math.random() * list.length)]
+    s.playbackRate.value = 0.88 + Math.random() * 0.24 // каждый удар чуть другой
+    const g = ctx.createGain()
+    g.gain.value = volume
+    s.connect(g)
+    g.connect(n.master)
+    s.start()
+  }
 
   return {
     // громкость 0…1: действует сразу, а если звук ещё не запущен — при запуске
     setVolume(v) {
       volume = Math.min(1, Math.max(0, v))
       if (n) n.master.gain.setTargetAtTime(MASTER * volume, ctx.currentTime, 0.05)
+    },
+
+    // удар: strength 0…1 (тяжесть, wear.js sev), near 0…1 — насколько близко к камере (боты дальше — тише)
+    hit(strength, near = 1) {
+      if (!n || paused || muted || near <= 0.02) return
+      const t = ctx.currentTime
+      if (t - lastHit < 0.08) return // в одном ударе событий много — звучит один раз
+      lastHit = t
+      const v = (0.35 + 0.9 * strength) * near
+      play('metal', v)
+      if (strength > 0.4) play('crunch', v * 0.9) // сильный удар — ещё и хруст карбона
+    },
+
+    // касание болидов без повреждений: глухой стук, громкость по силе
+    touch(strength, near = 1) {
+      if (!n || paused || muted || near <= 0.02) return
+      const t = ctx.currentTime
+      if (t - lastHit < 0.25) return
+      lastHit = t
+      play('touch', (0.2 + 0.6 * strength) * near)
     },
 
     toggleMute() {
