@@ -1089,7 +1089,7 @@ async function main() {
       return p < track.length / 2 ? p : 0
     })(), vehicle.damage)
     telemetry.update(vehicle)
-    sound.update(vehicle, lastInput, paused)
+    sound.update(vehicle, lastInput, paused, { bots: bots?.list, camera, rain: weather.state.rain, dt: paused ? 0 : dt })
     renderer.render(scene, camera)
   }
   requestAnimationFrame(frame)
