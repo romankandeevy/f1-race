@@ -5,7 +5,7 @@
 // Rapier только интегрирует кузов как твёрдое тело. Настройка болида — TUNING.setup.
 // Износ шин, повреждения и износ мотора — wear.js: здесь только применяются их множители.
 import { TUNING, setupPhysics } from './tuning.js'
-import { freshTyres, tyreGrip, updateTyres, freshDamage, aeroDamage, applyImpact, freshPowerUnit, updatePowerUnit, powerFactor, suspDamageAt, SUSP_BROKEN, updateEngineHeat } from './wear.js'
+import { freshTyres, tyreGrip, updateTyres, freshDamage, aeroDamage, applyImpact, freshPowerUnit, updatePowerUnit, powerFactor, suspDamageAt, SUSP_BROKEN, updateEngineHeat, freshBrakes, brakeEff, updateBrakes, updateFuel } from './wear.js'
 
 // кузов → болид: по коллайдеру из событий удара Rapier найти, чей это болид
 export const hullOwners = new Map()
@@ -210,6 +210,7 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
     fx: 0,
     fy: 0,
     cap: 0,
+    brakeP: 0, // мощность, которую тормоз колеса переводит в тепло диска, Вт
   }))
 
   const v = {
@@ -257,6 +258,12 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
     tyres: freshTyres(80),
     damage: freshDamage(),
     pu: freshPowerUnit(),
+    brakeTemp: freshBrakes(), // температура тормозных дисков ПЛ, ПП, ЗЛ, ЗП, °C
+    brakeHot: false,
+    fuelOn: false, // топливо считается только в гонке (setFuel в wear.js); иначе бак не тратится и ничего не весит
+    fuel: 0, // кг
+    fuelStart: 0,
+    massFuel: 0, // сколько топлива сейчас учтено в массе кузова
     events: [], // что случилось за шаг (прокол, отказ мотора) — main показывает игроку
     wearOn: wear,
   }
@@ -349,6 +356,12 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
   // в Rapier добавленные силы копятся между шагами, пока их не сбросить
   body.resetForces(true)
   body.resetTorques(true)
+  // топливо — масса: пересчитываем массу кузова, когда бак изменился на 0,25 кг (Rapier пересчитывает и инерцию)
+  const fuelKg = v.fuelOn ? v.fuel : 0
+  if (Math.abs(fuelKg - v.massFuel) > 0.25 || (fuelKg === 0 && v.massFuel !== 0)) {
+    body.setAdditionalMass(fuelKg, true)
+    v.massFuel = fuelKg
+  }
 
   const q = body.rotation()
   const pos = body.translation()
@@ -414,7 +427,8 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
       const map = T.lowSpeedDrive + (1 - T.lowSpeedDrive) * clamp(Math.abs(fwdSpeed) / T.torqueMapSpeed, 0, 1)
       const force = T.maxDriveForce + (T.boostForce * deploy) / T.boostPower // «Зарядка» тягу забирает
       const power = T.power + deploy
-      drive = Math.min(force * map, power / Math.max(Math.abs(fwdSpeed), 1)) * throttle * powerFactor(v.pu, v.engineHeat)
+      const dry = v.fuelOn && v.fuel <= 0 // бак пуст — мотор глохнет
+      drive = dry ? 0 : Math.min(force * map, power / Math.max(Math.abs(fwdSpeed), 1)) * throttle * powerFactor(v.pu, v.engineHeat)
     }
   } else if (brakePedal > 0.001) {
     // hold — стоим в боксе: тормоз держит на месте и не включает задний ход (иначе болид в пит-стопе сам едет назад)
@@ -532,7 +546,7 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
       w.omega *= 0.995
       w.slip = 0
       w.sliding = false
-      w.fx = w.fy = w.cap = 0
+      w.fx = w.fy = w.cap = w.brakeP = 0
       w.spin += w.omega * dt
       continue
     }
@@ -572,7 +586,9 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
     let fx = 0
     if (!w.front) fx += rearFx[i - 2]
     const share = w.front ? biasF : 1 - biasF
-    fx -= ((brakeTotal * share) / 2) * clamp(vLong / 0.3, -1, 1)
+    // холодный или перегретый диск берёт слабее (wear.js brakeEff)
+    const brakeW = ((brakeTotal * share) / 2) * (v.wearOn ? brakeEff(v.brakeTemp[i]) : 1)
+    fx -= brakeW * clamp(vLong / 0.3, -1, 1)
     if (brakeTotal > 0) braking = true
 
     // боковая сила по кривой шины: угол увода с запаздыванием шины
@@ -628,6 +644,8 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
     w.fy = fy
     w.cap = cap
     w.sliding = sliding
+    // заблокированное колесо диск не греет: скользит шина
+    w.brakeP = sliding && fx * vLong < 0 ? 0 : brakeW * Math.abs(vLong)
     if (sliding && fx * vLong < 0) w.omega = 0 // заблокировано
     else if (sliding) w.omega = vLong / T.wheelRadius + Math.sign(fx) * 8 // буксует
     else w.omega = vLong / T.wheelRadius
@@ -724,4 +742,6 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
   if (popped >= 0) v.events.push('Прокол — шина стёрта')
   if (updatePowerUnit(v, dt, throttle, Math.max(0, deploy) / T.boostPower)) v.events.push('Отказ силовой установки')
   if (updateEngineHeat(v, dt, throttle, Math.abs(fwdSpeed))) v.events.push('Отказ силовой установки: перегрев, радиатор разбит')
+  if (updateBrakes(v, dt, Math.abs(fwdSpeed))) v.events.push('Тормоза перегрелись — тормозят слабее')
+  updateFuel(v, dt, throttle, powerFactor(v.pu, v.engineHeat))
 }

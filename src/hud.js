@@ -160,6 +160,8 @@ export function createHud(track) {
   const csPlan = el('csPlan')
   const csPU = el('csPU')
   const csWorst = el('csWorst')
+  const csFuelRow = el('csFuelRow')
+  const csFuel = el('csFuel')
   // скан болида сверху приходит из main.js после загрузки модели (setCarScan); до этого схема пустая
   const csSvg = el('csCar')
   let csCar = null
@@ -183,6 +185,14 @@ export function createHud(track) {
   ppWing.addEventListener('click', () => onPitPick?.('wing'))
   let lastCar = 0
   const dmgColor = (d) => (d < 0.15 ? '#22D36B' : d < 0.5 ? '#FFC400' : '#E10600')
+  // полоска тормоза в колесе — температура диска: в окне 350–900° прозрачная, холодный — голубой, горячий — оранжевый, перегретый — красный
+  const brakePaint = (node, t) => {
+    const c = t < 250 ? '#33B4FF' : t < 900 ? '' : t < 1000 ? '#FF7A1A' : '#E10600'
+    if (node.dataset.c === c) return
+    node.dataset.c = c
+    node.style.fill = node.style.stroke = c
+    node.style.fillOpacity = c ? '0.9' : ''
+  }
   // часть болида: без повреждения — прозрачная (стиль из CSS), дальше от жёлтого к красному
   const YELLOW = [0xff, 0xc4, 0x00]
   const RED = [0xe1, 0x06, 0x00]
@@ -306,7 +316,7 @@ export function createHud(track) {
             setClass(w.tyre, 'tyre' + (gone ? ' gone' : t.puncture ? ' pop' : t.temp < lo ? ' cold' : t.temp > hi ? ' hot' : ''))
             setText(w.wear, gone ? '' : t.puncture ? 'ПРОК' : Math.round(t.wear * 100) + '%')
             setText(w.temp, gone || t.puncture ? '' : Math.round(t.temp) + '°')
-            dmgPaint(w.brk, d.brakes)
+            brakePaint(w.brk, v.brakeTemp[i])
           })
           dmgPaint(csCar.wingL, d.wingL)
           dmgPaint(csCar.wingR, d.wingR)
@@ -325,9 +335,16 @@ export function createHud(track) {
           ['подвеска', Math.max(d.suspL, d.suspR)], ['тормоза', d.brakes], ['монокок', d.chassis], ['мотор', v.pu.failed ? 1 : Math.max(0, v.engineHeat - 0.8) * 2.5], ['колесо', d.lost.some(Boolean) ? 1 : 0],
         ]
         const worst = parts.reduce((a, b) => (b[1] > a[1] ? b : a))
-        setText(csWorst, worst[1] > 0.15 ? `Повреждено: ${worst[0]} · ${Math.round(worst[1] * 100)}%` : 'Без повреждений')
+        setText(csWorst, worst[1] > 0.15 ? `${worst[0][0].toUpperCase() + worst[0].slice(1)} · ${Math.round(worst[1] * 100)}%` : 'Без повреждений')
         csWorst.style.color = worst[1] > 0.15 ? dmgColor(worst[1]) : ''
         setText(csPU, v.pu.failed ? 'отказ' : Math.round(v.pu.ice * 100) + '%')
+        // топливо: килограммы и запас в кругах до финиша (зелёный — хватает, жёлтый — впритык, красный — не хватит, береги)
+        if (csFuelRow.hidden === v.fuelOn) csFuelRow.hidden = !v.fuelOn
+        if (v.fuelOn) {
+          const dl = v.fuelDelta
+          setText(csFuel, `${v.fuel.toFixed(1)} кг` + (dl == null ? '' : ` · ${dl >= 0 ? '+' : '−'}${Math.abs(dl).toFixed(1)} кр.`))
+          csFuel.style.color = dl == null ? '' : dl >= 0.3 ? 'var(--green)' : dl >= 0 ? 'var(--yellow)' : 'var(--red)'
+        }
       }
       // пит-лейн: фаза, выпуск
       if (!pit) {
@@ -575,12 +592,15 @@ export function createTelemetry() {
         })
         .join('')
       const plank = s.plankContact > 0 ? ' · <span class="bad">чиркает</span>' : ''
+      const bt = v.brakeTemp.map((t) => (t > 1000 ? `<span class="bad">${Math.round(t)}°</span>` : Math.round(t) + '°'))
       box.innerHTML =
         `<div class="t-head caps">Телеметрия · T</div>` +
         `<div class="row"><span class="caps">Перегрузка</span><span>бок ${s.gLat.toFixed(2)} g · вдоль ${s.gLong.toFixed(2)} g</span></div>` +
         `<div class="row"><span class="caps">Руль</span><span>${Math.round(v.steerIn * 100)}% · колёса ${deg(v.delta)}°</span></div>` +
         `<div class="row"><span class="caps">Днище</span><span>перед ${Math.round(s.rideF)} мм · зад ${Math.round(s.rideR)} мм${plank}</span></div>` +
         `<div class="row"><span class="caps">Граунд-эффект</span><span>прижим ×${s.aeroMult.toFixed(2)}</span></div>` +
+        `<div class="row"><span class="caps">Тормоза</span><span>перед ${bt[0]} / ${bt[1]} · зад ${bt[2]} / ${bt[3]}</span></div>` +
+        (v.fuelOn ? `<div class="row"><span class="caps">Топливо</span><span>${v.fuel.toFixed(2)} кг</span></div>` : '') +
         `<table><tr><th></th><th>нагрузка</th><th>увод</th><th>развал</th><th>сцепление</th><th></th></tr>${rows}</table>`
     },
   }

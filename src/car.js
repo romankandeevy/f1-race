@@ -252,14 +252,16 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}) {
       if (rearWingNode) rearWingNode.visible = dm.rearWing < 0.95
       drs.visible = dm.rearWing < 0.95
 
-      // задние огни и диски разогреваются при торможении
+      // задние огни горят при торможении; диски светятся по температуре (wear.js): от ~500° тускло-красным, к 1000° — ярко-оранжевым
       const braking = v.state.braking ? 1 : 0
       const rear = materials.light_rear
       if (rear) rear.emissiveIntensity = THREE.MathUtils.lerp(rear.emissiveIntensity, braking ? 5 : 0.8, 0.3)
       const disc = materials.brake_disc
       if (disc) {
-        disc.emissive.set(0xff5a14)
-        disc.emissiveIntensity = THREE.MathUtils.lerp(disc.emissiveIntensity, braking ? 1.6 : 0, 0.08)
+        const bt = Math.max(v.brakeTemp[0], v.brakeTemp[1])
+        const glow = THREE.MathUtils.clamp((bt - 480) / 520, 0, 1)
+        disc.emissive.setRGB(1, 0.18 + 0.25 * glow, 0.04)
+        disc.emissiveIntensity = THREE.MathUtils.lerp(disc.emissiveIntensity, 2.2 * glow, 0.15)
       }
     },
   }

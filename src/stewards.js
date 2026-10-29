@@ -13,6 +13,7 @@ export function retireReason(v) {
   if (d.chassis >= 1) return 'Монокок разрушен'
   if (d.lost.some(Boolean)) return 'Оторвано колесо'
   if (Math.max(d.suspL, d.suspR) >= 1) return 'Подвеска разрушена'
+  if (v.fuelOn && v.fuel <= 0) return 'Кончилось топливо'
   return null
 }
 

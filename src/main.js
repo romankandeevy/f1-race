@@ -8,6 +8,7 @@ import { createVehicle, stepVehicle, collectImpacts, setGhost } from './vehicle.
 import { CameraRig } from './camera.js'
 import { createHud, createTelemetry } from './hud.js'
 import { scanCar } from './carScan.js'
+import { createParticles } from './particles.js'
 import { input } from './input.js'
 import { TUNING } from './tuning.js'
 import { createSetupScreen } from './setup.js'
@@ -19,7 +20,7 @@ import { createBots, BOT_COUNT } from './bots.js'
 import { createRace } from './race.js'
 import { AI_LEVELS } from './ai.js'
 import { wheelsOut, createLimits } from './limits.js'
-import { COMPOUNDS, COMPOUND_ORDER, freshTyres, freshDamage, freshPowerUnit } from './wear.js'
+import { COMPOUNDS, COMPOUND_ORDER, freshTyres, freshDamage, freshPowerUnit, freshBrakes, setFuel, fuelForRace, FUEL_PER_KM } from './wear.js'
 import { createPitLane, pitEntryHit, createPitStop, defaultPlan, pitLimiter } from './pit.js'
 import { RACE_LAPS } from './race.js'
 import { settings, QUALITY } from './settings.js'
@@ -76,6 +77,7 @@ async function main() {
   const rig = new CameraRig(camera, car)
   const hud = createHud(track)
   hud.setCarScan(scanCar(renderer, car.group)) // схема болида на табло — из той же модели, пока колёса и крылья на месте
+  const particles = createParticles(scene)
   // круги считаем только на настоящей трассе (у тестовой нет оси); лучший круг — свой для каждой длины трассы.
   // laps2: с 28.10 считаются границы трассы — старые рекорды со срезками не берём
   const laps = track.axis?.length ? createLaps(track, `f1-race.laps2.${Math.round(track.length)}`) : null
@@ -378,6 +380,9 @@ async function main() {
     vehicle.damage = freshDamage()
     vehicle.engineHeat = 0.3
     vehicle.hotTime = 0
+    vehicle.brakeTemp = freshBrakes()
+    vehicle.brakeHot = false
+    particles.clear()
     retired = false
     orange = null
     resultsAt = 0
@@ -402,6 +407,10 @@ async function main() {
         raceLaps,
       )
     }
+    // топливо — только в гонке: бак на дистанцию с запасом в круг, у всех одинаковый (в заезде на время бак не тратится)
+    const tank = race ? fuelForRace(raceLaps, track.length) : 0
+    setFuel(vehicle, tank)
+    for (const b of bots?.list ?? []) setFuel(b.v, tank)
     hud.setMode(race ? `Гонка · ${AI_LEVELS[botLevel].name.toLowerCase()} соперники` : 'Заезд на время')
     vehicle.body.setTranslation({ x: s.x, y: (s.y || 0) + 0.05, z: s.z }, true)
     vehicle.body.setRotation({ x: 0, y: Math.sin(s.yaw / 2), z: 0, w: Math.cos(s.yaw / 2) }, true)
@@ -937,11 +946,20 @@ async function main() {
       }
     }
     tow?.update(paused ? 0 : dt)
+    particles.update(paused ? 0 : dt, vehicle, bots?.list, camera, renderer)
     env.follow(car.group.position)
     const view = input.takeLook()
     rig.update(dt, vehicle, paused && !rig.showcase ? null : view)
     hud.update(vehicle.state, vehicle.aero, laps, car.group.position, input.abs, bots?.list)
     hud.updateRace(race?.state, bots?.list)
+    // запас топлива в кругах до финиша (как «fuel delta» на руле F1): расход за круг — по факту, пока не проехан круг — по расчёту
+    if (vehicle.fuelOn && race) {
+      const me = race.car('player')
+      const done = me.lap > 0 ? me.lap - 1 + laps.state.s / track.length : 0 // кругов проехано (race.lap — номер текущего круга)
+      const nominal = (track.length / 1000) * FUEL_PER_KM
+      const perLap = done > 0.6 ? (vehicle.fuelStart - vehicle.fuel) / done : nominal
+      vehicle.fuelDelta = vehicle.fuel / Math.max(perLap, nominal * 0.5) - Math.max(0, race.state.laps - done)
+    } else vehicle.fuelDelta = null
     hud.updateCar(vehicle, pitPlan, pitCtl)
     hud.updatePitPlan(pitRequest && !pitCtl, pitPlan, (() => {
       if (entryS === null) return 0

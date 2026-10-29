@@ -176,6 +176,7 @@
   #carStatus .wheel-v { font: 800 10px var(--font); fill: #FFFFFF; letter-spacing: .02em; }
   #carStatus .wheel-t { font: 600 8px var(--font); fill: #9AA1AB; }
   #carStatus .cs-worst { margin-top: 6px; min-height: 14px; font-size: 11px; font-weight: 700; color: var(--muted); }
+  #carStatus .cs-pu[hidden] { display: none; }
   #carStatus .cs-pu { display: flex; justify-content: space-between; align-items: baseline; margin-top: 8px; font-size: 13px; font-weight: 700; }
   /* ── пит-лейн: фаза и выпуск ── */
   #pitInfo { position: absolute; left: 50%; bottom: 150px; transform: translateX(-50%) scale(var(--hud)); transform-origin: bottom center; background: var(--panel); padding: 10px 22px; font-size: 18px; font-weight: 900; font-style: italic; letter-spacing: .08em; text-transform: uppercase; border-left: 5px solid var(--yellow); white-space: nowrap; }
@@ -436,6 +437,7 @@
       <svg class="car" id="csCar" aria-hidden="true"></svg>
       <div class="cs-worst" id="csWorst"></div>
       <div class="cs-pu"><span class="caps">Мотор</span><span id="csPU"></span></div>
+      <div class="cs-pu" id="csFuelRow" hidden><span class="caps">Топливо</span><span id="csFuel"></span></div>
     </div>
   </div>
   <div id="pitInfo" hidden></div>

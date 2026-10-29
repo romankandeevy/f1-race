@@ -10,7 +10,7 @@ import { createStart } from '../src/start.js'
 import { createRaceLine, createAiDriver, makePilots } from '../src/ai.js'
 import { createRace } from '../src/race.js'
 import { wheelsOut, createLimits } from '../src/limits.js'
-import { tyreGrip, aeroDamage, suspDamageAt, freshDamage, repairSeconds, applyRepair } from '../src/wear.js'
+import { tyreGrip, aeroDamage, suspDamageAt, freshDamage, repairSeconds, applyRepair, setFuel, fuelForRace, FUEL_PER_KM } from '../src/wear.js'
 import { retireReason, mechanicalFlag, judgeContact, contactPenalty } from '../src/stewards.js'
 import { createFlags, SC_SPEED, VSC_SPEED, RED_SPEED, RED_MAX } from '../src/flags.js'
 import { createSafetyCar } from '../src/safetycar.js'
@@ -1495,6 +1495,105 @@ function hitWall(kmhIn, wallDeg) {
     world.step()
   }
   check('«призрак» проходит сквозь болид', `стоящий сдвинулся на ${Math.abs(a.body.translation().z - 20).toFixed(2)} м, призрак уехал на ${b.body.translation().z.toFixed(0)} м`, Math.abs(a.body.translation().z - 20) < 0.3 && b.body.translation().z > 40)
+}
+
+// Тормоза и топливо (Рома 29.10: «частицы, тормоза, топливо»): диск греется торможением и остывает на скорости, перегретый и
+// холодный берут слабее; топливо тратится по газу, добавляет массу, на гонку его хватает с запасом, пустой бак — сход
+{
+  const withWear = () => {
+    const w = fresh()
+    w.v.wearOn = true
+    return w
+  }
+  // одно торможение 300 → 100 км/ч
+  const w = withWear()
+  run(w, NONE, 0.5)
+  accelTo(w, 300)
+  const t0 = [...w.v.brakeTemp]
+  for (let t = 0; t < 10 && kmh(w) > 100; t += DT) run(w, { brake: 1 }, DT)
+  const rise = w.v.brakeTemp.map((x, i) => x - t0[i])
+  const front = (rise[0] + rise[1]) / 2
+  const rear = (rise[2] + rise[3]) / 2
+  check('тормоза: 300 → 100 км/ч греет передний диск сильнее заднего', `перед +${Math.round(front)}°, зад +${Math.round(rear)}° (с ${Math.round(t0[0])}°)`, front > 150 && front < 450 && rear < front)
+  // остывание на прямой
+  const hot = w.v.brakeTemp[0]
+  run(w, () => hold(w, 250), 10)
+  check('тормоза остывают на прямой', `${Math.round(hot)}° → ${Math.round(w.v.brakeTemp[0])}° за 10 с на 250 км/ч`, w.v.brakeTemp[0] < hot * 0.6)
+  // перегретые и холодные берут слабее
+  const stop = (temp) => {
+    const s = withWear()
+    run(s, NONE, 0.5)
+    accelTo(s, 250)
+    s.v.brakeTemp = [temp, temp, temp, temp]
+    const z0 = s.v.body.translation()
+    for (let t = 0; t < 10 && kmh(s) > 100; t += DT) run(s, { brake: 0.8 }, DT)
+    const z1 = s.v.body.translation()
+    return Math.hypot(z1.x - z0.x, z1.z - z0.z)
+  }
+  const ok = stop(650)
+  const faded = stop(1350)
+  const cold = stop(60)
+  check('перегретые и холодные тормоза: путь 250 → 100 длиннее', `в окне ${ok.toFixed(0)} м, перегретые ${faded.toFixed(0)} м, холодные ${cold.toFixed(0)} м`, faded > ok * 1.15 && cold > ok * 1.03 && cold < faded)
+
+  // топливо: масса замедляет разгон
+  const to200 = (kg) => {
+    const s = withWear()
+    setFuel(s.v, kg)
+    run(s, NONE, 0.5)
+    let t = 0
+    while (kmh(s) < 200 && t < 20) {
+      run(s, { throttle: 1 }, DT)
+      t += DT
+    }
+    return t
+  }
+  const light = to200(1)
+  const heavy = to200(110)
+  check('полный бак медленнее разгоняется', `0–200: ${light.toFixed(2)} с почти пустой, ${heavy.toFixed(2)} с со 110 кг`, heavy > light * 1.03 && heavy < light * 1.2)
+  // пустой бак: мотор не тянет, сход
+  const e = withWear()
+  setFuel(e.v, 0.05)
+  run(e, NONE, 0.5)
+  run(e, { throttle: 1 }, 6)
+  check('кончилось топливо — мотор глохнет и сход', `${kmh(e).toFixed(0)} км/ч через 6 с газа, ${retireReason(e.v) || 'нет схода'}`, kmh(e) < 60 && retireReason(e.v) === 'Кончилось топливо')
+
+  // расход за круг LUMEN RING (сложный бот) и что бака на гонку хватает
+  const glb = fs.readFileSync(new URL('../public/models/track.glb', import.meta.url))
+  const json = JSON.parse(glb.slice(20, 20 + glb.readUInt32LE(12)).toString())
+  const P = (n) => n.translation || [n.matrix[12], n.matrix[13], n.matrix[14]]
+  const kids = (name) => json.nodes.find((n) => n.name === name).children.map((i) => json.nodes[i])
+  const axis = kids('Ось трассы').map((n) => ({ x: P(n)[0], z: P(n)[2], ...n.extras })).sort((a, b) => a.distance_m - b.distance_m)
+  const len = axis[axis.length - 1].distance_m + 2
+  const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
+  world.timestep = DT
+  const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
+  world.createCollider(RAPIER.ColliderDesc.cuboid(5000, 0.5, 5000).setTranslation(0, -0.5, 0).setCollisionGroups(STATIC_GROUPS), g)
+  const yaw = Math.atan2(axis[1].x - axis[0].x, axis[1].z - axis[0].z)
+  const v = createVehicle(RAPIER, world, { x: axis[0].x, y: 0.05, z: axis[0].z, yaw }, TUNING)
+  setFuel(v, 30)
+  const d = createAiDriver(createRaceLine(axis, 'hard'), { idx: 0 })
+  let prev = 0
+  let at1 = null
+  let lapKg = NaN
+  let bmax = 0
+  for (let t = 0; t < 200; t += DT) {
+    stepVehicle(v, d.update(v, DT), DT, () => 'asphalt')
+    world.step()
+    if (at1 !== null) bmax = Math.max(bmax, ...v.brakeTemp)
+    const sNow = axis[d.state.idx].distance_m
+    if (prev > len * 0.75 && sNow < len * 0.25) {
+      if (at1 === null) at1 = v.fuel
+      else {
+        lapKg = at1 - v.fuel
+        break
+      }
+    }
+    prev = sNow
+  }
+  const perKm = lapKg / (len / 1000)
+  const tank = fuelForRace(5, len)
+  check('топливо за круг LUMEN RING и бак на 5 кругов', `${lapKg.toFixed(2)} кг за круг (${perKm.toFixed(2)} кг/км, в расчёте бака ${FUEL_PER_KM}), бак ${tank} кг — запас ${(tank / lapKg - 5).toFixed(1)} кр.`, lapKg > 0.8 && lapKg < 1.7 && Math.abs(perKm / FUEL_PER_KM - 1) < 0.2 && tank / lapKg - 5 > 0.6)
+  check('тормоза за круг в рабочем окне', `до ${Math.round(bmax)}°`, bmax > 450 && bmax < 1000)
 }
 
 const failed = results.filter((r) => !r.ok)

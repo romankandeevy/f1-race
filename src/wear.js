@@ -1,6 +1,6 @@
 // Износ и поломки: шины (состав, износ, температура, прокол), повреждения от ударов (крылья, днище,
 // подвеска), силовая установка (ДВС, ERS, коробка — износ копится между гонками, у изношенной растёт
-// риск отказа). Без Three.js — проверяется в Node. Физика читает отсюда множители (vehicle.js).
+// риск отказа), температура тормозов и топливо. Без Three.js — проверяется в Node. Физика читает отсюда множители (vehicle.js).
 //
 // Шина работает: боковая сила × скольжение (увод) × скорость, плюс пробуксовка/блокировка — это и нагревает,
 // и стирает её. Числа подобраны по замеру на LUMEN RING (сложный бот, круг ~67 с): средняя работа шины
@@ -201,6 +201,66 @@ export function updateEngineHeat(v, dt, throttle, speed) {
     }
   } else v.hotTime = Math.max(0, v.hotTime - dt)
   return false
+}
+
+// ——— тормоза: углеродные диски греются торможением и остывают потоком воздуха ———
+// Рабочее окно углерода в F1 ~350–1000 °C: холодный тормоз берёт слабее, выше 1000° — «отказ» (fade), берёт всё слабее.
+// Тепло на колесо = тормозная сила колеса × скорость (vehicle.js, w.brakeP). Диск ~1,4 кг углерода (теплоёмкость ~1700 Дж/°C).
+// Остывает тем быстрее, чем быстрее едешь; разбитые тормозные каналы (damage.brakes) режут охлаждение.
+// Замер (npm test): торможение 300→100 км/ч греет передний диск на ~260°, за 10 с на 250 км/ч он остывает с ~410° до ~230°,
+// за круг LUMEN RING у сложного бота — до ~520°. Выше 1000° — только с разбитыми каналами или если ехать с ногой на тормозе.
+export const BRAKE_START = 300 // °C — после прогревочного круга
+const BRAKE_AMBIENT = 30
+const BRAKE_HEAT_CAP = 1700 // Дж/°C на диск
+const BRAKE_COOL = 0.012 // 1/с на месте
+const BRAKE_COOL_V = 0.0009 // 1/с на каждый м/с скорости
+export const BRAKE_COLD = 350 // ниже — тормоз берёт слабее
+export const BRAKE_FADE = 1000 // выше — тормоз «плывёт»
+export const BRAKE_HOT_NOTE = 1050
+
+export const freshBrakes = () => [BRAKE_START, BRAKE_START, BRAKE_START, BRAKE_START]
+
+// сколько тормоз колеса берёт от нормы: холодный до −15%, перегретый на 350° сверх окна — до −45%
+export function brakeEff(temp) {
+  const cold = Math.min(1, Math.max(0, (BRAKE_COLD - temp) / 250))
+  const fade = Math.min(1, Math.max(0, (temp - BRAKE_FADE) / 350))
+  return (1 - 0.15 * cold) * (1 - 0.45 * fade)
+}
+
+// за шаг; возвращает true, когда тормоза только что перегрелись (для строки на экране; снова — после остывания ниже 950°)
+export function updateBrakes(v, dt, speed) {
+  const cool = (BRAKE_COOL + BRAKE_COOL_V * speed) * (1 - 0.7 * v.damage.brakes)
+  let hottest = 0
+  for (let i = 0; i < 4; i++) {
+    const t = v.brakeTemp[i] + dt * (v.wheels[i].brakeP / BRAKE_HEAT_CAP - (v.brakeTemp[i] - BRAKE_AMBIENT) * cool)
+    v.brakeTemp[i] = t
+    hottest = Math.max(hottest, t)
+  }
+  if (!v.brakeHot && hottest > BRAKE_HOT_NOTE) return (v.brakeHot = true)
+  if (v.brakeHot && hottest < 950) v.brakeHot = false
+  return false
+}
+
+// ——— топливо ———
+// Предел расхода в F1 — 100 кг/ч на полной мощности; ~1,2 кг за круг LUMEN RING. Дозаправки в гонке нет (запрещена с 2010),
+// поэтому топлива заливают на дистанцию с небольшим запасом: кончилось — сход. Топливо — масса: полный бак тяжелее и медленнее.
+export const FUEL_FLOW_MAX = 100 / 3600 // кг/с
+const FUEL_IDLE = 0.0004 // кг/с на холостых
+export const FUEL_PER_KM = 0.33 // кг на км — для заправки на гонку (замер сложного бота на LUMEN RING, см. tests)
+
+// бак на гонку: дистанция и запас в один круг
+export const fuelForRace = (laps, trackLength) => +((laps + 1) * (trackLength / 1000) * FUEL_PER_KM + 0.5).toFixed(1)
+
+export function setFuel(v, kg) {
+  v.fuelOn = kg > 0
+  v.fuel = kg
+  v.fuelStart = kg
+}
+
+// за шаг: расход по газу; мощность изношенного или перегретого мотора ниже — и расход тоже
+export function updateFuel(v, dt, throttle, power) {
+  if (!v.fuelOn || v.fuel <= 0) return
+  v.fuel = Math.max(0, v.fuel - dt * (FUEL_IDLE + FUEL_FLOW_MAX * throttle * power))
 }
 
 // ——— ремонт на пит-стопе ———
