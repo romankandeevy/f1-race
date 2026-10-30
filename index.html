@@ -263,9 +263,10 @@
   #setup .sheet-title { margin: 0; font-size: 34px; font-weight: 900; font-style: italic; letter-spacing: .01em; text-transform: uppercase; line-height: 1; }
   #setup .close { font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 6px 0; }
   #setup .close:hover { color: var(--text); }
-  #setup .tabs { display: flex; align-items: center; gap: 2px; padding: 0 32px; border-bottom: 1px solid var(--line); }
+  /* вкладок 8 (с 30.10 «Охлаждение»): в узком окне переносятся на вторую строку, а не раздвигают окно гаража */
+  #setup .tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 0 32px; border-bottom: 1px solid var(--line); min-width: 0; }
   #setup .tabs kbd { margin: 0 8px; opacity: .7; }
-  #setup .tabs button { padding: 12px 16px 10px; font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border-bottom: 3px solid transparent; margin-bottom: -1px; }
+  #setup .tabs button { padding: 12px 13px 10px; font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border-bottom: 3px solid transparent; margin-bottom: -1px; white-space: nowrap; }
   #setup .tabs button:hover { color: var(--text); }
   #setup .tabs button.on { color: var(--text); border-bottom-color: var(--red); }
   #setup .setup-body { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, 1fr); min-height: 0; }

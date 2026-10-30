@@ -174,8 +174,24 @@ export const SETUP_DEFAULT = {
   tyreFR: 25.0,
   tyreRL: 23.0,
   tyreRR: 23.0,
+  // добавлены 30.10 (Рома: «больше настроек для болида»); значения по умолчанию физику не меняют
+  engineBraking: 50, // Трансмиссия: торможение мотором на сбросе газа, %
+  damperF: 6, // Подвеска: амортизаторы 1–11 (сжатие и отбой вместе)
+  damperR: 6,
+  steerLock: 24, // Геометрия: угол поворота колёс на упоре, ° (18–30)
+  brakeDucts: 3, // Охлаждение: воздуховоды тормозов 1–6
+  radiator: 3, // радиаторы мотора 1–6
 }
 TUNING.setup = { ...SETUP_DEFAULT }
+
+// новые параметры → множители физики (числа, без объектов: зовутся на каждом шаге)
+export const engineBrakeOf = (s) => 0.4 + (1.2 * (s.engineBraking ?? 50)) / 100 // 50% — как было, 0% — 0,4, 100% — 1,6
+export const damperOf = (s, front) => 0.55 + 0.09 * (((front ? s.damperF : s.damperR) ?? 6) - 1) // 6 — как было, 1 — 0,55, 11 — 1,45
+export const steerLockOf = (s, T = TUNING) => (T.steerLock * (s.steerLock ?? 24)) / 24 // 24° — как было (0,42 рад)
+export const brakeCoolOf = (s) => 0.55 + 0.225 * ((s.brakeDucts ?? 3) - 1) // 3 — как было, 1 — 0,55, 6 — 1,675
+export const engineCoolOf = (s) => 1 + 0.075 * ((s.radiator ?? 3) - 3) // 3 — как было, 1 — 0,85 (на медленной трассе мотор горячий и слабее, но не умирает), 6 — 1,225
+// открытые воздуховоды и радиаторы — сопротивление воздуха: тормоза 0,5% и радиаторы 0,8% на деление от середины
+export const coolDragOf = (s) => 1 + 0.005 * ((s.brakeDucts ?? 3) - 3) + 0.008 * ((s.radiator ?? 3) - 3)
 
 // игровые шкалы → настоящие величины
 export function setupPhysics(s) {
@@ -189,44 +205,51 @@ export function setupPhysics(s) {
   }
 }
 
-// Готовые настройки под характер трассы и стиль езды.
-// Готовые настройки (вкладка «Готовые» в гараже). Оценки 1–5 — для новичка: скорость на прямой,
-// как держит повороты, насколько прощает ошибки. Порядок оценок проверяется в tests/physics.mjs.
+// Готовые настройки (вкладка «Готовые» в гараже). Переделаны 30.10 (Рома: «готовые настройки не очень») — у каждой своя
+// задача: новичок, универсальная, под трассу (городская со шпильками / быстрая с прямыми), дождь, для опытных.
+// Оценки 1–5 — по замерам физики (tools/setup/presets.mjs): скорость на прямой, держит повороты (перегрузка в медленном
+// и быстром повороте), прощает ошибки (увод зада в повороте, под газом на выходе и на сбросе газа). Порядок проверяют тесты.
 export const SETUP_PRESETS = {
   rookie: {
     name: 'Новичок',
     who: 'Первые круги, клавиатура',
-    hint: 'Зад держит крепко, тормоз не блокирует колёса так легко, газ в повороте почти не срывает. Поворачивает чуть ленивее — зато разворот надо постараться устроить.',
+    hint: 'Зад держит крепко: газ на выходе и сброс газа перед поворотом почти не срывают. Тормоз мягче — колёса блокируются не так легко, мотор на сбросе почти не тормозит. Поворачивает чуть ленивее, зато развернуть его надо постараться.',
     rate: { straight: 2, corners: 3, forgiving: 5 },
-    values: { frontWing: 32, rearWing: 42, diffOn: 100, diffOff: 75, camberF: -3.2, camberR: -1.2, toeF: 0.02, toeR: 0.45, suspF: 18, suspR: 12, arbF: 14, arbR: 5, rideF: 14, rideR: 16, brakePressure: 88, brakeBias: 60, tyreFL: 24.0, tyreFR: 24.0, tyreRL: 21.5, tyreRR: 21.5 },
+    values: { frontWing: 34, rearWing: 44, diffOn: 95, diffOff: 70, camberF: -3.2, camberR: -1.2, toeF: 0.02, toeR: 0.45, suspF: 18, suspR: 14, arbF: 15, arbR: 5, rideF: 14, rideR: 16, brakePressure: 88, brakeBias: 60, tyreFL: 24.0, tyreFR: 24.0, tyreRL: 21.5, tyreRR: 21.5, engineBraking: 25, damperF: 5, damperR: 5, steerLock: 26, brakeDucts: 4, radiator: 4 },
   },
   balanced: {
     name: 'Универсальная',
-    who: 'Когда освоился',
-    hint: 'Средние крылья и подвеска: ничего не выделяется, ничего не мешает. Хорошая база, чтобы крутить что-то своё.',
+    who: 'Когда освоился · любая трасса',
+    hint: 'Всё посередине: ничего не выделяется, ничего не мешает. Хорошая база, чтобы крутить что-то своё.',
     rate: { straight: 3, corners: 3, forgiving: 3 },
     values: { ...SETUP_DEFAULT },
   },
-  corners: {
-    name: 'Повороты',
-    who: 'Много медленных поворотов',
-    hint: 'Крылья почти на максимуме, подвеска мягче: болид цепко держит повороты и прощает неровности, но на прямой медленнее всех.',
+  street: {
+    name: 'Городская',
+    who: 'Marina Bay и медленные трассы',
+    hint: 'Крылья на максимуме, подвеска и амортизаторы мягкие — поребрики и кочки не подбрасывают, руль выворачивается круче для шпилек, тормоза и мотор охлаждаются сильнее. На прямой медленнее всех — на городской трассе прямых мало.',
     rate: { straight: 1, corners: 5, forgiving: 4 },
-    values: { frontWing: 46, rearWing: 48, diffOn: 80, diffOff: 55, camberF: -3.5, camberR: -2.0, toeF: 0.08, toeR: 0.35, suspF: 16, suspR: 13, arbF: 11, arbR: 8, rideF: 15, rideR: 21, brakePressure: 100, brakeBias: 56, tyreFL: 23.5, tyreFR: 23.5, tyreRL: 21.5, tyreRR: 21.5 },
+    values: { frontWing: 48, rearWing: 50, diffOn: 75, diffOff: 60, camberF: -2.8, camberR: -1.4, toeF: 0.08, toeR: 0.3, suspF: 15, suspR: 13, arbF: 10, arbR: 7, rideF: 16, rideR: 22, brakePressure: 100, brakeBias: 59, tyreFL: 23.0, tyreFR: 23.0, tyreRL: 21.0, tyreRR: 21.0, engineBraking: 35, damperF: 4, damperR: 4, steerLock: 28, brakeDucts: 5, radiator: 5 },
   },
-  straights: {
-    name: 'Прямые',
-    who: 'Длинные прямые, обгоны',
-    hint: 'Крылья почти плоские, болид низкий и жёсткий: самый быстрый на прямой, но в поворотах скользит — тормозить надо раньше.',
-    rate: { straight: 5, corners: 1, forgiving: 2 },
-    values: { frontWing: 10, rearWing: 6, diffOn: 95, diffOff: 40, camberF: -3.0, camberR: -1.3, toeF: 0.03, toeR: 0.2, suspF: 26, suspR: 25, arbF: 15, arbR: 11, rideF: 7, rideR: 13, brakePressure: 100, brakeBias: 58, tyreFL: 27.0, tyreFR: 27.0, tyreRL: 24.5, tyreRR: 24.5 },
+  fast: {
+    name: 'Скоростная',
+    who: 'LUMEN RING и трассы с прямыми',
+    hint: 'Крылья почти плоские, болид низкий и жёсткий, радиаторы и тормоза прикрыты — меньше сопротивления: самый быстрый на прямой. В медленных поворотах скользит — тормозить раньше.',
+    rate: { straight: 5, corners: 2, forgiving: 2 },
+    values: { frontWing: 14, rearWing: 8, diffOn: 90, diffOff: 45, camberF: -3.0, camberR: -1.3, toeF: 0.03, toeR: 0.2, suspF: 27, suspR: 26, arbF: 16, arbR: 12, rideF: 7, rideR: 12, brakePressure: 100, brakeBias: 58, tyreFL: 26.5, tyreFR: 26.5, tyreRL: 24.0, tyreRR: 24.0, engineBraking: 50, damperF: 8, damperR: 7, steerLock: 22, brakeDucts: 2, radiator: 2 },
+  },
+  wet: {
+    name: 'Дождь',
+    who: 'Мокрая трасса',
+    hint: 'Максимум прижима, всё мягкое и высокое: болид не всплывает на воде и мягко отпускает зад. Дифференциал открытый и мотор на сбросе не тормозит — меньше пробуксовки и заносов на мокром. Охлаждение прикрыто: вода и так остужает.',
+    rate: { straight: 2, corners: 5, forgiving: 5 },
+    values: { frontWing: 48, rearWing: 50, diffOn: 60, diffOff: 80, camberF: -2.6, camberR: -1.0, toeF: 0.0, toeR: 0.4, suspF: 12, suspR: 10, arbF: 8, arbR: 4, rideF: 20, rideR: 24, brakePressure: 85, brakeBias: 60, tyreFL: 23.0, tyreFR: 23.0, tyreRL: 21.0, tyreRR: 21.0, engineBraking: 10, damperF: 3, damperR: 3, steerLock: 26, brakeDucts: 1, radiator: 2 },
   },
   sharp: {
     name: 'Пилот',
     who: 'Для опытных',
-    hint: 'Нос цепкий, зад лёгкий: болид сам ныряет в поворот и быстро меняет направление. Быстро, но ошибок не прощает — лишний газ в повороте разворачивает.',
+    hint: 'Нос цепкий, зад лёгкий: болид сам ныряет в поворот и быстро меняет направление, мотор на сбросе тормозит сильно. Быстро, но ошибок не прощает — лишний газ в повороте разворачивает.',
     rate: { straight: 3, corners: 4, forgiving: 1 },
-    values: { frontWing: 40, rearWing: 28, diffOn: 60, diffOff: 35, camberF: -3.5, camberR: -1.4, toeF: 0.15, toeR: 0.15, suspF: 24, suspR: 18, arbF: 10, arbR: 14, rideF: 9, rideR: 17, brakePressure: 100, brakeBias: 56, tyreFL: 24.0, tyreFR: 24.0, tyreRL: 24.0, tyreRR: 24.0 },
+    values: { frontWing: 42, rearWing: 30, diffOn: 60, diffOff: 35, camberF: -3.5, camberR: -1.4, toeF: 0.15, toeR: 0.12, suspF: 25, suspR: 19, arbF: 11, arbR: 15, rideF: 9, rideR: 18, brakePressure: 100, brakeBias: 56, tyreFL: 24.0, tyreFR: 24.0, tyreRL: 23.5, tyreRR: 23.5, engineBraking: 60, damperF: 8, damperR: 6, steerLock: 26, brakeDucts: 3, radiator: 3 },
   },
 }
-

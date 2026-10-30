@@ -4,7 +4,7 @@
 // с общим запасом сцепления на тягу/тормоз и поворот; аэро — крылья, граунд-эффект днища, наклон кузова.
 // Rapier только интегрирует кузов как твёрдое тело. Настройка болида — TUNING.setup.
 // Износ шин, повреждения и износ мотора — wear.js: здесь только применяются их множители.
-import { TUNING, setupPhysics } from './tuning.js'
+import { TUNING, setupPhysics, engineBrakeOf, damperOf, steerLockOf, coolDragOf } from './tuning.js'
 import { freshTyres, tyreGrip, updateTyres, freshDamage, aeroDamage, applyImpact, freshPowerUnit, updatePowerUnit, powerFactor, suspDamageAt, SUSP_BROKEN, updateEngineHeat, freshBrakes, brakeEff, updateBrakes, updateFuel } from './wear.js'
 
 // кузов → болид: по коллайдеру из событий удара Rapier найти, чей это болид
@@ -309,7 +309,8 @@ function updateSteering(v, input, dt, fwdSpeed, latSpeed) {
   const shaped = Math.sign(v.steerIn) * Math.pow(Math.abs(v.steerIn), T.steerCurve)
   const aLim = T.tireMu * G * (1 + (v.aeroK * speed * speed) / (T.mass * G))
   const gripAngle = Math.atan((T.wheelBase * aLim) / Math.max(speed * speed, 1)) + T.steerSlipMargin
-  let want = Math.min(T.steerLock, gripAngle) * shaped
+  const lock = steerLockOf(T.setup, T) // угол поворота колёс — из настройки (по умолчанию 24°, как было)
+  let want = Math.min(lock, gripAngle) * shaped
 
   // самовозврат: колёса по направлению движения (угол скольжения кузова)
   if (fwdSpeed > 3) {
@@ -319,7 +320,7 @@ function updateSteering(v, input, dt, fwdSpeed, latSpeed) {
     want += weight * align
   }
   want += aeroDamage(v.damage).pull // погнутая подвеска и сломанное крыло тянут в сторону
-  want = clamp(want, -T.steerLock, T.steerLock)
+  want = clamp(want, -lock, lock)
   v.delta += clamp(want - v.delta, -T.maxSteerSpeed * dt, T.maxSteerSpeed * dt)
 
   // Аккерман: внутреннее колесо поворачивается чуть больше внешнего
@@ -473,7 +474,7 @@ function stepVehicleRaw(v, input, dt, surfaceAt) {
   // болид устойчивее на выходе, но ленивее поворачивает. На сбросе газа так же делит торможение мотором.
   const wy = body.angvel().y
   // торможение мотором на сбросе: растёт со скоростью (обороты выше — тормозит сильнее); с 300 км/ч сброс газа даёт около 1 g
-  const engineBrake = throttle < 0.01 && fwdSpeed > 2 ? (T.engineBrake + T.engineBrakeSpeed * fwdSpeed) * clamp(fwdSpeed / 2, 0, 1) : 0
+  const engineBrake = throttle < 0.01 && fwdSpeed > 2 ? (T.engineBrake + T.engineBrakeSpeed * fwdSpeed) * clamp(fwdSpeed / 2, 0, 1) * engineBrakeOf(setup) : 0
   const rearTotal = drive - engineBrake
   const lock = (throttle > 0.01 ? setup.diffOn : setup.diffOff) / 100
   const dvRear = -2 * wy * T.rear.x // левое минус правое: в левом повороте левое медленнее
@@ -534,7 +535,7 @@ function stepVehicleRaw(v, input, dt, surfaceAt) {
     const sd = suspDamageAt(v.damage, w.front, w.side)
     const broken = clamp((sd - SUSP_BROKEN) / (1 - SUSP_BROKEN), 0, 1)
     const spring = (w.front ? P.springF : P.springR) * (1 - 0.9 * broken)
-    const damp = cdot > 0 ? T.damperBump : T.damperRebound
+    const damp = (cdot > 0 ? T.damperBump : T.damperRebound) * damperOf(T.setup, w.front)
     let f = spring * w.compression + damperForce(T, cdot, damp)
     if (w.compression > T.bumpStop) f += (w.compression - T.bumpStop) * T.bumpStopK
     w.load = Math.max(0, f)
@@ -720,7 +721,7 @@ function stepVehicleRaw(v, input, dt, surfaceAt) {
   const shareF = clamp(aero.front / (aero.front + aero.rear) + T.rakeBalance * (hR - hF), 0.3, 0.55)
   const open = v.aero
   v.aeroK = T.downforceK * (aero.front + aero.rear) * ground * (1 - (1 - T.straightDownforceFactor) * open)
-  const dragK = T.dragK * aero.drag * (1 - (1 - T.straightDragFactor) * open)
+  const dragK = T.dragK * aero.drag * coolDragOf(T.setup) * (1 - (1 - T.straightDragFactor) * open)
   const downTotal = v.aeroK * speed * speed
   for (let a = 0; a < 2; a++) {
     const p = rot(q, 0, 0.3, a === 0 ? T.front.z : T.rear.z, S.p)

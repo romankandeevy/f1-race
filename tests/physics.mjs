@@ -10,7 +10,7 @@ import { createStart } from '../src/start.js'
 import { createRaceLine, createAiDriver, makePilots } from '../src/ai.js'
 import { createRace } from '../src/race.js'
 import { wheelsOut, createLimits } from '../src/limits.js'
-import { tyreGrip, aeroDamage, suspDamageAt, freshDamage, repairSeconds, applyRepair, setFuel, fuelForRace, FUEL_PER_KM, wetGrip } from '../src/wear.js'
+import { tyreGrip, aeroDamage, suspDamageAt, freshDamage, repairSeconds, applyRepair, setFuel, fuelForRace, FUEL_PER_KM, wetGrip, updateBrakes, updateEngineHeat } from '../src/wear.js'
 import { retireReason, mechanicalFlag, judgeContact, contactPenalty } from '../src/stewards.js'
 import { createFlags, SC_SPEED, VSC_SPEED, RED_SPEED, RED_MAX } from '../src/flags.js'
 import { createSafetyCar } from '../src/safetycar.js'
@@ -257,6 +257,7 @@ function hardBrake(absOn) {
 
 // 12. Настройка болида действительно меняет поведение
 import { SETUP_DEFAULT, SETUP_PRESETS } from '../src/tuning.js'
+import { measure as measurePreset, rates as presetRates } from '../tools/setup/presets.mjs'
 function withSetup(values, fn) {
   Object.assign(TUNING.setup, SETUP_DEFAULT, values)
   try {
@@ -279,29 +280,87 @@ function aeroAt(kmhTarget) {
   const low = withSetup({ rideF: 1, rideR: 1, suspF: 1, suspR: 1 }, () => aeroAt(300).plankContact)
   check('низко и мягко на 300: днище чиркает', low, low > 0, ' Н')
 }
+// готовые настройки: оценки на карточках гаража (1–5) совпадают с замером (tools/setup/presets.mjs — та же физика)
 {
-  const top = (preset) =>
-    withSetup(SETUP_PRESETS[preset].values, () => {
+  const bad = []
+  const all = Object.entries(SETUP_PRESETS).map(([id, p]) => {
+    const m = measurePreset(p.values)
+    const r = presetRates(m)
+    if (r.straight !== p.rate.straight || r.corners !== p.rate.corners || r.forgiving !== p.rate.forgiving) bad.push(`${p.name}: замер ${r.straight}/${r.corners}/${r.forgiving}, в карточке ${p.rate.straight}/${p.rate.corners}/${p.rate.forgiving}`)
+    return `${p.name} ${m.top.toFixed(0)} км/ч, ${m.g200.toFixed(2)} g, занос ${m.trail.toFixed(1)}°`
+  })
+  check('готовые настройки: оценки совпадают с замером', bad.length ? bad.join('; ') : all.join(' · '), bad.length === 0)
+}
+// новые параметры настройки (30.10) — каждый что-то меняет
+{
+  // торможение мотором: сброс газа на 200 км/ч, замедление за 1 с
+  const lift = (engineBraking) =>
+    withSetup({ engineBraking }, () => {
+      const w = fresh()
+      run(w, NONE, 0.5)
+      accelTo(w, 200)
+      const v0 = kmh(w)
+      run(w, NONE, 1)
+      return v0 - kmh(w)
+    })
+  const lo = lift(0)
+  const hi = lift(100)
+  check('торможение мотором: 100% тормозит на сбросе сильнее 0%', `−${lo.toFixed(1)} против −${hi.toFixed(1)} км/ч за 1 с с 200`, hi > lo + 1.5)
+  // угол поворота колёс: на 25 км/ч с рулём до упора радиус меньше при 30°, чем при 18°
+  const radius = (steerLock) =>
+    withSetup({ steerLock }, () => {
+      const w = fresh()
+      run(w, NONE, 0.5)
+      accelTo(w, 25)
+      run(w, () => ({ ...hold(w, 25), steer: 1 }), 3)
+      const lv = w.v.body.linvel()
+      return Math.hypot(lv.x, lv.z) / Math.abs(w.v.body.angvel().y)
+    })
+  const r18 = radius(18)
+  const r30 = radius(30)
+  check('угол поворота колёс: 30° — шпилька круче, чем 18°', `радиус ${r30.toFixed(1)} против ${r18.toFixed(1)} м на 25 км/ч`, r30 < r18 - 1)
+  // амортизаторы: болид падает с 8 см — мягкие качаются дольше
+  const bounce = (d) =>
+    withSetup({ damperF: d, damperR: d }, () => {
+      const w = fresh()
+      run(w, NONE, 1)
+      const p = w.v.body.translation()
+      w.v.body.setTranslation({ x: p.x, y: p.y + 0.08, z: p.z }, true)
+      const ys = []
+      run(w, NONE, 1.5, () => ys.push(w.v.body.translation().y))
+      const end = ys[ys.length - 1]
+      return ys.reduce((a, y) => a + Math.abs(y - end), 0) / ys.length // средний размах качания вокруг конечного положения
+    })
+  const soft = bounce(1)
+  const stiff = bounce(11)
+  check('амортизаторы: мягкие гасят качание дольше жёстких', `средний размах ${(soft * 1000).toFixed(2)} против ${(stiff * 1000).toFixed(2)} мм`, soft > stiff)
+  // охлаждение тормозов: горячие диски (800°) за 10 с на 180 км/ч без торможения
+  const brakesAfter = (brakeDucts) => {
+    const v = { T: { setup: { brakeDucts } }, damage: { brakes: 0 }, brakeTemp: [800, 800, 800, 800], wheels: [0, 1, 2, 3].map(() => ({ brakeP: 0 })) }
+    for (let t = 0; t < 10; t += 0.05) updateBrakes(v, 0.05, 50)
+    return v.brakeTemp[0]
+  }
+  const ductsClosed = brakesAfter(1)
+  const ductsOpen = brakesAfter(6)
+  check('охлаждение тормозов: открытые воздуховоды остужают диски быстрее', `${ductsClosed.toFixed(0)}° при 1 против ${ductsOpen.toFixed(0)}° при 6`, ductsOpen < ductsClosed - 80)
+  // радиаторы: газ в пол на медленной трассе (25 м/с) минуту — закрытые греют мотор сильнее; открытые — тормозят воздухом
+  const heatAfter = (radiator) => {
+    const v = { T: { setup: { radiator } }, damage: freshDamage(), pu: { failed: false }, engineHeat: 0.5, hotTime: 0 }
+    for (let t = 0; t < 60; t += 0.05) updateEngineHeat(v, 0.05, 1, 25)
+    return v.engineHeat
+  }
+  const radClosed = heatAfter(1)
+  const radOpen = heatAfter(6)
+  const topRad = (radiator) =>
+    withSetup({ radiator, brakeDucts: radiator }, () => {
       const w = fresh()
       run(w, NONE, 0.5)
       run(w, { throttle: 1 }, 40)
       return kmh(w)
     })
-  const straights = top('straights')
-  const balanced = top('balanced')
-  const corners = top('corners')
-  check('пресеты: «Прямые» > «Универсальная» > «Повороты» на прямой', `${straights.toFixed(0)} / ${balanced.toFixed(0)} / ${corners.toFixed(0)} км/ч`, straights > balanced + 5 && balanced > corners + 5)
-}
-{
-  const rear = (preset) =>
-    withSetup(SETUP_PRESETS[preset].values, () => {
-      const r = steady(150)
-      return Math.abs(deg((r.w.v.wheels[2].slip + r.w.v.wheels[3].slip) / 2))
-    })
-  const rookie = rear('rookie')
-  const middle = rear('balanced')
-  const sharp = rear('sharp')
-  check('пресеты: «Новичок» прощает больше «Универсальной», та — больше «Пилота»', `увод зада ${rookie.toFixed(2)}° / ${middle.toFixed(2)}° / ${sharp.toFixed(2)}°`, rookie < middle && middle < sharp)
+  const vClosed = topRad(1)
+  const vOpen = topRad(6)
+  check('охлаждение мотора: закрытые радиаторы греют (но не убивают), открытые тормозят воздухом', `нагрев ${radClosed.toFixed(2)} против ${radOpen.toFixed(2)} (смерть мотора — выше 1,15); максималка ${vClosed.toFixed(0)} против ${vOpen.toFixed(0)} км/ч`, radClosed > radOpen + 0.15 && radClosed < 1.12 && vClosed > vOpen + 3)
 }
 {
   const g = (camberF) => withSetup({ camberF }, () => steady(150).g)
@@ -403,14 +462,6 @@ function aeroAt(kmhTarget) {
   check('«Зарядка» заряжает на газу, «Баланс» не трогает', `${Math.round(harvest.battery * 100)}% и ${Math.round(balanced.battery * 100)}% (было 50%)`, harvest.battery > 0.55 && Math.abs(balanced.battery - 0.5) < 0.005)
 }
 
-// 18b. Оценка «держит повороты» у пресетов: боковая перегрузка в быстром повороте
-{
-  const g = (preset) => withSetup(SETUP_PRESETS[preset].values, () => steady(200).g)
-  const corners = g('corners')
-  const balanced = g('balanced')
-  const straights = g('straights')
-  check('пресеты: «Повороты» > «Универсальная» > «Прямые» в повороте', `${corners.toFixed(2)} / ${balanced.toFixed(2)} / ${straights.toFixed(2)} g на 200 км/ч`, corners > balanced && balanced > straights)
-}
 
 // 19. Активная аэродинамика 2026: режим прямой быстрее на прямой; тормоз, руль и конец зоны его закрывают
 {

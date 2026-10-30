@@ -5,6 +5,7 @@
 // Шина работает: боковая сила × скольжение (увод) × скорость, плюс пробуксовка/блокировка — это и нагревает,
 // и стирает её. Числа подобраны по замеру на LUMEN RING (сложный бот, круг ~67 с): средняя работа шины
 // 2,5–6 кВт. Средние живут ~6 кругов, мягкие ~3,5, твёрдые ~10 — на гонку в 5 кругов нужна тактика.
+import { brakeCoolOf, engineCoolOf } from './tuning.js'
 
 // wet — сцепление на сухой, полумокрой и совсем мокрой трассе (доля от сухого), между точками — плавно.
 // Слики в дождь почти не держат; промежуточные лучше всех на влажной, дождевые — в ливень; на сухой обе дождевые
@@ -221,7 +222,8 @@ export const heatPowerFactor = (heat) => 1 - Math.min(0.5, Math.max(0, heat - EN
 export function updateEngineHeat(v, dt, throttle, speed) {
   if (v.pu.failed) return false
   const air = 0.4 + 0.6 * Math.min(1, speed / 60)
-  const target = Math.min(1.8, (0.2 + 0.4 * throttle) / (coolingOf(v.damage) * air))
+  // радиаторы из настройки (вкладка «Охлаждение»): закрытые — меньше сопротивления, но на медленной трассе мотор греется
+  const target = Math.min(1.8, (0.2 + 0.4 * throttle) / (coolingOf(v.damage) * engineCoolOf(v.T?.setup ?? {}) * air))
   v.engineHeat += (target - v.engineHeat) * (1 - Math.exp(-dt / 12))
   if (v.engineHeat > ENGINE_DEAD) {
     v.hotTime += dt
@@ -259,7 +261,8 @@ export function brakeEff(temp) {
 
 // за шаг; возвращает true, когда тормоза только что перегрелись (для строки на экране; снова — после остывания ниже 950°)
 export function updateBrakes(v, dt, speed) {
-  const cool = (BRAKE_COOL + BRAKE_COOL_V * speed) * (1 - 0.7 * v.damage.brakes)
+  // воздуховоды тормозов из настройки: открытые — остывают быстрее, но сопротивления больше (coolDragOf)
+  const cool = (BRAKE_COOL + BRAKE_COOL_V * speed) * (1 - 0.7 * v.damage.brakes) * brakeCoolOf(v.T?.setup ?? {})
   let hottest = 0
   for (let i = 0; i < 4; i++) {
     const t = v.brakeTemp[i] + dt * (v.wheels[i].brakeP / BRAKE_HEAT_CAP - (v.brakeTemp[i] - BRAKE_AMBIENT) * cool)
