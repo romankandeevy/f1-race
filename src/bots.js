@@ -23,8 +23,11 @@ const PIT_DECIDE = [100, 25] // м до въезда в пит-лейн, где 
 const GHOST_TIME = 3 // с: после возврата на трассу бот проходит сквозь болиды (как в F1 25)
 const RECOVERY_TIME = 90 // с: запасной срок; обычно болид убирает эвакуатор (flags.js, tow.js), и bots.remove(id) срабатывает раньше
 
-// lane — пит-лейн (pit.js) или null
-export function createBots({ RAPIER, world, scene, track, car, lane }) {
+// без картинки (сервер, тесты): болид-пустышка, ничего не рисует и в сцену не ставится
+const NO_CAR = { spawn: () => ({ group: { visible: true }, snapshot() {}, setCompound() {}, sync() {} }) }
+
+// lane — пит-лейн (pit.js) или null; car и scene — картинка (без них боты только едут, для сервера); rand — ГПСЧ (по умолчанию Math.random)
+export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, lane, rand = Math.random }) {
   let list = []
   // где на оси трассы начинается пит-лейн
   let entryS = null
@@ -98,7 +101,7 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
     clear() {
       for (const b of list) {
         world.removeRigidBody(b.v.body)
-        scene.remove(b.car.group)
+        scene?.remove(b.car.group)
       }
       list = []
     },
@@ -107,10 +110,10 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
     spawn(level, slots) {
       api.clear()
       // пилоты вразброс по решётке: имя и цвет — один пилот, номер темпа — новый на каждую гонку
-      const pilots = makePilots(BOT_COUNT)
+      const pilots = makePilots(BOT_COUNT, rand)
       const order = Array.from({ length: BOT_COUNT }, (_, i) => i)
       for (let k = order.length - 1; k > 0; k--) {
-        const r = Math.floor(Math.random() * (k + 1))
+        const r = Math.floor(rand() * (k + 1))
         ;[order[k], order[r]] = [order[r], order[k]]
       }
       list = slots.slice(0, BOT_COUNT).map((p, slot) => {
@@ -119,20 +122,22 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
         const T = { ...TUNING, setup: { ...SETUP_DEFAULT } }
         const v = createVehicle(RAPIER, world, { x: p.x, y: (p.y || 0) + 0.05, z: p.z, yaw: p.yaw }, T)
         // стартовые шины и план: мягкие — заезд на 2–3-м круге, средние — на 3-м
-        v.compound = Math.random() < 0.55 ? 'soft' : 'medium'
+        v.compound = rand() < 0.55 ? 'soft' : 'medium'
         v.tyres = freshTyres(80)
-        const planLap = v.compound === 'soft' ? 2 + Math.round(Math.random()) : 3
+        v.rand = rand
+        const planLap = v.compound === 'soft' ? 2 + Math.round(rand()) : 3
         const c = car.spawn(PAINTS[i % PAINTS.length])
-        scene.add(c.group)
+        scene?.add(c.group)
         const pilot = pilots[slot]
         const d = createAiDriver(createRaceLine(track.axis, level, T, pilot), { T, zone: track.straightZone })
         return { id: 'bot' + i, name: NAMES[i % NAMES.length], paint: PAINTS[i % PAINTS.length], pilot, v, car: c, d, input: d.input, box: slot, stops: 0, planLap, pit: null }
       })
     },
 
-    // раз в кадр: решения водителей. player — { x, z, speed }; hold — держать на решётке;
-    // race — { lapOf(id), laps, onPit(id, compound), onRetire(id) } или null
+    // раз в кадр: решения водителей. player — { x, z, speed } или список таких (онлайн: несколько живых игроков);
+    // hold — держать на решётке; race — { lapOf(id), laps, onPit(id, compound), onRetire(id) } или null
     think(dt, player, hold, racing, race) {
+      const people = Array.isArray(player) ? player : [player]
       const pos = list.map((b) => {
         const t = b.v.body.translation()
         return { x: t.x, z: t.z, speed: b.v.state.fwdSpeed }
@@ -142,7 +147,7 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
         // призрак снимается, только когда рядом никого: иначе болиды окажутся друг в друге
         if (b.ghost > 0 && (b.ghost -= dt) <= 0) {
           const me = pos[i]
-          const near = [...pos.filter((_, j) => j !== i && !list[j].gone), player].some((o) => Math.hypot(o.x - me.x, o.z - me.z) < 6)
+          const near = [...pos.filter((_, j) => j !== i && !list[j].gone), ...people].some((o) => Math.hypot(o.x - me.x, o.z - me.z) < 6)
           if (near) b.ghost = 0.3
           else setGhost(b.v, false)
         }
@@ -181,11 +186,17 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
           return
         }
         const others = pos.filter((_, j) => j !== i && !list[j].gone)
-        others.push(player)
+        others.push(...people)
         // флаги: потолок скорости и запрет обгона (race.limit — из main.js, там знают флаги и порядок)
         const lim = race?.limit?.(b)
         b.d.state.cap = lim ? lim.cap : Infinity
         b.d.state.noPass = lim ? lim.noPass : false
+        // под огнями водитель стоит на своём месте решётки: иначе он «думал» на месте — видел стоящих соседей, бросал
+        // стартовую полосу и к отмашке рвался на гоночную линию поперёк решётки (Марина, 30.10: завал со 2-го ряда)
+        if (!racing) {
+          b.d.reset(b.d.state.idx)
+          b.d.state.raceT = 0 // время с отмашки — с нуля (возврат на трассу его не трогает)
+        }
         b.input = b.d.update(b.v, dt, others)
         if (hold) hold(b.input)
         const st = b.d.state
@@ -203,7 +214,7 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
           const toEntry = (entryS - s + L) % L
           if (toEntry < PIT_DECIDE[0] && toEntry > PIT_DECIDE[1] && (lim?.redPit || wantsPit(b, race.lapOf(b.id), race.laps))) {
             // красный флаг: все в боксы, там стоят, пока флаг не снимут (race.hold)
-            b.pit = createPitStop(lane, b.box, defaultPlan(b.v, Math.max(1, race.laps - race.lapOf(b.id))), { T: b.v.T, damage: b.v.damage, hold: race.hold })
+            b.pit = createPitStop(lane, b.box, defaultPlan(b.v, Math.max(1, race.laps - race.lapOf(b.id))), { T: b.v.T, damage: b.v.damage, hold: race.hold, rand })
             b.mainIdx = st.idx
           }
         }

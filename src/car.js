@@ -181,6 +181,47 @@ function decalInfo(scene, liveryBase) {
   })
   return out
 }
+// Наклейка, у которой ближайшая деталь кузова лежит внутри одной из parts, переезжает в эту деталь (мировое место то же).
+// Ближайшая — по вершинам (через три, как в decalInfo); parts — от самой вложенной (закрылок внутри заднего крыла)
+function attachPartDecals(scene, carRoot, parts) {
+  const holder = scene.getObjectByName('decals')
+  const list = parts.filter(Boolean)
+  if (!holder || !list.length) return
+  scene.updateMatrixWorld(true)
+  const partOf = (o) => {
+    for (let p = o; p; p = p.parent) if (list.includes(p)) return p
+    return null
+  }
+  const xyz = []
+  const owner = []
+  const v = new THREE.Vector3()
+  carRoot.traverse((o) => {
+    if (!o.isMesh || Array.isArray(o.material) || isDecalMat(o.material)) return
+    const part = partOf(o)
+    const pos = o.geometry.attributes.position
+    for (let i = 0; i < pos.count; i += 3) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld)
+      xyz.push(v.x, v.y, v.z)
+      owner.push(part)
+    }
+  })
+  const decals = []
+  holder.traverse((o) => {
+    if (o.isMesh && isDecalMat(o.material)) decals.push(o)
+  })
+  for (const d of decals) {
+    d.geometry.computeBoundingBox()
+    const c = d.geometry.boundingBox.getCenter(v).applyMatrix4(d.matrixWorld)
+    let best = -1
+    let bd = Infinity
+    for (let k = 0; k < owner.length; k++) {
+      const dd = (xyz[k * 3] - c.x) ** 2 + (xyz[k * 3 + 1] - c.y) ** 2 + (xyz[k * 3 + 2] - c.z) ** 2
+      if (dd < bd) (bd = dd), (best = k)
+    }
+    if (best >= 0 && owner[best]) owner[best].attach(d)
+  }
+}
+
 function recolorDecal(src, light, map) {
   const cv = document.createElement('canvas')
   cv.width = src.width
@@ -442,6 +483,9 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
   const frontWingNode = carRoot.getObjectByName('front_wing')
   const rearWingNode = carRoot.getObjectByName('rear_wing')
   const onboard = carRoot.getObjectByName('cam_onboard')
+  // наклейки крыльев и закрылка — внутрь своей детали: крыло отвалилось — пропадают и его надписи (Рома 30.10: в меню
+  // крыла не было, а V-Power и Ray-Ban висели над асфальтом); надписи на закрылке поворачиваются вместе с ним
+  if (shadows) attachPartDecals(scene, carRoot, [drs, frontWingNode, rearWingNode])
 
   const prev = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() }
   const cur = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() }

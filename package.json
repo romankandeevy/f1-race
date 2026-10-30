@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tests/physics.mjs"
+    "test": "node tests/physics.mjs",
+    "server": "node server/game-server.mjs",
+    "online": "vite build && npm --prefix server install --silent && node server/start-online.mjs"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",

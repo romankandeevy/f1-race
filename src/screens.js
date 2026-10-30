@@ -53,7 +53,7 @@ export function createScreens(ctx) {
   let stack = []
   let sel = {} // выбранный пункт по экрану
   let tab = 0 // вкладка настроек
-  let session = { mode: ctx.canRace ? 'race' : 'time', level: 'medium', laps: 5, compound: 'medium', slot: 11, weather: 'dry', ...ctx.session }
+  let session = { mode: ctx.canRace ? 'race' : 'time', level: 'medium', laps: 5, compound: 'medium', slot: 11, weather: 'dry', time: 'day', ...ctx.session }
   try {
     Object.assign(session, JSON.parse(localStorage.getItem(SESSION_KEY) || '{}'))
   } catch {
@@ -112,9 +112,13 @@ export function createScreens(ctx) {
     action('next', 'Далее', () => push(nextStep('race')), { cta: true, hint: () => 'Дальше — погода.' }),
   ]
 
-  // условия: погода (сюда же потом — время суток)
+  // условия: погода и время суток (на витрине сразу видно, как выглядит выбранное)
   const weatherRows = () => [
     choice('weather', 'Погода', WEATHER_ORDER.map((v) => ({ v, name: WEATHERS[v].name })), () => session.weather, (v) => (session.weather = v), { hint: () => WEATHERS[session.weather].about }),
+    choice('time', 'Время суток', [{ v: 'day', name: 'День' }, { v: 'night', name: 'Ночь' }], () => session.time, (v) => {
+      session.time = v
+      ctx.previewTime?.(v)
+    }, { hint: () => (session.time === 'night' ? 'Ночь: темно, луна и звёзды, свет тусклее и туман гуще.' : 'Днём — солнце, как было всегда.') }),
     action('next', 'Далее', () => push(nextStep('weather')), { cta: true, hint: () => 'Дальше — болид: шины на старт и настройка.' }),
   ]
 
@@ -179,18 +183,26 @@ export function createScreens(ctx) {
         action('reset', 'Сбросить все настройки', () => settings.reset(), { hint: () => 'Вернуть всё в первоначальный вид. Ливрея болида и настройки гонки не меняются.' }),
       ],
     },
+    // клавиши (был отдельный пункт главного меню «Управление», Рома 30.10 — сюда)
+    { name: 'Управление', rows: [], keys: true },
   ]
 
   // ---------- главное меню ----------
-  const mainItems = () =>
+  // Рома 30.10: на главном только пять пунктов; режимы — карточками в «Играть», «Управление» — вкладка «Настроек»
+  const mainItems = () => [
+    { id: 'play', label: 'Играть', about: 'Заезд на время, гонка с ботами или онлайн с друзьями.', go: () => push('play') },
+    { id: 'garage', label: 'Гараж', about: 'Команда и цвета болида, состояние силовой установки.', go: () => push('garage') },
+    { id: 'setup', label: 'Настройка болида', about: 'Крылья, подвеска, тормоза, шины: готовые настройки и свои.', go: () => ctx.openSetup() },
+    { id: 'records', label: 'Рекорды', about: 'Лучший круг, лучшие секторы и твоя статистика гонок.', go: () => push('records') },
+    { id: 'settings', label: 'Настройки', about: 'Графика, звук, мышь, камеры, интерфейс и клавиши управления. Всё действует сразу.', go: () => push('settings') },
+  ]
+
+  // «Играть»: режимы карточками
+  const playItems = () =>
     [
-      ctx.canRace && { id: 'race', label: 'Гонка', about: 'Двенадцать болидов, огни старта, пит-стопы и правила F1. Дальше по шагам: трасса, соперники и круги, шины.', go: () => openFlowFor('race') },
-      { id: 'time', label: 'Заезд на время', about: 'Один на трассе: ловишь лучший круг, секторы считаются, границы трассы по правилам.', go: () => openFlowFor('time') },
-      { id: 'garage', label: 'Гараж', about: 'Команда и цвета болида, состояние силовой установки.', go: () => push('garage') },
-      { id: 'setup', label: 'Настройка болида', about: 'Крылья, подвеска, тормоза, шины: готовые настройки и свои.', go: () => ctx.openSetup() },
-      { id: 'records', label: 'Рекорды', about: 'Лучший круг, лучшие секторы и твоя статистика гонок.', go: () => push('records') },
-      { id: 'settings', label: 'Настройки', about: 'Графика, звук, мышь, камеры и интерфейс. Всё действует сразу.', go: () => push('settings') },
-      { id: 'keys', label: 'Управление', about: 'Все клавиши игры.', go: () => push('keys') },
+      { id: 'time', kick: 'Один', label: 'Заезд на время', about: 'Один на трассе: лучший круг, секторы, призрак своего рекорда.', go: () => openFlowFor('time') },
+      ctx.canRace && { id: 'race', kick: 'С ботами', label: 'Гонка', about: 'Двенадцать болидов, огни старта, пит-стопы, флаги и машина безопасности.', go: () => openFlowFor('race') },
+      ctx.openOnline && { id: 'online', kick: 'С друзьями', label: 'Онлайн', about: 'Комната по коду, до 12 игроков: заезд на время с призраками или гонка.', go: () => ctx.openOnline() },
     ].filter(Boolean)
 
   // ---------- вёрстка экранов ----------
@@ -287,7 +299,30 @@ export function createScreens(ctx) {
     const tabs = settingsTabs()
     tab = Math.min(tab, tabs.length - 1)
     const bar = `<nav class="sc-tabs">${tabs.map((t, k) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}">${t.name}</button>`).join('')}</nav>`
+    if (tabs[tab].keys)
+      return `
+      <section class="sc-col wide">
+        ${brand('Настройки', 'Параметры')}
+        ${bar}
+        ${keysGrid()}
+        ${hintBar([['Q E', 'вкладка'], ['Esc', 'назад']])}
+      </section>`
     return renderRows('settings' + tab, 'Настройки', 'Параметры', tabs[tab].rows, bar, [['Q E', 'вкладка'], ['↑ ↓', 'пункт'], ['← →', 'значение'], ['Esc', 'назад']])
+  }
+
+  // «Играть»: три карточки режимов в ряд (← → или ↑ ↓ — выбор, Enter — дальше)
+  function renderPlay() {
+    const items = playItems()
+    const i = Math.min(sel.play ?? 0, items.length - 1)
+    sel.play = i
+    return `
+      <section class="sc-col wide">
+        ${brand('Выбери режим', 'Играть')}
+        <div class="sc-modes">${items
+          .map((it, k) => `<button class="sc-mode${k === i ? ' on' : ''}" data-i="${k}"><span class="sc-mode-k">${esc(it.kick)}</span><b>${esc(it.label)}</b><span class="sc-mode-t">${esc(it.about)}</span><span class="sc-mode-go">Выбрать</span></button>`)
+          .join('')}</div>
+        ${hintBar([['← →', 'режим'], ['Enter', 'дальше'], ['Esc', 'назад']])}
+      </section>`
   }
 
   // гараж: команды списком, свои цвета, силовая установка
@@ -365,14 +400,8 @@ export function createScreens(ctx) {
       </section>`
   }
 
-  function renderKeys() {
-    return `
-      <section class="sc-col wide">
-        ${brand('Управление', 'Клавиатура и мышь')}
-        <div class="sc-keys">${KEYS.map(([g, rows]) => `<div><h3>${g}</h3><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></div>`).join('')}</div>
-        ${hintBar([['Esc', 'назад']])}
-      </section>`
-  }
+  // клавиши управления — вкладка «Управление» в «Настройках»
+  const keysGrid = () => `<div class="sc-keys">${KEYS.map(([g, rows]) => `<div><h3>${g}</h3><dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl></div>`).join('')}</div>`
 
   const SCREENS = {
     main: { render: renderMain, shift: 0.17 },
@@ -383,7 +412,7 @@ export function createScreens(ctx) {
     garage: { render: renderGarage, shift: 0.2 },
     settings: { render: renderSettings, shift: 0.2 },
     records: { render: renderRecords, shift: 0.2 },
-    keys: { render: renderKeys, shift: 0.0 },
+    play: { render: renderPlay, shift: 0.0 },
   }
 
   // ---------- состояние и навигация ----------
@@ -393,6 +422,7 @@ export function createScreens(ctx) {
     if (!name) return
     root.innerHTML = `<div class="sc-shade"></div>${SCREENS[name].render()}`
     root.dataset.screen = name
+    root.dataset.wide = name === 'play' || (name === 'settings' && settingsTabs()[tab]?.keys) ? '1' : ''
   }
   function hide() {
     stack = []
@@ -487,9 +517,9 @@ export function createScreens(ctx) {
 
   function activate(i) {
     const name = current()
-    if (name === 'main') {
-      sel.main = i
-      mainItems()[i]?.go()
+    if (name === 'main' || name === 'play') {
+      sel[name] = i
+      ;(name === 'main' ? mainItems() : playItems())[i]?.go()
       return
     }
     const rows = rowsOf()
@@ -541,21 +571,21 @@ export function createScreens(ctx) {
       return
     }
     const item = t.closest('[data-i]')
-    if (item && (item.classList.contains('sc-item') || item.classList.contains('sc-team') || item.tagName === 'BUTTON')) activate(Number(item.dataset.i))
+    if (item && (item.classList.contains('sc-item') || item.classList.contains('sc-mode') || item.classList.contains('sc-team') || item.tagName === 'BUTTON')) activate(Number(item.dataset.i))
     else if (item) {
       sel[selKey()] = Number(item.dataset.i)
       render()
     }
   })
   root.addEventListener('mouseover', (e) => {
-    const item = e.target.closest('.sc-item, .sc-row, .sc-team')
+    const item = e.target.closest('.sc-item, .sc-row, .sc-team, .sc-mode')
     if (!item || item.dataset.i === undefined) return
     const i = Number(item.dataset.i)
-    const key = current() === 'main' ? 'main' : selKey()
+    const key = current() === 'main' || current() === 'play' ? current() : selKey()
     if (sel[key] !== i && !e.target.closest('input')) {
       sel[key] = i
       // перерисовка при наведении заменила бы элемент под курсором: меняем подсветку на месте
-      for (const el of root.querySelectorAll('.sc-item, .sc-row, .sc-team')) el.classList.toggle('on', el === item)
+      for (const el of root.querySelectorAll('.sc-item, .sc-row, .sc-team, .sc-mode')) el.classList.toggle('on', el === item)
       const about = root.querySelector('.sc-about')
       if (about) {
         if (current() === 'main') about.innerHTML = mainItems()[i].about
@@ -584,12 +614,13 @@ export function createScreens(ctx) {
   addEventListener('keydown', (e) => {
     if (root.hidden || e.repeat && !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code)) return
     const name = current()
-    const rows = name === 'main' ? mainItems() : rowsOf()
-    const key = name === 'main' ? 'main' : selKey()
+    const list = name === 'main' || name === 'play'
+    const rows = name === 'main' ? mainItems() : name === 'play' ? playItems() : rowsOf()
+    const key = list ? name : selKey()
     const n = rows?.length ?? 0
-    if (e.code === 'ArrowUp' && n) sel[key] = ((sel[key] ?? 0) - 1 + n) % n
-    else if (e.code === 'ArrowDown' && n) sel[key] = ((sel[key] ?? 0) + 1) % n
-    else if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && name !== 'main' && n) {
+    if ((e.code === 'ArrowUp' || (name === 'play' && e.code === 'ArrowLeft')) && n) sel[key] = ((sel[key] ?? 0) - 1 + n) % n
+    else if ((e.code === 'ArrowDown' || (name === 'play' && e.code === 'ArrowRight')) && n) sel[key] = ((sel[key] ?? 0) + 1) % n
+    else if ((e.code === 'ArrowLeft' || e.code === 'ArrowRight') && !list && n) {
       const row = rows[sel[key] ?? 0]
       const dir = e.code === 'ArrowLeft' ? -1 : 1
       if (row.type === 'choice' || row.type === 'slider') change(row, dir)

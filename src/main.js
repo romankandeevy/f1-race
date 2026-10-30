@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import RAPIER from '@dimforge/rapier3d-compat'
 import { createEnvironment } from './env.js'
+import { createFloodlights } from './floodlights.js'
+import { createOnline } from './net/online.js'
 import { buildTrack } from './track.js'
 import { loadCircuit } from './circuit.js'
 import { loadCar, PAINTS } from './car.js'
@@ -93,6 +95,15 @@ async function main() {
     if (e.total) bar.style.width = (useTest ? 0 : 50) + (e.loaded / e.total) * (useTest ? 100 : 50) + '%'
   })
   scene.add(car.group)
+  // фонари трассы: ночью свет и тени — от них (floodlights.js)
+  const floodlights = createFloodlights(scene, track, renderer)
+  floodlights.cars([car.group])
+  // время суток: свет и небо (env) и фонари — вместе; шейдеры под новый набор источников — сразу в фоне
+  const setNight = (k) => {
+    env.setNight(k)
+    floodlights.setNight(k)
+    renderer.compileAsync(scene, camera).catch(() => {})
+  }
 
   const pose = track.startPose
   const vehicle = createVehicle(RAPIER, world, { x: pose.x, y: (pose.y || 0) + 0.05, z: pose.z, yaw: pose.yaw })
@@ -161,6 +172,8 @@ async function main() {
   }
   // машина рядом с пит-лейном (вдоль всей его оси, включая въезд и выезд)
   const nearPitLane = (x, z) => !!lane && lane.near(x, z, PIT_NEAR)
+  // заезд в боксы: в гонке — только после пересечения линии старта (на решётке и под огнями нельзя); заезд на время — всегда
+  const pitOpen = () => !race || (race.state.running && (laps?.state.lap ?? 0) >= 1)
   let raceLaps = RACE_LAPS // из экрана «Гонка»
   let playerSlot = BOT_COUNT // место на решётке: 0 — поул, 11 — последнее
   // квалификация (Рома 29.10): без соперников разгонный круг и два быстрых, в зачёт лучший; решётку строит время, как в F1
@@ -251,7 +264,7 @@ async function main() {
   const menu = createPauseMenu(
     {
       setup: () => openSetup(true),
-      restart: () => (start ? gridStart() : resetToTrack()),
+      restart: () => (online.active ? null : start ? gridStart() : resetToTrack()), // в онлайне старт даёт сервер
       settings: () => {
         settingsFromPause = true
         ui.open('settings')
@@ -333,7 +346,13 @@ async function main() {
     previewCompound: (c) => {
       if (inMenu) vehicle.compound = c
     },
+    previewTime: (t) => setNight(t === 'night' ? 1 : 0),
     startSession: (o) => startSession(o),
+    openOnline: () => {
+      ui.hide()
+      rig.setShowcase(true, 0.2)
+      online.open()
+    },
     openSetup: () => {
       setupFromScreens = true
       ui.suspend()
@@ -351,8 +370,101 @@ async function main() {
     },
   })
 
+  // онлайн: лобби по коду комнаты и гонка, которую ведёт сервер (net/online.js, server/game-server.mjs)
+  const online = createOnline({
+    THREE,
+    scene,
+    car,
+    vehicle,
+    world,
+    track,
+    trackId: useTest ? 'test' : trackId,
+    tracks: useTest ? [] : Object.entries(TRACKS).map(([id, t]) => ({ id, name: t.name })),
+    livery: () => livery,
+    onStart: (s) => startOnline(s),
+    onExit: () => enterMenu(),
+    showResults: (st) => hud.showResults(st),
+    showQualiResults: (rows, kicker) => hud.showQuali(rows, { kicker, primary: ['again', 'Ещё раз'] }),
+    notify: (text, warn, sec) => hud.notify(text, warn, sec),
+    openMain: () => ui.open('main'),
+    sc,
+    onEvent: (n) => onlineEvent(n),
+  })
+  let onlineStep = 0 // шагов физики в онлайн-гонке: окно ввода — каждые 4
+  let onlineCmd = null // команда своей машине на текущее окно (null — машиной правит сервер)
+
+  // онлайн-гонка началась (сервер прислал старт): своя машина на своём месте решётки, местной гонки и ботов нет —
+  // соперники, таблица, огни и итог приходят с сервера
+  function startOnline(s) {
+    inMenu = false
+    document.body.classList.remove('menu-mode')
+    ui.hide()
+    menu.close()
+    if (setupScreen.isOpen()) setupScreen.close()
+    quali = null
+    qualiShown = false
+    race = null
+    pitCtl = null
+    pitRequest = false
+    retired = false
+    orange = null
+    resultsAt = 0
+    bots?.clear()
+    flags?.reset()
+    sc?.hide()
+    tow?.clear()
+    ghost?.hide()
+    limits.reset()
+    hud.showResults(null)
+    hud.setTrackFlag(null)
+    hud.setFlag(null)
+    restoreCar()
+    weather.set('dry')
+    vehicle.wet = 0
+    const p = track.grid[Math.min(s.slot, track.grid.length - 1)]
+    vehicle.body.setTranslation({ x: p.x, y: (p.y || 0) + 0.05, z: p.z }, true)
+    vehicle.body.setRotation({ x: 0, y: Math.sin(p.yaw / 2), z: 0, w: Math.cos(p.yaw / 2) }, true)
+    vehicle.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
+    vehicle.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
+    vehicle.steerIn = vehicle.steerCmd = vehicle.steerVel = vehicle.delta = 0
+    vehicle.throttle = vehicle.brake = 0
+    vehicle.compound = COMPOUNDS[s.compound] ? s.compound : 'medium' // шины на старт — выбор в лобби
+    vehicle.tyres = freshTyres(80)
+    vehicle.damage = freshDamage()
+    vehicle.battery = 1
+    setFuel(vehicle, fuelForRace(s.laps, track.length))
+    particles.clear()
+    marks.clear()
+    rig.setMode(settings.get('camera'))
+    rig.fresh = true
+    laps?.restart()
+    onlineStep = 0
+    onlineCmd = null
+    pitPlan = defaultPlan(vehicle, s.laps)
+    hud.setMode(s.mode === 'quali' ? `Онлайн · заезд на время · ${s.minutes} мин · комната ${s.code}` : `Онлайн · комната ${s.code} · ${s.laps} кр.`)
+    floodlights.cars([car.group, ...online.remoteGroups()])
+  }
+
+  // события онлайн-гонки с сервера: флаги, машина безопасности, эвакуатор, штрафы (как в одиночной гонке)
+  function onlineEvent(n) {
+    if (n.type === 'incident') hud.notify(`Жёлтый флаг · ${online.nameOf(n.id)}: ${n.text.toLowerCase()}`, true, 5)
+    else if (n.type === 'tow') {
+      // эвакуатор — тот же, что в одиночной гонке; сервер ведёт его по тому же времени и потом убирает болид из снапшотов
+      const mine = n.inc.id === online.myId
+      const group = mine ? car.group : online.groupOf(n.inc.id)
+      if (group) tow?.dispatch(n.inc, { object: () => group, done: () => (mine ? (car.group.visible = false) : online.hideCar(n.inc.id)) })
+    } else if (n.type === 'clear-all') {
+      tow?.clear()
+      for (const id of n.ids) online.hideCar(id)
+    } else if (n.type === 'restart') {
+      laps?.restart()
+      hud.notify(n.text, false, 5)
+    } else if (n.text) hud.notify(n.text, n.type !== 'green' && !(n.type === 'note' && !n.warn), n.type === 'red' ? 8 : 5)
+  }
+
   // в главное меню: гонка закончена, болид на старте, соперников нет, камера-витрина
   function enterMenu() {
+    if (online.inRace) online.quit() // из онлайн-гонки — выйти из комнаты (болид доедет на автопилоте)
     inMenu = true
     weather.set('dry')
     quali = null
@@ -363,6 +475,7 @@ async function main() {
     pitCtl = null
     pitRequest = false
     bots?.clear()
+    floodlights.cars([car.group])
     restoreCar()
     flags?.reset()
     sc?.hide()
@@ -380,6 +493,7 @@ async function main() {
     vehicle.steerIn = vehicle.steerCmd = vehicle.steerVel = vehicle.delta = 0
     vehicle.throttle = vehicle.brake = 0
     vehicle.compound = startCompound // на витрине шины того состава, что выбран на старт
+    vehicle.damage = freshDamage() // на витрине болид целый: после аварии крыло не должно пропадать в меню
     // болид ставится на 5 см выше земли, а в меню физика стоит: без осадки он висел на подвеске, колёса — в 2–3 см над
     // асфальтом (Рома 30.10: «колёса не касаются земли, он как бы в воздухе»). Полторы секунды физики на месте — сел
     const idle = { throttle: 0, brake: 0, steer: 0, handbrake: false, aero: false, boost: false, hold: true }
@@ -404,6 +518,7 @@ async function main() {
     raceLaps = o.laps
     playerSlot = o.mode === 'race' ? o.slot : BOT_COUNT
     weatherMode = o.weather || 'dry'
+    setNight(o.time === 'night' ? 1 : 0)
     quali = null
     qualiTime = undefined
     if (o.abs !== undefined) input.abs = !!o.abs
@@ -567,6 +682,7 @@ async function main() {
     laps?.restart()
     start?.begin()
     pitPlan = defaultPlan(vehicle, lapsLeft())
+    floodlights.cars([car.group, ...(bots?.list ?? []).map((b) => b.car.group)]) // ночью болиды освещены «стадионом»
   }
 
   // быстрые настройки по ходу, как MFD в F1: баланс тормозов и дифференциал
@@ -579,6 +695,8 @@ async function main() {
   const MFD_KEYS = { BracketLeft: ['brakeBias', -1, 50, 70], BracketRight: ['brakeBias', 1, 50, 70], Minus: ['diffOn', -5, 10, 100], Equal: ['diffOn', 5, 10, 100] }
 
   addEventListener('resize', () => {
+    // окно на миг 0×0 (свернули, спрятали вкладку): пропорция была бы 0/0 = NaN — камера больше ничего не рисует, всё белое
+    if (!innerWidth || !innerHeight) return
     renderer.setSize(innerWidth, innerHeight)
     camera.aspect = innerWidth / innerHeight
     camera.updateProjectionMatrix()
@@ -614,8 +732,16 @@ async function main() {
     qualiShown = false
     hud.showResults(null)
   }
-  hud.onResultsAction((act) => (act === 'again' ? gridStart() : act === 'race' ? goRace() : enterMenu()))
+  hud.onResultsAction((act) => {
+    hud.showResults(null)
+    if (online.inRace) online.results(act) // онлайн: «Ещё раз» — в комнату, «В меню» — выйти из комнаты
+    else if (act === 'again') gridStart()
+    else if (act === 'race') goRace()
+    else enterMenu()
+  })
 
+  // шейдеры компилируем до показа: иначе первый показ материала (зеркало, дождь, ночь, новые шины) даёт подвисание
+  await renderer.compileAsync(scene, camera)
   document.getElementById('loader').classList.add('done')
   // после загрузки — главное меню; гонка начинается по кнопке «Гонка» или «Заезд на время»
   enterMenu()
@@ -625,6 +751,13 @@ async function main() {
     sessionStorage.removeItem('f1-race.reopen')
   } catch {
     // нет хранилища — остаёмся в главном меню
+  }
+  // ссылка-приглашение (?join=КОД) или перезагрузка на трассу комнаты (?online=1) — сразу в онлайн
+  const startParams = new URLSearchParams(location.search)
+  if (startParams.get('online') || startParams.get('join')) {
+    ui.hide()
+    rig.setShowcase(true, 0.2)
+    online.open()
   }
 
   let acc = 0
@@ -751,7 +884,11 @@ async function main() {
       // в гараже и меню свои клавиши (стрелки, Enter, Q, E) — игровые не трогаем
       if ((setupScreen.isOpen() || menu.isOpen()) && code !== 'KeyG' && code !== 'Escape') continue
       if (code === 'KeyC') hud.notify('Камера: ' + rig.next(), false, 1.6)
-      if (code === 'KeyR') resetToTrack()
+      if (code === 'KeyR') {
+        if (online.active) online.requestReset() // в онлайне на трассу возвращает сервер (в гонке — сам, по правилам)
+        if (online.active && online.mode === 'quali') laps?.invalidate() // круг не в зачёт — как на сервере
+        else resetToTrack()
+      }
       if (code === 'KeyF') input.aero = true // режим прямой: откроется, только если болид в зоне прямой
       if (code === 'KeyB') {
         input.abs = !input.abs
@@ -773,7 +910,7 @@ async function main() {
         else if (!inMenu) menu.toggle()
       }
       if (code === 'KeyM') muted = sound.toggleMute()
-      if (code === 'KeyN' && start && !qualiShown) gridStart()
+      if (code === 'KeyN' && start && !qualiShown && !online.inRace) gridStart()
       if (code === 'Enter' && qualiShown) goRace()
       if (MFD_KEYS[code]) {
         const [key, step, min, max] = MFD_KEYS[code]
@@ -791,10 +928,13 @@ async function main() {
         if (!pitRequest) hud.showMfd(mfdTexts(), 'pitWing')
       }
       if (code === 'KeyL' && lane && !pitCtl) {
-        pitRequest = !pitRequest
-        // план считался раньше (на старте, после прошлого пит-стопа): повреждения с тех пор — ремонт включён сам
-        if (pitRequest && needsRepair(vehicle.damage)) pitPlan.wing = true
-        hud.notify(pitRequest ? 'Заезд в боксы заказан: справа выбери шины (I) и ремонт (K), автопилот заведёт сам' : 'Заезд в боксы отменён', false, 3)
+        if (!pitOpen()) hud.notify('В боксы — после пересечения линии старта', false, 3)
+        else {
+          pitRequest = !pitRequest
+          // план считался раньше (на старте, после прошлого пит-стопа): повреждения с тех пор — ремонт включён сам
+          if (pitRequest && needsRepair(vehicle.damage)) pitPlan.wing = true
+          hud.notify(pitRequest ? 'Заезд в боксы заказан: справа выбери шины (I) и ремонт (K), автопилот заведёт сам' : 'Заезд в боксы отменён', false, 3)
+        }
       }
       if (code in ERS_KEYS) {
         input.ersMode = TUNING.ersOrder[ERS_KEYS[code]]
@@ -808,7 +948,9 @@ async function main() {
     }
 
     // пока открыты гараж или меню — гонка на паузе
-    const paused = setupScreen.isOpen() || menu.isOpen() || ui.isOpen() || inMenu || qualiShown
+    // онлайн-гонку на паузу не поставить (едут все): с открытым меню своя машина просто без газа и руля
+    const menuOpen = setupScreen.isOpen() || menu.isOpen() || ui.isOpen()
+    const paused = !online.active && (menuOpen || inMenu || qualiShown)
     if (paused) acc = 0
     else acc += dt
     let simDt = 0
@@ -821,7 +963,7 @@ async function main() {
       bots.think(dt, { x: p.x, z: p.z, speed: vehicle.state.fwdSpeed }, start?.waiting ? start.hold : null, !start?.waiting, ctx)
     }
     // въехал в пит-лейн — дальше ведёт игра
-    if (lane && !pitCtl && !start?.waiting && !vehicle.pu.failed && acc >= STEP) {
+    if (!online.active && lane && !pitCtl && !start?.waiting && pitOpen() && !vehicle.pu.failed && acc >= STEP) {
       const p = vehicle.body.translation()
       const q = vehicle.body.rotation()
       const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.x * q.x))
@@ -843,6 +985,29 @@ async function main() {
     }
     while (acc >= STEP) {
       simDt += STEP
+      if (online.active) {
+        // онлайн: окно ввода раз в 4 шага — на сервер и в свою физику (предсказание). Правит сервер (пит-стоп, сход) —
+        // своя физика стоит, машина едет по снапшотам (online.update)
+        if (onlineStep % 4 === 0) {
+          const raw = menuOpen ? { throttle: 0, brake: 0, steer: 0, ersMode: input.ersMode, aeroZone: input.aeroZone } : input.read()
+          onlineCmd = online.windowInput(raw, { request: pitRequest, plan: pitPlan })
+        }
+        onlineStep++
+        if (onlineCmd) {
+          lastInput = onlineCmd
+          car.snapshot(vehicle.body)
+          stepVehicle(vehicle, onlineCmd, STEP, track.surfaceAt)
+          world.step(events)
+          collectImpacts(events, (v, r) => {
+            if (v !== vehicle) return
+            hud.notify(`Повреждение: ${r.hits.join(', ')}`, true, 3)
+            marks.debris.spawn(v, r, livery.primary)
+            sound.hit(r.sev, v.body.translation())
+          })
+        }
+        acc -= STEP
+        continue
+      }
       if (pitCtl) {
         // пит-лейн: игрок едет сам с ограничителем; игра ставит в бокс и ждёт газ на выпуск
         const phase = pitCtl.state.phase
@@ -908,11 +1073,11 @@ async function main() {
     // прокол, отказ мотора
     for (const e of vehicle.events) {
       hud.notify(e, true, 5)
-      if (/Отказ/.test(e)) endRun(e.replace(/^Отказ силовой установки:?\s*/, '') || 'Отказ силовой установки')
+      if (/Отказ/.test(e) && !online.inRace) endRun(e.replace(/^Отказ силовой установки:?\s*/, '') || 'Отказ силовой установки')
     }
     vehicle.events.length = 0
-    // болид разрушен или потерял колесо — сход (в F1 это красный флаг, кран и эвакуация)
-    if (!retired && !start?.waiting) {
+    // болид разрушен или потерял колесо — сход (в F1 это красный флаг, кран и эвакуация); в онлайне сход решает сервер
+    if (!online.inRace && !retired && !start?.waiting) {
       const why = retireReason(vehicle)
       if (why) endRun(why)
     }
@@ -1072,7 +1237,8 @@ async function main() {
         race?.go()
       }
     }
-    if (start) hud.setLights(start.state.lit, start.waiting || performance.now() < goShownUntil)
+    if (online.inRace) hud.setLights(Math.max(0, online.lights()), online.lights() >= 0) // огни — с сервера
+    else if (start) hud.setLights(start.state.lit, start.waiting || performance.now() < goShownUntil)
 
     if (laps && simDt > 0) {
       const p = vehicle.body.translation()
@@ -1092,11 +1258,16 @@ async function main() {
         if (laps.state.lap > QUALI_LAPS) finishQuali()
       }
       // едет против хода гонки 3 секунды — возвращаем на трассу носом в нужную сторону
-      if (!pitCtl && laps.state.wrongWay > WRONG_WAY_RESET) resetToTrack()
+      if (!pitCtl && !online.inRace && laps.state.wrongWay > WRONG_WAY_RESET) resetToTrack()
       // границы трассы: все четыре колеса за белой линией (в пит-лейне не считаются)
       // в пит-лейне, на въезде и выезде границы не считаются: белую линию там пересекают по правилам
       const inPitArea = !!pitCtl || pitRequest || performance.now() - pitSince < 8000 || nearPitLane(p.x, p.z)
-      if (!start?.waiting && limits.update(simDt, !inPitArea && wheelsOut(track.axis, laps.state.idx, vehicle.body, TUNING))) {
+      // онлайн-заезд на время: срезка — круг не в зачёт (так же решает сервер; здесь — чтобы табло круга не врало)
+      if (online.active && online.mode === 'quali' && limits.update(simDt, wheelsOut(track.axis, laps.state.idx, vehicle.body, TUNING)) && laps.state.running) {
+        laps.invalidate()
+        hud.notify('Срезка — круг не засчитан', true, 3)
+      }
+      if (!online.inRace && !start?.waiting && limits.update(simDt, !inPitArea && wheelsOut(track.axis, laps.state.idx, vehicle.body, TUNING))) {
         const me = race?.car('player')
         if (limits.state.strikes <= LIMIT_WARNINGS) hud.notify(`Границы трассы · предупреждение ${limits.state.strikes}/${LIMIT_WARNINGS}`, true, 3)
         else if (race?.state.running && !me.finished) {
@@ -1138,10 +1309,14 @@ async function main() {
       else hud.showRetire(retireText)
     }
     car.setCompound(vehicle.compound)
+    online.update(now, dt) // чужие машины по снапшотам; своя — если ей правит сервер
+    if (online.active && online.auto) pitRequest = false // сервер завёл в боксы — заказ выполнен
     car.sync(acc / STEP, vehicle, lastInput)
+    online.afterSync(dt) // хвост поправки своей машины гаснет плавно
     bots?.sync(acc / STEP)
     // машина безопасности и эвакуатор — после того, как болиды выставлены: кран двигает поднятый болид сам
-    if (sc?.active) {
+    if (sc?.active && !online.inRace) {
+      // в онлайне машину безопасности ведёт сервер (online.update)
       const home = sc.update(paused ? 0 : dt, raceLead()?.s ?? null, flags.ending())
       if (home) {
         flags.scHome()
@@ -1179,10 +1354,19 @@ async function main() {
     particles.update(paused ? 0 : dt, vehicle, bots?.list, camera, renderer, weather.state.wet)
     marks.update(paused ? 0 : dt, vehicle, bots?.list, camera, weather.state.wet)
     env.follow(car.group.position)
+    floodlights.update(car.group)
     const view = input.takeLook()
     rig.update(dt, vehicle, paused && !rig.showcase ? null : view)
-    hud.update(vehicle.state, vehicle.aero, laps, car.group.position, input.abs, bots?.list)
-    hud.updateRace(race?.state, bots?.list)
+    if (online.inRace) {
+      // табло флагов и чёрно-оранжевый флаг — с сервера
+      const b = online.banner()
+      hud.setTrackFlag(b ? b[0] : null, b ? b[1] : '')
+      hud.setFlag(online.orange())
+      if (online.removed) car.group.visible = false // свою машину увёз эвакуатор
+    }
+    const rivals = online.inRace ? online.remotes() : bots?.list // соперники для мини-карты и звука
+    hud.update(vehicle.state, vehicle.aero, laps, car.group.position, input.abs, rivals)
+    hud.updateRace(online.inRace ? online.raceState() : race?.state, rivals)
     // запас топлива в кругах до финиша (как «fuel delta» на руле F1): расход за круг — по факту, пока не проехан круг — по расчёту
     if (vehicle.fuelOn && race) {
       const me = race.car('player')
@@ -1198,7 +1382,7 @@ async function main() {
       return p < track.length / 2 ? p : 0
     })(), vehicle.damage)
     telemetry.update(vehicle)
-    sound.update(vehicle, lastInput, paused, { bots: bots?.list, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
+    sound.update(vehicle, lastInput, paused, { bots: rivals, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: online.inRace ? Math.max(0, online.lights()) : start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
     // зеркала заднего вида: только если их видно (кабина, T-камера) и игра идёт
     mirrors?.update(renderer, scene, !inMenu && (rig.mode === 'onboard' || rig.mode === 'tcam'))
     renderer.render(scene, camera)
@@ -1206,7 +1390,7 @@ async function main() {
   requestAnimationFrame(frame)
 
   // для проверок и настройки из консоли браузера
-  window.__game = { THREE, scene, camera, renderer, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather }
+  window.__game = { THREE, scene, camera, renderer, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get pitRequest() { return pitRequest }, online }
 }
 
 main().catch((e) => {

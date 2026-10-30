@@ -3,7 +3,7 @@
 // фальстарта нет совсем (Рома 28.10: штраф +5 с не мешал уехать вперёд от всех). N — новый старт.
 import * as THREE from 'three'
 
-export function createStart(lamps) {
+export function createStart(lamps, rand = Math.random) {
   // у ламп общий материал — даём каждой свой, чтобы зажигать по одной
   const columns = lamps.map((col) =>
     col.map((mesh) => {
@@ -29,7 +29,7 @@ export function createStart(lamps) {
       st.phase = 'lights'
       st.t = 0
       st.lit = 0
-      st.outAt = 5 + 0.2 + Math.random() * 2.8
+      st.outAt = 5 + 0.2 + rand() * 2.8
       setLit(0)
     },
 

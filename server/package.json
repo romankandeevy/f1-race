@@ -1,0 +1,12 @@
+{
+  "name": "f1-race-server",
+  "private": true,
+  "type": "module",
+  "description": "Сервер онлайна (этап 1): ws + та же физика, что в клиенте (../src/vehicle.js). Физика Rapier берётся из корневого node_modules.",
+  "scripts": {
+    "lab": "node lab-server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
+}

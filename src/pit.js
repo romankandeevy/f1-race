@@ -15,7 +15,12 @@ import { COMPOUNDS, freshTyres, BLANKET, repairSeconds, needsRepair, applyRepair
 const G = 9.81
 export const PIT_SPEED = 80 / 3.6
 const FAST_LANE = 2 // м от оси пит-лейна в сторону от боксов (к трассе) — полоса проезда мимо боксов
-const ENTRY = [12, 45] // точки оси пит-лейна, где болид считается въехавшим (раньше — узкий клин у края трассы: ложные въезды)
+const ENTRY = [16, 60] // точки оси пит-лейна (по 2 м), где болид считается въехавшим (раньше — узкий клин у края трассы: ложные въезды)
+// Marina Bay (Рома 30.10: «срезал — и меня заставило заехать в боксы, а круг был лучший»): пит-лейн идёт вдоль стартовой
+// прямой, и зона въезда начиналась в 0,2–0,4 м за белой линией — вышел колёсами за линию, и автопилот уводил в боксы.
+// Теперь въезд — только по самому пит-лейну (не дальше ENTRY_HALF от его оси) и не ближе ENTRY_CLEAR за белой линией трассы
+const ENTRY_HALF = 2.2 // м
+const ENTRY_CLEAR = 2.5 // м
 const STOP_DECEL = 4 // м/с² — мягкая остановка в боксе
 const ENTRY_DECEL = 9 // м/с² — торможение до 80 к линии ограничителя
 const AUTO_RELEASE = 2 // с: не нажал газ — механик выпускает сам (с потерей)
@@ -118,7 +123,22 @@ export function pitEntryHit(lane, x, z, yaw) {
   const along = Math.sin(yaw) * (q.x - p.x) + Math.cos(yaw) * (q.z - p.z)
   // ширина: у LUMEN RING в точке `width`, у Marina Bay `width_left`/`width_right` (въезд расширяется от 0 до 13 м)
   const width = p.width ?? (p.width_left != null ? p.width_left + p.width_right : 6)
-  return d < width / 2 + 0.3 && along > 0.5
+  if (!(d < Math.min(width / 2, ENTRY_HALF) + 0.3 && along > 0.5)) return false
+  // от трассы: центр болида должен быть заметно за её белой линией — свернул в пит-лейн, а не вылетел за линию
+  const t = lane.track
+  if (!t) return true
+  let bi = 0
+  let bd = Infinity
+  for (let k = 0; k < t.n; k++) {
+    const dd = (t.axis[k].x - x) ** 2 + (t.axis[k].z - z) ** 2
+    if (dd < bd) {
+      bd = dd
+      bi = k
+    }
+  }
+  const a = t.axis[bi]
+  const half = Math.max(a.width_left ?? (a.width ?? 12) / 2, a.width_right ?? (a.width ?? 12) / 2)
+  return Math.sqrt(bd) > half + ENTRY_CLEAR
 }
 
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t))

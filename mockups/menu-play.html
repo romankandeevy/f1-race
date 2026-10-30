@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Макет: меню «Играть» и онлайн</title>
+<link href="https://fonts.googleapis.com/css2?family=Titillium+Web:ital,wght@0,400;0,600;0,700;0,900;1,700;1,900&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #0a0b0d; --text: #F2F3F5; --muted: #8B9099; --red: #E10600; --green: #2BD46B; --yellow: #F2C200; --purple: #B46CFF; --font: 'Titillium Web', system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #050607; color: var(--text); font-family: var(--font); }
+  .tabs { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 16px; background: #111317; border-bottom: 1px solid #22262c; }
+  .tabs button { appearance: none; border: 0; border-bottom: 3px solid #2B2F36; background: transparent; color: var(--muted); padding: 8px 12px; font: 700 13px var(--font); letter-spacing: .04em; text-transform: uppercase; cursor: pointer; }
+  .tabs button.on { color: var(--text); border-bottom-color: var(--red); }
+  .note { padding: 10px 16px; color: #AEB3BB; font: 600 13px var(--font); background: #0d0f12; border-bottom: 1px solid #1b1e23; }
+  .screen { display: none; position: relative; height: calc(100vh - 92px); min-height: 620px; overflow: hidden;
+    background: radial-gradient(120% 90% at 78% 60%, #3a2a2a 0%, #1b1d22 38%, #0b0c0e 70%); }
+  .screen.on { display: block; }
+  /* «болид на витрине» справа — заглушка вместо 3D */
+  .car { position: absolute; right: 6%; bottom: 14%; width: 46%; height: 34%; border-radius: 40% 40% 12% 12%;
+    background: linear-gradient(180deg, #c4101a 0 45%, #6b0a10 46% 60%, #151618 61%); opacity: .55; filter: blur(.4px); }
+  .car::after { content: 'болид на витрине (3D)'; position: absolute; left: 50%; top: -28px; transform: translateX(-50%); color: #6b7079; font: 600 12px var(--font); letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; }
+  .shade { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(4,5,7,.96) 0%, rgba(4,5,7,.88) 30%, rgba(4,5,7,.4) 52%, rgba(4,5,7,0) 72%); }
+  .col { position: absolute; left: 0; top: 0; bottom: 0; width: min(600px, 100vw); padding: 5vh 28px 0 clamp(24px, 4vw, 64px); display: flex; flex-direction: column; }
+  .col.wide { width: min(1080px, 100vw); }
+  .tag { display: inline-block; background: var(--red); padding: 4px 26px 4px 12px; font: 900 italic 12px var(--font); letter-spacing: .12em; text-transform: uppercase; clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%); align-self: flex-start; }
+  .title { margin: 10px 0 18px; font: 900 italic 46px/.96 var(--font); text-transform: uppercase; }
+  .title.big { font-size: clamp(64px, 12vh, 112px); line-height: .88; margin-bottom: 0; }
+  .sub { margin: 14px 0 0; color: var(--muted); font-size: 15px; font-weight: 600; }
+  .nav { display: flex; flex-direction: column; gap: 4px; margin: 26px 0 0; }
+  .item { border: 0; border-left: 5px solid transparent; background: transparent; color: #C5C8CD; padding: 11px 18px; text-align: left; font: 900 italic 25px var(--font); text-transform: uppercase; letter-spacing: .02em; }
+  .item.on { background: var(--text); color: #0a0b0d; border-left-color: var(--red); transform: translateX(10px); }
+  .about { min-height: 3.2em; margin: 22px 0 0; padding-left: 14px; border-left: 3px solid var(--red); color: #AEB3BB; font-size: 15px; line-height: 1.45; max-width: 46ch; font-weight: 500; }
+  .foot { margin-top: auto; padding: 18px 0 3vh; display: flex; flex-wrap: wrap; gap: 6px 20px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+  .foot kbd { display: inline-block; min-width: 18px; margin-right: 7px; padding: 1px 6px; font: 700 11px var(--font); color: var(--text); border: 1px solid #4A4F58; border-bottom-width: 2px; text-align: center; }
+  /* карточки режимов */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 8px; }
+  .card { position: relative; min-height: 300px; padding: 22px 22px 20px; border: 1px solid #3A3F47; border-top: 4px solid #3A3F47; background: rgba(255,255,255,.035); display: flex; flex-direction: column; gap: 10px; }
+  .card.on { border-color: var(--text); border-top-color: var(--red); background: rgba(255,255,255,.09); transform: translateY(-4px); }
+  .card .k { font: 700 12px var(--font); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .card b { font: 900 italic 30px/1 var(--font); text-transform: uppercase; }
+  .card p { margin: 0; color: #AEB3BB; font-size: 14px; line-height: 1.45; }
+  .card ul { margin: 4px 0 0; padding-left: 18px; color: #C5C8CD; font-size: 13px; line-height: 1.6; }
+  .card .pic { height: 92px; margin-bottom: 4px; border: 1px dashed #3A3F47; display: grid; place-items: center; color: #5b6069; font: 600 11px var(--font); letter-spacing: .08em; text-transform: uppercase; }
+  .card .go { margin-top: auto; align-self: flex-start; background: var(--red); color: #fff; font: 900 italic 15px var(--font); padding: 8px 18px; text-transform: uppercase; clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%); }
+  .card.on .go { background: var(--text); color: #0a0b0d; }
+  .badge { position: absolute; top: 14px; right: 14px; font: 700 11px var(--font); letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; background: #2B2F36; color: var(--muted); }
+  .badge.new { background: var(--purple); color: #fff; }
+  /* строки настроек комнаты */
+  .rows { display: flex; flex-direction: column; gap: 3px; }
+  .row { display: grid; grid-template-columns: minmax(120px, 1fr) auto; align-items: center; gap: 14px; padding: 9px 14px 9px 16px; border-left: 4px solid transparent; background: rgba(255,255,255,.035); color: #C5C8CD; font: 700 15px var(--font); letter-spacing: .03em; text-transform: uppercase; }
+  .row.on { background: rgba(255,255,255,.1); border-left-color: var(--red); color: var(--text); }
+  .seg { display: flex; flex-wrap: wrap; gap: 3px; justify-content: flex-end; }
+  .seg span { border: 1px solid #3A3F47; color: var(--muted); padding: 6px 10px; font: 700 13px var(--font); text-transform: none; }
+  .seg span.on { background: var(--text); color: #0a0b0d; border-color: var(--text); }
+  .cta { margin-top: 12px; background: var(--red); color: #fff; font: 900 italic 22px var(--font); padding: 14px 22px; text-transform: uppercase; clip-path: polygon(0 0, 100% 0, calc(100% - 14px) 100%, 0 100%); }
+  .ghostbtn { margin-top: 6px; padding: 12px 22px; background: rgba(255,255,255,.035); color: #C5C8CD; font: 700 15px var(--font); text-transform: uppercase; letter-spacing: .03em; }
+  .code { font: 900 italic clamp(64px, 12vh, 112px)/.88 var(--font); letter-spacing: .06em; margin: 10px 0 6px; }
+  .players { display: flex; flex-direction: column; gap: 3px; margin: 14px 0 0; }
+  .pl { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: rgba(255,255,255,.035); font: 700 16px var(--font); text-transform: uppercase; }
+  .pl i { width: 26px; height: 14px; background: var(--c); border: 1px solid rgba(255,255,255,.25); }
+  .pl em { margin-left: auto; font: 700 11px var(--font); font-style: normal; letter-spacing: .08em; padding: 1px 7px; background: #2B2F36; color: var(--muted); }
+  .pl em.host { background: var(--red); color: #fff; }
+  /* HUD онлайн-заезда на время */
+  .hud { position: absolute; inset: 0; }
+  .road { position: absolute; inset: 0; background: linear-gradient(180deg, #8fb4d8 0 38%, #2c2d31 38% 100%); }
+  .road::before { content: ''; position: absolute; left: 50%; bottom: 0; width: 70%; height: 62%; transform: translateX(-50%); background: linear-gradient(90deg, transparent 0 8%, #e9e9e9 8% 9%, #2c2d31 9% 91%, #e9e9e9 91% 92%, transparent 92%); clip-path: polygon(44% 0, 56% 0, 100% 100%, 0 100%); }
+  .ghost { position: absolute; width: 90px; height: 46px; border-radius: 30% 30% 10% 10%; background: var(--c); opacity: .35; outline: 1px dashed rgba(255,255,255,.5); }
+  .ghost span { position: absolute; top: -20px; left: 50%; transform: translateX(-50%); font: 700 12px var(--font); color: #fff; opacity: .9; white-space: nowrap; text-shadow: 0 1px 3px #000; }
+  .me { position: absolute; left: 50%; bottom: 6%; width: 230px; height: 120px; transform: translateX(-50%); border-radius: 30% 30% 10% 10%; background: linear-gradient(180deg, #c4101a 0 45%, #6b0a10 46% 60%, #151618 61%); }
+  .panel { position: absolute; background: rgba(10,11,13,.82); border: 1px solid #262a31; padding: 12px 14px; }
+  .clock { left: 50%; top: 16px; transform: translateX(-50%); text-align: center; }
+  .clock small { display: block; color: var(--muted); font: 700 11px var(--font); letter-spacing: .12em; text-transform: uppercase; }
+  .clock b { font: 900 italic 40px/1 var(--font); font-variant-numeric: tabular-nums; }
+  .board { left: 16px; top: 16px; width: 290px; }
+  .board h4 { margin: 0 0 8px; font: 900 italic 15px var(--font); text-transform: uppercase; letter-spacing: .04em; }
+  .board li { display: grid; grid-template-columns: 22px 10px 1fr auto; gap: 8px; align-items: center; padding: 4px 0; font: 700 14px var(--font); border-bottom: 1px solid #1b1e23; }
+  .board li i { width: 10px; height: 10px; background: var(--c); }
+  .board li .t { font-variant-numeric: tabular-nums; color: #C5C8CD; }
+  .board li.me .t, .board li.me span { color: var(--yellow); }
+  .board li .t.best { color: var(--purple); }
+  .board ol { margin: 0; padding: 0; list-style: none; }
+  .lap { right: 16px; top: 16px; width: 240px; font: 700 14px var(--font); }
+  .lap div { display: flex; justify-content: space-between; padding: 3px 0; }
+  .lap div span { color: var(--muted); text-transform: uppercase; font-size: 12px; letter-spacing: .06em; }
+  .lap .d { color: var(--green); }
+  /* итоги */
+  .res { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(560px, 92vw); background: rgba(10,11,13,.94); border: 1px solid #262a31; padding: 26px 30px; }
+  .res h2 { margin: 6px 0 14px; font: 900 italic 40px/1 var(--font); text-transform: uppercase; }
+  .res ol { margin: 0; padding: 0; list-style: none; }
+  .res li { display: grid; grid-template-columns: 26px 12px 1fr auto; gap: 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid #1b1e23; font: 700 16px var(--font); }
+  .res li i { width: 12px; height: 12px; background: var(--c); }
+  .res li.me { color: var(--yellow); }
+  .res .acts { display: flex; gap: 8px; margin-top: 18px; }
+  .res .acts span { flex: 1; text-align: center; padding: 11px; font: 900 italic 16px var(--font); text-transform: uppercase; background: rgba(255,255,255,.06); }
+  .res .acts span:first-child { background: var(--red); }
+  .q { position: absolute; right: 16px; bottom: 16px; max-width: 360px; padding: 12px 14px; background: rgba(180,108,255,.12); border: 1px solid rgba(180,108,255,.5); color: #E4D6FF; font: 600 13px/1.45 var(--font); }
+  .q b { color: #fff; }
+</style>
+</head>
+<body>
+<nav class="tabs" id="tabs"></nav>
+<div class="note" id="note"></div>
+
+<!-- 1. Главное меню -->
+<section class="screen" data-name="1 · Главное меню" data-note="Только 5 пунктов. «Гонка», «Заезд на время» и «Онлайн» ушли внутрь «Играть»; «Управление» — вкладка в «Настройках».">
+  <div class="car"></div><div class="shade"></div>
+  <div class="col">
+    <span class="tag">Гран-при</span>
+    <h1 class="title big">F1<br>Race</h1>
+    <p class="sub">MARINA BAY · 4 940 м · лучший круг <b style="color:#fff">2:04.381</b></p>
+    <div class="nav">
+      <div class="item on">Играть</div>
+      <div class="item">Гараж</div>
+      <div class="item">Настройка болида</div>
+      <div class="item">Рекорды</div>
+      <div class="item">Настройки</div>
+    </div>
+    <p class="about">Заезд на время, гонка с ботами или онлайн с друзьями.</p>
+    <footer class="foot"><span><kbd>↑ ↓</kbd>выбрать</span><span><kbd>Enter</kbd>открыть</span><span><kbd>Мышь</kbd>крутить болид</span></footer>
+  </div>
+</section>
+
+<!-- 1б. Настройки → Управление -->
+<section class="screen" data-name="1б · Настройки → Управление" data-note="«Управление» больше не пункт главного меню: последняя вкладка в «Настройках» (Q / E — между вкладками, как сейчас).">
+  <div class="shade" style="background:rgba(4,5,7,.94)"></div>
+  <div class="col wide">
+    <span class="tag">Параметры</span>
+    <h1 class="title">Настройки</h1>
+    <nav class="tabs" style="position:static;background:none;border:0;padding:0;margin:-6px 0 14px">
+      <button>Графика</button><button>Звук</button><button>Помощники</button><button>Мышь</button><button>Камера</button><button>Интерфейс</button><button class="on">Управление</button>
+    </nav>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px 40px;font:600 14px var(--font)">
+      <div><h3 style="margin:0 0 8px;font:900 italic 16px var(--font);text-transform:uppercase">Езда</h3>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:6px 14px;color:#C5C8CD"><b style="color:#fff">W / S</b><span>газ / тормоз</span><b style="color:#fff">A / D</b><span>руль</span><b style="color:#fff">Shift</b><span>режим обгона</span><b style="color:#fff">F</b><span>режим прямой</span><b style="color:#fff">R</b><span>вернуться на трассу</span></div></div>
+      <div><h3 style="margin:0 0 8px;font:900 italic 16px var(--font);text-transform:uppercase">Гонка</h3>
+        <div style="display:grid;grid-template-columns:110px 1fr;gap:6px 14px;color:#C5C8CD"><b style="color:#fff">L</b><span>заехать в боксы</span><b style="color:#fff">I / K</b><span>шины / ремонт на пит-стоп</span><b style="color:#fff">1–4</b><span>режим батареи</span><b style="color:#fff">C</b><span>камера</span><b style="color:#fff">Esc</b><span>пауза</span></div></div>
+    </div>
+    <p class="about">Список тот же, что был в «Управлении», — просто живёт здесь.</p>
+    <footer class="foot"><span><kbd>Q E</kbd>вкладка</span><span><kbd>Esc</kbd>назад</span></footer>
+  </div>
+</section>
+
+<!-- 2. Играть -->
+<section class="screen" data-name="2 · Играть" data-note="Три карточки рядом, стрелками ← → между ними, Enter — дальше. «Заезд на время» и «Гонка» ведут в нынешнюю настройку заезда (трасса → … → болид).">
+  <div class="shade" style="background:rgba(4,5,7,.9)"></div>
+  <div class="col wide">
+    <span class="tag">Играть</span>
+    <h1 class="title">Выбери режим</h1>
+    <div class="cards">
+      <div class="card">
+        <div class="pic">картинка: болид один на трассе</div>
+        <span class="k">Один</span>
+        <b>Заезд на время</b>
+        <p>Один на трассе: лучший круг, секторы, призрак своего рекорда.</p>
+        <span class="go">Выбрать</span>
+      </div>
+      <div class="card on">
+        <div class="pic">картинка: старт, огни</div>
+        <span class="k">С ботами</span>
+        <b>Гонка</b>
+        <p>Двенадцать болидов, огни старта, пит-стопы, флаги и машина безопасности.</p>
+        <span class="go">Выбрать</span>
+      </div>
+      <div class="card">
+        <span class="badge new">с друзьями</span>
+        <div class="pic">картинка: несколько болидов</div>
+        <span class="k">Онлайн</span>
+        <b>Онлайн</b>
+        <p>Комната по коду, до 12 игроков. Заезд на время с призраками или гонка.</p>
+        <span class="go">Выбрать</span>
+      </div>
+    </div>
+    <footer class="foot"><span><kbd>← →</kbd>режим</span><span><kbd>Enter</kbd>дальше</span><span><kbd>Esc</kbd>назад</span></footer>
+  </div>
+</section>
+
+<!-- 3. Онлайн: выбор режима -->
+<section class="screen" data-name="3 · Онлайн" data-note="После «Онлайн»: имя игрока, две карточки режимов и вход по коду друга. Создать комнату — через карточку режима; войти по коду — внизу (режим приходит из комнаты).">
+  <div class="shade" style="background:rgba(4,5,7,.9)"></div>
+  <div class="col wide">
+    <span class="tag">Онлайн · с друзьями</span>
+    <h1 class="title">Онлайн</h1>
+    <div class="rows" style="max-width:520px;margin-bottom:12px">
+      <div class="row on"><span>Имя</span><span class="seg"><span class="on">Рома</span></span></div>
+    </div>
+    <div class="cards">
+      <div class="card on">
+        <span class="badge new">новое</span>
+        <div class="pic">картинка: полупрозрачные болиды</div>
+        <span class="k">Призраки · до 12 игроков</span>
+        <b>Заезд на время</b>
+        <p>Все на трассе одновременно, но болиды — призраки: сквозь друг друга, без столкновений. Кто за отведённые минуты проедет самый быстрый круг — тот победил.</p>
+        <ul><li>время сессии: 5 / 10 / 15 / 20 мин</li><li>кругов сколько успеешь, в зачёт лучший</li><li>без ботов</li></ul>
+        <span class="go">Создать комнату</span>
+      </div>
+      <div class="card">
+        <div class="pic">картинка: старт гонки</div>
+        <span class="k">Гонка · до 12 игроков + боты</span>
+        <b>Гонка</b>
+        <p>Как сейчас: огни старта, столкновения, пит-стопы, флаги, машина безопасности. Свободные места — боты.</p>
+        <ul><li>круги: 1 / 3 / 5 / 10</li><li>уровень ботов, шины на старт</li></ul>
+        <span class="go">Создать комнату</span>
+      </div>
+    </div>
+    <div class="rows" style="max-width:520px;margin-top:14px">
+      <div class="row"><span>Код комнаты друга</span><span class="seg"><span>ABCD</span></span></div>
+      <div class="ghostbtn">Войти по коду</div>
+    </div>
+    <footer class="foot"><span><kbd>← →</kbd>режим</span><span><kbd>Enter</kbd>создать</span><span><kbd>Esc</kbd>назад</span></footer>
+  </div>
+</section>
+
+<!-- 4. Комната: заезд на время -->
+<section class="screen" data-name="4 · Комната: заезд на время" data-note="Создатель выбирает трассу и время сессии; у каждого — свои шины. Старт даёт создатель. Ботов нет.">
+  <div class="car"></div><div class="shade"></div>
+  <div class="col">
+    <span class="tag">Онлайн · заезд на время · скажи код другу</span>
+    <div class="code">KFKY</div>
+    <p class="sub">Или пришли ссылку: <b style="color:#fff;text-decoration:underline">https://…serveousercontent.com/?join=KFKY</b></p>
+    <div class="rows" style="margin-top:16px">
+      <div class="row"><span>Трасса</span><span class="seg"><span>LUMEN RING</span><span class="on">MARINA BAY</span></span></div>
+      <div class="row on"><span>Время сессии</span><span class="seg"><span>5 мин</span><span class="on">10 мин</span><span>15 мин</span><span>20 мин</span></span></div>
+      <div class="row"><span>Мои шины</span><span class="seg"><span class="on">Мягкие</span><span>Средние</span><span>Жёсткие</span></span></div>
+    </div>
+    <div class="players">
+      <div class="pl" style="--c:#c4101a"><i></i><span>Рома (ты)</span><em class="host">создатель</em></div>
+      <div class="pl" style="--c:#2bb5c9"><i></i><span>Друг</span><em>мягкие</em></div>
+      <div class="pl" style="--c:#d4b21c"><i></i><span>Саша</span><em>средние</em></div>
+    </div>
+    <p class="about">3 из 12 · болиды — призраки, столкновений нет. Победит лучший круг за 10 минут.</p>
+    <div style="display:flex;gap:6px"><div class="cta" style="flex:1;text-align:center">Старт</div><div class="ghostbtn" style="flex:1;text-align:center;margin-top:12px">Выйти</div></div>
+    <footer class="foot"><span><kbd>Esc</kbd>в главное меню (комната останется)</span></footer>
+  </div>
+</section>
+
+<!-- 5. Во время онлайн-заезда на время -->
+<section class="screen" data-name="5 · Заезд на время: на трассе" data-note="Сверху — сколько осталось. Слева — таблица лучших кругов всех игроков (живая). Справа — свой круг и дельта к своему лучшему. Чужие болиды полупрозрачные, с именами.">
+  <div class="hud">
+    <div class="road"></div>
+    <div class="ghost" style="--c:#2bb5c9;left:44%;top:46%"><span>Друг</span></div>
+    <div class="ghost" style="--c:#d4b21c;left:58%;top:52%;width:120px;height:60px"><span>Саша</span></div>
+    <div class="me"></div>
+    <div class="panel clock"><small>До конца сессии</small><b>07:42</b></div>
+    <div class="panel board">
+      <h4>Лучшие круги</h4>
+      <ol>
+        <li style="--c:#2bb5c9"><span>1</span><i></i><span>Друг</span><span class="t best">2:03.912</span></li>
+        <li class="me" style="--c:#c4101a"><span>2</span><i></i><span>Рома</span><span class="t">2:04.381</span></li>
+        <li style="--c:#d4b21c"><span>3</span><i></i><span>Саша</span><span class="t">2:07.050</span></li>
+      </ol>
+    </div>
+    <div class="panel lap">
+      <div><span>Круг</span>4</div>
+      <div><span>Текущий</span>1:12.440</div>
+      <div><span>Мой лучший</span>2:04.381</div>
+      <div><span>Дельта</span><span class="d">−0.214</span></div>
+      <div><span>Сектор 2</span><span style="color:var(--purple)">лучший в сессии</span></div>
+    </div>
+    <div class="q"><b>Предлагаю:</b> когда время вышло, начатый круг можно доехать (как в квалификации F1); круг со срезкой (4 колеса за линией) не засчитывается. Ок?</div>
+  </div>
+</section>
+
+<!-- 6. Итоги -->
+<section class="screen" data-name="6 · Итоги заезда" data-note="После конца сессии: места по лучшему кругу, отставание от первого. «Ещё раз» — снова в комнату, «В меню» — выйти.">
+  <div class="hud"><div class="road" style="filter:brightness(.4)"></div>
+    <div class="res">
+      <span class="tag">Онлайн · заезд на время · 10 мин</span>
+      <h2>2-е место</h2>
+      <ol>
+        <li style="--c:#2bb5c9"><span>1</span><i></i><span>Друг</span><span>2:03.912</span></li>
+        <li class="me" style="--c:#c4101a"><span>2</span><i></i><span>Рома</span><span>+0.469</span></li>
+        <li style="--c:#d4b21c"><span>3</span><i></i><span>Саша</span><span>+3.138</span></li>
+        <li style="--c:#8fd14f"><span>4</span><i></i><span>Миша</span><span>без круга</span></li>
+      </ol>
+      <div class="acts"><span>Ещё раз</span><span>В главное меню</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 7. Комната: гонка -->
+<section class="screen" data-name="7 · Комната: гонка" data-note="Как сейчас: трасса, круги, уровень ботов, свои шины; свободные места — боты.">
+  <div class="car"></div><div class="shade"></div>
+  <div class="col">
+    <span class="tag">Онлайн · гонка · скажи код другу</span>
+    <div class="code">RARU</div>
+    <p class="sub">Или пришли ссылку: <b style="color:#fff;text-decoration:underline">https://…serveousercontent.com/?join=RARU</b></p>
+    <div class="rows" style="margin-top:16px">
+      <div class="row"><span>Трасса</span><span class="seg"><span>LUMEN RING</span><span class="on">MARINA BAY</span></span></div>
+      <div class="row"><span>Круги</span><span class="seg"><span>1</span><span>3</span><span class="on">5</span><span>10</span></span></div>
+      <div class="row"><span>Боты</span><span class="seg"><span>Лёгкие</span><span class="on">Средние</span><span>Сложные</span></span></div>
+      <div class="row"><span>Мои шины</span><span class="seg"><span>Мягкие</span><span class="on">Средние</span><span>Жёсткие</span></span></div>
+    </div>
+    <div class="players">
+      <div class="pl" style="--c:#c4101a"><i></i><span>Рома (ты)</span><em class="host">создатель</em></div>
+      <div class="pl" style="--c:#2bb5c9"><i></i><span>Друг</span><em>мягкие</em></div>
+    </div>
+    <p class="about">2 из 12 · свободные места — боты (средние).</p>
+    <div style="display:flex;gap:6px"><div class="cta" style="flex:1;text-align:center">Старт</div><div class="ghostbtn" style="flex:1;text-align:center;margin-top:12px">Выйти</div></div>
+  </div>
+</section>
+
+<script>
+  const screens = [...document.querySelectorAll('.screen')]
+  const tabs = document.getElementById('tabs')
+  const note = document.getElementById('note')
+  const show = (k) => {
+    screens.forEach((s, i) => s.classList.toggle('on', i === k))
+    ;[...tabs.children].forEach((b, i) => b.classList.toggle('on', i === k))
+    note.textContent = screens[k].dataset.note
+  }
+  screens.forEach((s, i) => {
+    const b = document.createElement('button')
+    b.textContent = s.dataset.name
+    b.onclick = () => show(i)
+    tabs.appendChild(b)
+  })
+  show(0)
+</script>
+</body>
+</html>

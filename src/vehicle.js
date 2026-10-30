@@ -7,8 +7,21 @@
 import { TUNING, setupPhysics, engineBrakeOf, damperOf, steerLockOf, coolDragOf } from './tuning.js'
 import { freshTyres, tyreGrip, updateTyres, freshDamage, aeroDamage, applyImpact, freshPowerUnit, updatePowerUnit, powerFactor, suspDamageAt, SUSP_BROKEN, updateEngineHeat, freshBrakes, brakeEff, updateBrakes, updateFuel } from './wear.js'
 
-// кузов → болид: по коллайдеру из событий удара Rapier найти, чей это болид
+// кузов → болид: по коллайдеру из событий удара Rapier найти, чей это болид.
+// Дескрипторы коллайдеров свои у каждого мира физики: на сервере несколько комнат (миров) в одном процессе,
+// поэтому список — по миру (collectImpacts(…, world)); общий hullOwners — для игры в браузере, где мир один
 export const hullOwners = new Map()
+const hullsByWorld = new WeakMap()
+// новая гонка начинает с чистого общего списка, иначе старый болид получит чужие удары
+export function clearHullOwners() {
+  hullOwners.clear()
+}
+function registerHull(world, handle, v) {
+  hullOwners.set(handle, v)
+  let m = hullsByWorld.get(world)
+  if (!m) hullsByWorld.set(world, (m = new Map()))
+  m.set(handle, v)
+}
 
 // Группы столкновений Rapier: (кто я << 16) | (с кем сталкиваюсь). Трасса — все биты по умолчанию.
 // Лучи подвески и днища видят только трассу: иначе колесо «вставало» на соседний болид и подвеска
@@ -32,15 +45,16 @@ export function setGhost(v, on) {
 // После world.step(events): удары по кузову → повреждения. Сила удара и направление — по тому,
 // как резко изменилась скорость кузова за шаг (prevVel — скорость в начале шага; шины и мотор
 // за шаг дают меньше 0,2 м/с, удар о стену — метры в секунду). onImpact(v, { sev, hits }) — для сообщений.
-export function collectImpacts(events, onImpact, onContact) {
+export function collectImpacts(events, onImpact, onContact, world = null) {
+  const owners = (world && hullsByWorld.get(world)) || hullOwners
   const hit = new Set()
   events.drainContactForceEvents((e) => {
     // два болида: сообщаем стюардам, кто с кем (onContact(a, b, сила, Н))
-    const va = hullOwners.get(e.collider1())
-    const vb = hullOwners.get(e.collider2())
+    const va = owners.get(e.collider1())
+    const vb = owners.get(e.collider2())
     if (va && vb && va !== vb && onContact) onContact(va, vb, e.totalForceMagnitude())
     for (const h of [e.collider1(), e.collider2()]) {
-      const v = hullOwners.get(h)
+      const v = owners.get(h)
       if (!v) continue
       v.impactT = IMPACT_TIME
       // тряска камеры: чем сильнее удар, тем резче (200 кН и больше — на полную)
@@ -50,7 +64,7 @@ export function collectImpacts(events, onImpact, onContact) {
   })
   for (const v of hit) {
     const lv = v.body.linvel()
-    const r = applyImpact(v, lv.x - v.prevVel.x, lv.z - v.prevVel.z)
+    const r = applyImpact(v, lv.x - v.prevVel.x, lv.z - v.prevVel.z, v.rand)
     if (r && onImpact) onImpact(v, r)
   }
 }
@@ -269,8 +283,8 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
     wet: 0, // насколько мокрая трасса 0…1 (погода, main.js); шины держат по wetGrip
   }
   v.hullCar = hullCar
-  hullOwners.set(hull.handle, v)
-  hullOwners.set(hullCar.handle, v)
+  registerHull(world, hull.handle, v)
+  registerHull(world, hullCar.handle, v)
   return v
 }
 
@@ -765,7 +779,7 @@ function stepVehicleRaw(v, input, dt, surfaceAt) {
   if (!v.wearOn) return
   const popped = updateTyres(v, dt)
   if (popped >= 0) v.events.push('Прокол — шина стёрта')
-  if (updatePowerUnit(v, dt, throttle, Math.max(0, deploy) / T.boostPower)) v.events.push('Отказ силовой установки')
+  if (updatePowerUnit(v, dt, throttle, Math.max(0, deploy) / T.boostPower, v.rand)) v.events.push('Отказ силовой установки')
   if (updateEngineHeat(v, dt, throttle, Math.abs(fwdSpeed))) v.events.push('Отказ силовой установки: перегрев, радиатор разбит')
   if (updateBrakes(v, dt, Math.abs(fwdSpeed))) v.events.push('Тормоза перегрелись — тормозят слабее')
   updateFuel(v, dt, throttle, powerFactor(v.pu, v.engineHeat))

@@ -242,6 +242,7 @@ export function createAiDriver(line, opts = {}) {
     defendTgt: null,
     noAttack: 0,
     tRun: 0, // сколько уже едем после старта; на разгоне в куче не обгоняем
+    raceT: 0, // сколько едем с отмашки: обнуляют только огни старта (bots.js), возврат на трассу (reset) — нет
     lane: 0, // полоса, с которой стартовали (от гоночной линии, м): держим её, пока до торможения далеко
     vl: 0, // боковая скорость болида (по месту), сглажена
     lPrev: null,
@@ -255,7 +256,9 @@ export function createAiDriver(line, opts = {}) {
     block: false, // впереди болид, с которым по прогнозу столкнёмся
     oppBrake: 0, // торможение из-за болида впереди, плавно спадает (без «дёрганья» педали)
   }
-  const input = { throttle: 0, brake: 0, steer: 0, handbrake: false, aero: false, aeroZone: true, abs: true, ersMode: L.ers, boost: false }
+  // hold: тормоз почти на месте держит болид, а не включает задний ход — бот назад не ездит (Марина, 30.10: со 2-го ряда
+  // решётки бот тормозил перед стоящим соседом и уезжал назад до −22 км/ч прямо в тех, кто сзади)
+  const input = { throttle: 0, brake: 0, steer: 0, handbrake: false, aero: false, aeroZone: true, abs: true, ersMode: L.ers, boost: false, hold: true }
 
   function nearest(px, pz, wide) {
     let best = st.idx
@@ -360,6 +363,7 @@ export function createAiDriver(line, opts = {}) {
       st.vl += ((st.lPrev === null ? 0 : (lMe - st.lPrev) / Math.max(dt, 1e-3)) - st.vl) * Math.min(1, dt / 0.25)
       st.lPrev = lMe
       st.tRun = speed > 3 ? st.tRun + dt : 0
+      st.raceT += dt
       const inZone = opts.zone ? opts.zone[i0] === 1 : true
       st.hold += dt
       st.tMode += dt
@@ -424,7 +428,9 @@ export function createAiDriver(line, opts = {}) {
           else lo = Math.max(lo, nb.l - lag + HIT_GAP + 0.4 * Math.max(0, -st.vl))
           squeezeBy = true
           // бок о бок и уже перекрылись: тот, чей центр позади соседа, уступает — чуть сбавляет и отстаёт
-          if ((nb.s > 0.3 || (nb.s > -0.3 && speed >= nb.v)) && Math.abs(nb.l - lMe) < HIT_GAP) yieldV = Math.min(yieldV, nb.v - 2 - 2 * (HIT_GAP - Math.abs(nb.l - lMe)))
+          // стоящему (заглох, разбит) не уступают — иначе встаёшь рядом с ним насовсем; на решётке первые 8 с — уступают
+          const parked = nb.v < 1.5 && st.raceT > 8
+          if (!parked && (nb.s > 0.3 || (nb.s > -0.3 && speed >= nb.v)) && Math.abs(nb.l - lMe) < HIT_GAP) yieldV = Math.min(yieldV, nb.v - 2 - 2 * (HIT_GAP - Math.abs(nb.l - lMe)))
         }
         if (nb.s >= CAR_L + 1.5) {
           const vc = speed - nb.v
@@ -464,7 +470,10 @@ export function createAiDriver(line, opts = {}) {
       }
 
       // стоящая или совсем медленная помеха (а не поле, которое разгоняется вместе со мной): на месте, под огнями, ничего не объезжаем
-      const isObstacle = (b) => (b.v < 3 && speed > 8) || (b.v < 0.35 * speed && speed > 12)
+      // стоящий болид прямо впереди — помеха и тогда, когда сам уже встал за ним (Рома 30.10, флаги: за заглохшим ботом
+      // вставала вся колонна до эвакуатора — под флагом «не обгонять», а помехой он считался, только пока едешь быстрее 8 м/с);
+      // первые 8 с после отмашки — нет: на решётке все стоят
+      const isObstacle = (b) => (b.v < 3 && speed > 8) || (b.v < 0.35 * speed && speed > 12) || (b.v < 1.5 && b.gap < 30 && st.raceT > 8)
 
       // решение «обгонять или нет» (USR canOvertake): хватает разницы в скорости и места до торможения
       const canOvertake = (b) => {

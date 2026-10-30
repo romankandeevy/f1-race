@@ -430,18 +430,19 @@ export function createHud(track) {
       if (text) setText(wx, text)
     },
 
-    // итоги квалификации: rows — по времени ({ name, paint, time, player }); «На старт гонки» (Enter) или в меню
-    showQuali(rows) {
+    // итоги квалификации: rows — по времени ({ name, paint, time, player }); «На старт гонки» (Enter) или в меню.
+    // opts — для онлайн-заезда на время: { kicker — подпись сверху, primary: [действие, надпись] первой кнопки }
+    showQuali(rows, opts = {}) {
       const pos = rows.findIndex((r) => r.player) + 1
       const lead = rows[0].time
       const time = (r, i) => (!isFinite(r.time) ? 'без времени' : i === 0 ? formatTime(r.time) : `+${(r.time - lead).toFixed(3)}`)
       results.innerHTML = `
         <div class="res">
-          <div class="sheet-kicker">Квалификация · лучший круг</div>
-          <h2>${pos === 1 ? 'Поул-позиция!' : `${pos}-е место на решётке`}</h2>
-          ${isFinite(rows[pos - 1].time) ? '' : '<p class="res-why">Ни одного засчитанного круга — старт с последнего места</p>'}
+          <div class="sheet-kicker">${opts.kicker ?? 'Квалификация · лучший круг'}</div>
+          <h2>${opts.kicker ? (pos === 1 ? 'Победа!' : `${pos}-е место`) : pos === 1 ? 'Поул-позиция!' : `${pos}-е место на решётке`}</h2>
+          ${isFinite(rows[pos - 1].time) ? '' : `<p class="res-why">Ни одного засчитанного круга${opts.kicker ? '' : ' — старт с последнего места'}</p>`}
           <ol>${rows.map((r, i) => `<li class="${r.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${r.paint}"></i><span>${r.name}</span><span class="t">${time(r, i)}</span></li>`).join('')}</ol>
-          <div class="res-actions"><button data-act="race">На старт гонки</button><button data-act="menu">В главное меню</button></div>
+          <div class="res-actions"><button data-act="${(opts.primary ?? ['race'])[0]}">${(opts.primary ?? ['race', 'На старт гонки'])[1]}</button><button data-act="menu">В главное меню</button></div>
         </div>`
       for (const b of results.querySelectorAll('[data-act]')) b.addEventListener('click', () => onResults?.(b.dataset.act))
       results.hidden = false

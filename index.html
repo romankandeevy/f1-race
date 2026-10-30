@@ -351,7 +351,16 @@
   #screens { position: fixed; inset: 0; z-index: 8; pointer-events: none; color: var(--text); font-family: var(--font); user-select: none; }
   #screens[hidden] { display: none; }
   #screens .sc-shade { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(4, 5, 7, .96) 0%, rgba(4, 5, 7, .88) 30%, rgba(4, 5, 7, .4) 52%, rgba(4, 5, 7, 0) 72%), linear-gradient(0deg, rgba(4, 5, 7, .7) 0%, rgba(4, 5, 7, 0) 26%); }
-  #screens[data-screen=keys] .sc-shade { background: rgba(4, 5, 7, .94); }
+  #screens[data-wide="1"] .sc-shade { background: rgba(4, 5, 7, .92); }
+  /* «Играть»: режимы карточками */
+  .sc-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 8px; }
+  .sc-mode { appearance: none; position: relative; min-height: 260px; padding: 22px 22px 20px; border: 1px solid #3A3F47; border-top: 4px solid #3A3F47; background: rgba(255, 255, 255, .035); color: #C5C8CD; display: flex; flex-direction: column; gap: 10px; text-align: left; cursor: pointer; font-family: var(--font); transition: transform .12s, background .12s; }
+  .sc-mode.on { border-color: var(--text); border-top-color: var(--red); background: rgba(255, 255, 255, .09); color: var(--text); transform: translateY(-4px); }
+  .sc-mode-k { font: 700 12px var(--font); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .sc-mode b { font: 900 italic 30px/1 var(--font); text-transform: uppercase; }
+  .sc-mode-t { color: #AEB3BB; font: 500 14px/1.45 var(--font); }
+  .sc-mode-go { margin-top: auto; align-self: flex-start; background: var(--red); color: #fff; font: 900 italic 15px var(--font); padding: 8px 18px; text-transform: uppercase; clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%); }
+  .sc-mode.on .sc-mode-go { background: var(--text); color: var(--bg); }
   #screens .sc-col { position: absolute; left: 0; top: 0; bottom: 0; width: min(600px, 100vw); box-sizing: border-box; padding: 5vh 28px 0 clamp(24px, 4vw, 64px); display: flex; flex-direction: column; pointer-events: auto; overflow-y: auto; }
   #screens .sc-col.wide { width: min(1040px, 100vw); }
   .sc-tag { display: inline-block; background: var(--red); padding: 4px 26px 4px 12px; font: 900 italic 12px var(--font); letter-spacing: .12em; text-transform: uppercase; clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%); }
