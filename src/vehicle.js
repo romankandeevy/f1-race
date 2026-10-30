@@ -45,7 +45,7 @@ export function collectImpacts(events, onImpact, onContact) {
       v.impactT = IMPACT_TIME
       // тряска камеры: чем сильнее удар, тем резче (200 кН и больше — на полную)
       v.impactShake = Math.max(v.impactShake, clamp(e.totalForceMagnitude() / 200000, 0.2, 1))
-      if (v.wearOn) hit.add(v)
+      if (v.wearOn && !v.autopilot) hit.add(v) // автопилот пит-стопа: новых повреждений нет
     }
   })
   for (const v of hit) {
@@ -351,7 +351,30 @@ function updateSteering(v, input, dt, fwdSpeed, latSpeed) {
 
 // input: { throttle 0..1, brake 0..1, steer -1..1 (влево +), handbrake bool, aero bool (просит режим прямой), aeroZone bool (болид в зоне прямой) }
 // surfaceAt(x, z, collider) -> 'asphalt' | 'gravel' | 'grass' | 'kerb' (collider — деталь трассы под колесом)
+// Автопилот пит-стопа (v.autopilot, ставит main.js, пока пит-контроллер ведёт болид): физика едет как у целого болида —
+// побитые крылья, днище, подвеска, оторванное колесо и прокол не мешают доехать до бокса (Рома 30.10: «даже автопилот не
+// смог заехать, меня настолько разъебало»). Настоящие повреждения не трогаются: их чинят в боксе, табло их показывает.
+const CLEAN = freshDamage()
+const punctures = [false, false, false, false]
 export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
+  if (!v.autopilot || !v.wearOn) return stepVehicleRaw(v, input, dt, surfaceAt)
+  const real = v.damage
+  for (const k in CLEAN) if (k !== 'lost') CLEAN[k] = 0
+  CLEAN.lost.fill(0)
+  v.damage = CLEAN
+  v.tyres.forEach((t, i) => {
+    punctures[i] = t.puncture
+    t.puncture = false
+  })
+  try {
+    stepVehicleRaw(v, input, dt, surfaceAt)
+  } finally {
+    v.damage = real
+    v.tyres.forEach((t, i) => (t.puncture = t.puncture || punctures[i]))
+  }
+}
+
+function stepVehicleRaw(v, input, dt, surfaceAt) {
   const { T, body, wheels, world } = v
   const setup = T.setup
   // в Rapier добавленные силы копятся между шагами, пока их не сбросить

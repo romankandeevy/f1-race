@@ -1273,7 +1273,7 @@ function hitWall(kmhIn, wallDeg) {
         const gap = sc.gapFrom(leader)
         // лидер едет с потолком SC (как flags.cap с параметром sc)
         const v = gap === null ? SC_SPEED : cap.cap(0, 0, { gap, speed: sc.speed }) || 0
-        const vv = gap === null ? 38 : Math.min(38, sc.speed + (gap - 35) * 0.35)
+        const vv = gap === null ? SC_SPEED : Math.min(SC_SPEED, sc.speed + (gap - 35) * 0.35)
         leader = (leader + Math.max(0, vv) * 0.05) % L
         ended = ended || t > endAt
         home = sc.update(0.05, leader, ended)
@@ -1283,10 +1283,15 @@ function hitWall(kmhIn, wallDeg) {
       return { sc, phases: [...phases].join('→'), minGap, gap: sc.gapFrom(leader), home }
     }
     const a1 = simSc(1000, 120)
-    check('машина безопасности: ждёт лидера впереди, держит ~60 м, потом уходит в боксы', `фазы ${a1.phases}, самый малый зазор ${a1.minGap.toFixed(0)} м, зашла в боксы ${a1.home ? 'да' : 'нет'}`, a1.home && a1.minGap > 25 && a1.minGap < 120 && a1.phases.includes('lead') && a1.phases.includes('in'))
-    // выехала позади лидера — догоняет и встаёт перед ним
+    check('машина безопасности: ждёт лидера впереди, держит ~60 м, потом уходит в боксы', `фазы ${a1.phases}, самый малый зазор ${a1.minGap.toFixed(0)} м, зашла в боксы ${a1.home ? 'да' : 'нет'}`, a1.home && a1.minGap > 25 && a1.minGap < 120 && a1.phases.includes('lead') && /in|leave/.test(a1.phases))
+    // выезд из пит-лейна позади лидера — не догоняет полкруга, а сразу встаёт перед ним (Рома 30.10)
     const a2 = simSc(1800, 150)
-    check('машина безопасности выехала позади лидера: догоняет и встаёт перед ним', `фазы ${a2.phases}, самый малый зазор ${a2.minGap.toFixed(0)} м`, a2.phases.startsWith('out→lead') && a2.minGap > 25 && a2.home)
+    const g0 = (() => {
+      const sc = createSafetyCar(scene, axisS, L, fakeLane)
+      sc.deploy(1800)
+      return sc.gapFrom(1800)
+    })()
+    check('машина безопасности при выезде позади лидера сразу встаёт перед ним', `зазор при выезде ${g0?.toFixed(0)} м, фазы ${a2.phases}, самый малый зазор ${a2.minGap.toFixed(0)} м`, g0 > 100 && g0 < 200 && a2.phases.startsWith('lead') && a2.minGap > 25 && a2.home)
   }
 
   // эвакуатор с краном (tow.js): грузовик встаёт бортом, стрела поднимает болид над землёй и кладёт на платформу, увозит
@@ -1433,6 +1438,25 @@ function hitWall(kmhIn, wallDeg) {
     const realHit = pitEntryHit(lane, pitAxis[20].x, pitAxis[20].z, Math.PI / 2)
     check('въезд в пит-лейн только с дороги пит-лейна', `ложных срабатываний у края трассы ${falseHits}, на пит-лейне ${realHit ? 'въезд' : 'нет'}`, falseHits === 0 && realHit)
   }
+}
+// 26б. Автопилот пит-стопа: разбитый болид (оторвано колесо, подвеска и крыло сломаны, прокол) едет как целый, повреждения не исчезают
+{
+  const wreck = (auto) => {
+    const w = fresh()
+    w.v.wearOn = true
+    const d = w.v.damage
+    d.lost[0] = 1
+    d.suspL = 1
+    d.wingL = d.wingR = 1
+    w.v.tyres[1].puncture = true
+    w.v.autopilot = auto
+    let maxDev = 0
+    run(w, { throttle: 0.6 }, 4, () => (maxDev = Math.max(maxDev, Math.abs(w.v.body.translation().x))))
+    return { kmh: kmh(w), dev: maxDev, kept: d.lost[0] === 1 && d.suspL === 1 && w.v.tyres[1].puncture }
+  }
+  const off = wreck(false)
+  const on = wreck(true)
+  check('автопилот пит-стопа: разбитый болид едет как целый, повреждения остаются', `без автопилота ${off.kmh.toFixed(0)} км/ч и ${off.dev.toFixed(1)} м вбок, с ним ${on.kmh.toFixed(0)} км/ч и ${on.dev.toFixed(2)} м, повреждения ${on.kept ? 'на месте' : 'пропали'}`, on.dev < 0.3 && on.kmh > off.kmh && on.kept)
 }
 // 27. Правило двух составов: без смены шин — дисквалификация, со сменой — нет; в спринте на 1–2 круга правила нет
 {

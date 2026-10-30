@@ -265,10 +265,11 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
       b.mainIdx = bi
     },
 
-    // эвакуатор забрал болид: убираем с трассы
+    // эвакуатор забрал болид: убираем с трассы. Поднятый краном уже `gone` (lift) — его тоже прятать: раньше тут был
+    // выход по `gone`, и болид оставался висеть в воздухе там, где его последним держал кран (Рома 30.10)
     remove(id) {
       const b = list.find((x) => x.id === id)
-      if (!b || b.gone) return
+      if (!b) return
       b.gone = true
       b.car.group.visible = false
       b.v.body.setEnabled(false)

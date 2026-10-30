@@ -80,6 +80,7 @@ async function main() {
   const rig = new CameraRig(camera, car)
   const hud = createHud(track)
   hud.setCarScan(scanCar(renderer, car.group)) // схема болида на табло — из той же модели, пока колёса и крылья на месте
+  const mirrors = car.initMirrors() // зеркала заднего вида — после схемы: экраны и камеры зеркал на схеме не нужны
   const particles = createParticles(scene)
   const marks = createTrackMarks(scene) // обломки и следы торможения
   const weather = createWeather(scene, env) // дождь и мокрая трасса
@@ -580,13 +581,23 @@ async function main() {
     const gap = sc.gapFrom(lead.s)
     return gap === null ? null : { gap, speed: sc.speed }
   }
+  // зазор по трассе до ближайшего болида впереди — физически, а не по порядку гонки (Рома 30.10: под машиной безопасности
+  // ему разрешалось 180 «догонять колонну», хотя прямо перед ним ехали боты на 130 — порядок гонки и трасса расходились)
+  function physGap(s, selfId) {
+    const L = track.length
+    let best = Infinity
+    const test = (s2) => {
+      const d = (((s2 - s) % L) + L) % L
+      if (d > 0.5 && d < best) best = d
+    }
+    if (selfId !== 'player' && !retired && !pitCtl) test(laps.state.s)
+    for (const b of bots?.list ?? []) if (b.id !== selfId && !b.gone && !b.retired && !b.pit) test(bots.distanceOf(b))
+    return best === Infinity ? 1000 : best
+  }
   function botLimit(b) {
     if (!flags || flags.mode === 'green' && !flags.incidents.length) return null
     const s = bots.distanceOf(b)
-    const order = race.state.order
-    const i = order.findIndex((c) => c.id === b.id)
-    const gap = i > 0 ? order[i - 1].progress - order[i].progress : 0
-    return { cap: flags.botCap(s, gap, scAhead(b.id)), noPass: flags.noPass(s), redPit: flags.mode === 'red' }
+    return { cap: flags.botCap(s, physGap(s, b.id), scAhead(b.id)), noPass: flags.noPass(s), redPit: flags.mode === 'red' }
   }
 
   // красный флаг кончился: болиды (кроме сошедших) на решётку в порядке гонки, огни старта (Рома 29.10: «новый старт с места»)
@@ -911,7 +922,7 @@ async function main() {
       // зазор игрока до болида впереди и обгон под флагами (в F1 за него +5 с)
       const order = race.state.order
       const mei = order.findIndex((c) => c.player)
-      playerGap = mei > 0 ? order[mei - 1].progress - order[mei].progress : 0
+      playerGap = physGap(laps.state.s, 'player')
       const sMe = laps.state.s
       const flagged = flags.mode !== 'green' || flags.noPass(sMe)
       if (flagged && !retired && mei >= 0) {
@@ -966,7 +977,15 @@ async function main() {
     const suspBroken = Math.max(vehicle.damage.suspL, vehicle.damage.suspR) > 0.7
     if (suspBroken && !suspBrokenSeen) hud.notify('Подвеска сломана: сторона проседает, колесо не слушается руля. Подвеску в боксах не чинят — доезжай аккуратно', true, 6)
     suspBrokenSeen = suspBroken
-    if (ghostUntil && now > ghostUntil) {
+    // автопилот пит-стопа: болид — призрак (сквозь болиды), без новых повреждений, физика как у целого (vehicle.js);
+    // управление вернулось — призрак снимается, когда рядом никого
+    const auto = !!pitCtl
+    if (vehicle.autopilot !== auto) {
+      vehicle.autopilot = auto
+      if (auto) setGhost(vehicle, true)
+      else ghostUntil = now + 300
+    }
+    if (ghostUntil && now > ghostUntil && !auto) {
       // снимаем, только когда рядом никого
       const p = vehicle.body.translation()
       const near = bots?.list.some((b) => {
@@ -1119,6 +1138,8 @@ async function main() {
     })(), vehicle.damage)
     telemetry.update(vehicle)
     sound.update(vehicle, lastInput, paused, { bots: bots?.list, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
+    // зеркала заднего вида: только если их видно (кабина, T-камера) и игра идёт
+    mirrors?.update(renderer, scene, !inMenu && (rig.mode === 'onboard' || rig.mode === 'tcam'))
     renderer.render(scene, camera)
   }
   requestAnimationFrame(frame)

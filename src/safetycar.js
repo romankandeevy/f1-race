@@ -7,8 +7,11 @@ import { SC_SPEED } from './flags.js'
 
 const CATCH_SPEED = 70 // м/с: догоняет колонну, если выехала позади лидера
 const GAP = 60 // м: сколько держит впереди лидера
-const MIN_SPEED = 24
-const MAX_SPEED = 44
+const MIN_SPEED = 32
+const MAX_SPEED = 60
+const LEAD_START = 150 // м перед лидером: где появляется, если выезд из пит-лейна далеко
+const PIT_NEAR = 900 // м: въезд ближе — уходит в боксы, дальше — съезжает на служебный выезд (не ждём целый круг)
+const OFF_ROAD_TIME = 4 // с: гасит огни, отходит вбок и пропадает
 const ACCEL = 9 // м/с²
 const SHIFT_SPEED = 4 // м/с: уход вбок
 const TO_PIT = 380 // м до въезда в пит-лейн: начинает уходить к нему
@@ -118,15 +121,18 @@ export function createSafetyCar(scene, axis, length, lane) {
       return st.phase === 'out' || st.phase === 'lead'
     },
 
-    // выезжает из пит-лейна: leaderS — где лидер
+    // выезжает: leaderS — где лидер. Выезд из пит-лейна чуть впереди лидера — оттуда; иначе сразу встаёт перед лидером
+    // (Рома 30.10: выезжала позади лидера и полкруга его догоняла, а все ехали на ограничителе)
     deploy(leaderS) {
-      st.s = exit.s
-      st.l = exit.l
-      st.v = 20
+      const g = leaderS == null ? 0 : ahead(leaderS, exit.s)
+      const fromPit = leaderS == null || (g > 40 && g < 600)
+      st.s = fromPit ? exit.s : (leaderS + LEAD_START) % length
+      st.l = fromPit ? exit.l : 0
+      st.v = fromPit ? 20 : SC_SPEED
       st.t = 0
       st.armed = false
-      // выехала позади лидера (он ушёл дальше) — догоняет; впереди — просто ждёт его
-      st.phase = leaderS == null || ahead(leaderS, st.s) < length / 2 ? 'lead' : 'out'
+      st.offT = 0
+      st.phase = 'lead'
       mesh.visible = true
       place()
     },
@@ -148,10 +154,27 @@ export function createSafetyCar(scene, axis, length, lane) {
         const extra = (Math.max(0, st.v - SC_SPEED) ** 2) / (2 * ACCEL)
         if (g > Math.max(12, GAP - extra) && g < length / 2) st.phase = 'lead'
       }
-      if (ending && (st.phase === 'lead' || st.phase === 'out')) st.phase = 'in'
+      if (ending && (st.phase === 'lead' || st.phase === 'out')) {
+        // въезд в пит-лейн близко — уходит туда; далеко — гасит огни и съезжает на служебный выезд (ждать целый круг незачем)
+        st.phase = ahead(st.s, entry.s) < PIT_NEAR ? 'in' : 'leave'
+        st.offT = 0
+      }
+      if (st.phase === 'leave') {
+        st.offT += dt
+        st.l += SHIFT_SPEED * dt * 2
+        st.s = (st.s + st.v * dt) % length
+        place()
+        mesh.userData.lamps.forEach((l) => (l.visible = false))
+        if (st.offT > OFF_ROAD_TIME) {
+          this.hide()
+          return true
+        }
+        return false
+      }
       // скорость
       let target = SC_SPEED
       if (st.phase === 'out') target = CATCH_SPEED
+      else if (st.phase === 'in') target = MAX_SPEED // огни погашены — сама уходит к въезду, колонна за ней
       else if (leaderS != null) {
         // держит ~GAP впереди лидера: далеко — ждёт, близко — уходит
         const g = ahead(leaderS, st.s)

@@ -47,6 +47,7 @@ export function scanCar(renderer, group) {
   const W = Math.round(2 * HALF_X * PX_PER_M)
   const H = Math.round((Z_TOP - Z_BOTTOM) * PX_PER_M)
   const model = group.clone(true)
+  model.getObjectByName('decals')?.removeFromParent() // наклейки на схеме — лишние контуры букв
   model.position.set(0, 0, 0)
   model.quaternion.identity()
   model.scale.set(1, 1, 1)
