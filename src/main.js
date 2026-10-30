@@ -63,18 +63,27 @@ async function main() {
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = STEP
   const bar = document.querySelector('#bar i')
-  // настоящая трасса из модели: с 30.10 — Marina Bay (Рома: «обновить трассу полностью»; пока только асфальт),
-  // прежняя LUMEN RING — по адресу ?track=lumen, плоская тестовая — ?track=test (удобно для настройки физики)
+  // настоящая трасса из модели — на выбор в экране «Гонка» (Рома 30.10: Marina Bay «супер сложная, не кайф кататься» —
+  // вернуть LUMEN RING и выбирать). Выбор помнится (localStorage f1-race.track), смена — перезагрузка страницы (физика трассы
+  // строится при загрузке); по умолчанию LUMEN RING. Адрес ?track=lumen|marina — разово, ?track=test — плоская тестовая
   // quali — круг пилота с темпом 1 у каждого уровня, с (замер: автопилот ботов, второй круг в одиночку).
   // Marina Bay, вторая версия (повороты ≥ 22 м): tools/track/lap.mjs (плоская земля) 116,2 / 120,9 / 130,5 с × поправка
   // на настоящую трассу (горб улиц, высоты) 1,04 / 1,035 / 1,025 — её дал замер в игре на первой версии
   const TRACKS = {
-    marina: { url: '/models/marina.glb', name: 'MARINA BAY', quali: { light: 133.8, medium: 125.1, hard: 120.8 } },
-    lumen: { url: '/models/track.glb', name: 'LUMEN RING', quali: { light: 80.6, medium: 72.8, hard: 68.9 } },
+    lumen: { url: '/models/track.glb', name: 'LUMEN RING', kind: 'Загородная', km: '3,7 км', quali: { light: 80.6, medium: 72.8, hard: 68.9 }, about: 'Широкие быстрые повороты, за поребриками гравий и трава — ошибки прощает. Круг около 1:10.' },
+    marina: { url: '/models/marina.glb', name: 'MARINA BAY', kind: 'Городская · Сингапур', km: '4,9 км', quali: { light: 133.8, medium: 125.1, hard: 120.8 }, about: '19 медленных поворотов, стены вплотную — ошибка стоит удара. Сложная, для опытных. Круг около 2:00.' },
   }
+  const TRACK_KEY = 'f1-race.track'
   const trackParam = new URLSearchParams(location.search).get('track')
   const useTest = trackParam === 'test'
-  const trackInfo = TRACKS[trackParam] || TRACKS.marina
+  let savedTrack = null
+  try {
+    savedTrack = localStorage.getItem(TRACK_KEY)
+  } catch {
+    // нет хранилища — трасса по умолчанию
+  }
+  const trackId = TRACKS[trackParam] ? trackParam : TRACKS[savedTrack] ? savedTrack : 'lumen'
+  const trackInfo = TRACKS[trackId]
   const track = useTest
     ? buildTrack(scene, RAPIER, world)
     : await loadCircuit(trackInfo.url, scene, renderer, RAPIER, world, (e) => {
@@ -129,7 +138,7 @@ async function main() {
   }
   let lastPuSave = 0
   // пит-лейн и пит-стоп игрока (как в F1 25: въехал — дальше ведёт игра, выпуск — газом)
-  const lane = track.pit ? createPitLane(track.pit) : null
+  const lane = track.pit ? createPitLane(track.pit, track.axis) : null
   const PLAYER_BOX = BOT_COUNT // боксы 1…11 у ботов, 12-й — игрока
   let pitCtl = null
   let pitPlan = { compound: 'soft', wing: false }
@@ -285,8 +294,32 @@ async function main() {
   }
   const ui = createScreens({
     canRace: canRace,
+    tracks: useTest ? [] : Object.entries(TRACKS).map(([id, t]) => ({ id, name: t.name, kind: t.kind, km: t.km, about: t.about })),
+    trackId,
+    // другая трасса: запомнить и перезагрузить страницу; после загрузки — снова в настройку заезда, на следующий шаг
+    setTrack: (id) => {
+      try {
+        localStorage.setItem(TRACK_KEY, id)
+        sessionStorage.setItem('f1-race.reopen', 'flow')
+      } catch {
+        // не запомнили — загрузится трасса по умолчанию
+      }
+      location.href = location.pathname
+    },
     trackLabel: useTest ? 'Тестовая трасса' : `${trackInfo.name} · ${Math.round(track.length).toLocaleString('ru-RU')} м`,
-    session: { level: botLevel === 'off' ? 'medium' : botLevel, compound: startCompound, abs: input.abs },
+    session: { level: botLevel === 'off' ? 'medium' : botLevel, compound: startCompound },
+    // ABS — в «Настройки → Помощники» (и B в гонке), не в настройке заезда
+    abs: {
+      get: () => input.abs,
+      set: (v) => {
+        input.abs = !!v
+        try {
+          localStorage.setItem(ABS_KEY, input.abs ? '1' : '0')
+        } catch {
+          // не запомнили — до перезагрузки останется
+        }
+      },
+    },
     info: () => ({ bestLap: laps?.state.bestLap ?? null, bestSectors: laps?.state.bestSectors ?? null, pu: vehicle.pu, career, livery }),
     // витрина — только в главном меню; настройки поверх паузы показываем на фоне самой гонки
     showcase: (on, shift) => {
@@ -347,9 +380,18 @@ async function main() {
     vehicle.steerIn = vehicle.steerCmd = vehicle.steerVel = vehicle.delta = 0
     vehicle.throttle = vehicle.brake = 0
     vehicle.compound = startCompound // на витрине шины того состава, что выбран на старт
-    // два снимка: иначе болид на экране остался бы на старом месте (картинка берёт предыдущий снимок)
+    // болид ставится на 5 см выше земли, а в меню физика стоит: без осадки он висел на подвеске, колёса — в 2–3 см над
+    // асфальтом (Рома 30.10: «колёса не касаются земли, он как бы в воздухе»). Полторы секунды физики на месте — сел
+    const idle = { throttle: 0, brake: 0, steer: 0, handbrake: false, aero: false, boost: false, hold: true }
+    for (let i = 0; i < 360; i++) {
+      stepVehicle(vehicle, idle, STEP, track.surfaceAt)
+      world.step()
+    }
+    // два снимка: иначе болид на экране остался бы на старом месте (картинка берёт предыдущий снимок);
+    // в меню кадр картинку болида по физике не двигает — ставим её сами (иначе модель на высоте загрузки)
     car.snapshot(vehicle.body)
     car.snapshot(vehicle.body)
+    car.sync(1, vehicle, idle)
     ui.open('main')
   }
 
@@ -364,7 +406,7 @@ async function main() {
     weatherMode = o.weather || 'dry'
     quali = null
     qualiTime = undefined
-    input.abs = !!o.abs
+    if (o.abs !== undefined) input.abs = !!o.abs
     try {
       localStorage.setItem(BOTS_KEY, botLevel)
       localStorage.setItem(TYRES_KEY, startCompound)
@@ -577,6 +619,13 @@ async function main() {
   document.getElementById('loader').classList.add('done')
   // после загрузки — главное меню; гонка начинается по кнопке «Гонка» или «Заезд на время»
   enterMenu()
+  // сменили трассу в настройке заезда — после перезагрузки сразу на следующий шаг
+  try {
+    if (sessionStorage.getItem('f1-race.reopen') === 'flow') ui.openFlow()
+    sessionStorage.removeItem('f1-race.reopen')
+  } catch {
+    // нет хранилища — остаёмся в главном меню
+  }
 
   let acc = 0
   let last = performance.now()

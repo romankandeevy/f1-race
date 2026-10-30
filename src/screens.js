@@ -15,12 +15,13 @@ import { WEATHERS, WEATHER_ORDER } from './weather.js'
 const SESSION_KEY = 'f1-race.session.v1'
 const LAP_OPTIONS = [1, 3, 5, 10, 15, 20]
 const SLOTS = [
-  { v: -1, name: 'По квалификации' },
+  { v: -1, name: 'Квалификация' },
   { v: 0, name: 'Поул' },
   { v: 5, name: 'Шестое' },
   { v: 11, name: 'Последнее' },
 ]
 const MODE_NAME = { race: 'Гонка', time: 'Заезд на время' }
+const FLOW = ['track', 'race', 'weather', 'start'] // экраны-шаги настройки заезда
 const CAMERA_NAMES = { chase: 'Сзади', onboard: 'Из кабины', tcam: 'T-камера', nose: 'Нос болида' }
 const FPS_OPTIONS = [
   { v: 30, name: '30' },
@@ -32,8 +33,16 @@ const FPS_OPTIONS = [
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
 const pct = (x) => `${Math.round(x * 100)}%`
 
+// Настройка заезда — по шагам, как в F1 25, Gran Turismo 7, Forza (Рома 30.10: «слишком много настроек на одном экране»):
+// гонка — Трасса → Гонка (соперники, круги, старт) → Условия (погода; потом — время суток) → Болид (шины на старт и настройка
+// болида — Рома 30.10: «шины относим к настройке болида, погоду отдельно, потом туда добавим ночь, день»);
+// заезд на время — Трасса → Условия → Болид.
+// Режим выбирается в главном меню, ABS — в «Настройки → Помощники» (и B в гонке). Esc — шаг назад.
+//
 // ctx: {
 //   canRace — есть ли трасса с решёткой (на тестовой гонки нет), trackLabel — «MARINA BAY · 4 940 м»,
+//   tracks — [{ id, name, kind, km, about }] трассы на выбор, trackId — текущая, setTrack(id) — сменить (перезагрузка страницы),
+//   abs — { get, set } помощник ABS,
 //   session — { mode, level, laps, compound, slot, abs } начальные значения (из прошлого запуска),
 //   info() → { bestLap, bestSectors, pu: { ice, ers, gearbox }, career: { races, wins, podiums, dnf }, livery },
 //   previewCompound(id) — показать шины состава на витрине; showcase(on, shift) — включить витрину; previewLivery(l) — показать ливрею на болиде и сохранить;
@@ -44,7 +53,7 @@ export function createScreens(ctx) {
   let stack = []
   let sel = {} // выбранный пункт по экрану
   let tab = 0 // вкладка настроек
-  let session = { mode: ctx.canRace ? 'race' : 'time', level: 'medium', laps: 5, compound: 'medium', slot: 11, abs: false, weather: 'dry', ...ctx.session }
+  let session = { mode: ctx.canRace ? 'race' : 'time', level: 'medium', laps: 5, compound: 'medium', slot: 11, weather: 'dry', ...ctx.session }
   try {
     Object.assign(session, JSON.parse(localStorage.getItem(SESSION_KEY) || '{}'))
   } catch {
@@ -65,35 +74,63 @@ export function createScreens(ctx) {
   const toggle = (id, label, get, set, extra = {}) => ({ type: 'choice', id, label, options: [{ v: false, name: 'Выкл' }, { v: true, name: 'Вкл' }], get, set, ...extra })
   const action = (id, label, run, extra = {}) => ({ type: 'action', id, label, run, ...extra })
 
-  const raceRows = () => [
-    choice('mode', 'Режим', ctx.canRace ? [{ v: 'race', name: 'Гонка' }, { v: 'time', name: 'Заезд на время' }] : [{ v: 'time', name: 'Заезд на время' }], () => session.mode, (v) => (session.mode = v), {
-      hint: () => (session.mode === 'race' ? 'Двенадцать болидов, огни старта, пит-стопы и правила F1: два разных состава шин, границы трассы, штрафы.' : 'Ты один на трассе. Ловишь лучший круг, секторы считаются, соперников нет.'),
+  // шаги настройки заезда
+  const flowSteps = () => (session.mode === 'race' ? [['track', 'Трасса'], ['race', 'Гонка'], ['weather', 'Условия'], ['start', 'Болид']] : [['track', 'Трасса'], ['weather', 'Условия'], ['start', 'Болид']])
+  const nextStep = (name) => {
+    const steps = flowSteps()
+    const k = steps.findIndex(([id]) => id === name)
+    return steps[k + 1]?.[0]
+  }
+  let pendingTrack = ctx.trackId // трасса, выбранная на шаге «Трасса»; другая загрузится по «Далее»
+  const trackOf = (id) => ctx.tracks?.find((t) => t.id === id)
+
+  const trackRows = () => [
+    choice('track', 'Трасса', (ctx.tracks || []).map((t) => ({ v: t.id, name: t.name, kind: t.kind, km: t.km })), () => pendingTrack, (v) => (pendingTrack = v), {
+      cards: true,
+      hint: () => `${trackOf(pendingTrack)?.about ?? ''}${pendingTrack !== ctx.trackId ? ' Другая трасса загрузится по «Далее» (пару секунд).' : ''}`,
     }),
+    action('next', 'Далее', () => {
+      if (pendingTrack && pendingTrack !== ctx.trackId) {
+        saveSession()
+        ctx.setTrack(pendingTrack)
+        return
+      }
+      push(nextStep('track'))
+    }, { cta: true, hint: () => (session.mode === 'race' ? 'Дальше — соперники, круги и старт.' : 'Дальше — погода.') }),
+  ]
+
+  const raceRows = () => [
     choice('level', 'Соперники', ['light', 'medium', 'hard'].map((v) => ({ v, name: AI_LEVELS[v].name })), () => session.level, (v) => (session.level = v), {
-      hidden: () => session.mode !== 'race',
       hint: () => ({ light: 'Едут спокойно и далеко от предела: хороши, чтобы выучить трассу и пит-стопы.', medium: 'Едут уверенно, закрываются на прямой, когда атакуешь.', hard: 'Едут по гоночной линии на пределе сцепления, закрываются и тратят батарею на обгоны.' })[session.level],
     }),
     choice('laps', 'Круги', LAP_OPTIONS.map((v) => ({ v, name: String(v) })), () => session.laps, (v) => (session.laps = v), {
-      hidden: () => session.mode !== 'race',
       hint: () => (session.laps < 5 ? 'Короткая гонка: менять шины не обязательно (правило двух составов — с 5 кругов, как в спринте F1 его тоже нет).' : session.laps >= 10 ? 'Длинная гонка: шины и мотор изнашиваются, без пит-стопов не обойтись.' : 'Классическая дистанция: один-два пит-стопа.'),
     }),
+    choice('slot', 'Старт', SLOTS.map((s) => ({ v: s.v, name: s.name })), () => session.slot, (v) => (session.slot = v), {
+      hint: () => (session.slot === -1 ? 'Сначала квалификация: ты один на трассе, разгонный круг и два быстрых, в зачёт лучший. Решётку строит время — как в F1.' : 'С поула впереди пусто, с последнего места — весь круг обгонов.'),
+    }),
+    action('next', 'Далее', () => push(nextStep('race')), { cta: true, hint: () => 'Дальше — погода.' }),
+  ]
+
+  // условия: погода (сюда же потом — время суток)
+  const weatherRows = () => [
+    choice('weather', 'Погода', WEATHER_ORDER.map((v) => ({ v, name: WEATHERS[v].name })), () => session.weather, (v) => (session.weather = v), { hint: () => WEATHERS[session.weather].about }),
+    action('next', 'Далее', () => push(nextStep('weather')), { cta: true, hint: () => 'Дальше — болид: шины на старт и настройка.' }),
+  ]
+
+  const startRows = () => [
     choice('compound', 'Шины на старт', COMPOUND_ORDER.map((v) => ({ v, name: COMPOUNDS[v].name })), () => session.compound, (v) => {
       session.compound = v
-      ctx.previewCompound?.(v) // на витрине сразу видно цвет шин выбранного состава
+      ctx.previewCompound?.(v) // на витрине сразу видно шины выбранного состава
     }, {
       hint: () => ({ soft: 'Мягкие: быстрее всех, но живут около трёх кругов.', medium: 'Средние: золотая середина, около шести кругов.', hard: 'Твёрдые: медленнее, зато около десяти кругов.', intermediate: 'Промежуточные (зелёные): для влажной трассы. На сухой перегреваются и сгорают за пару кругов.', wet: 'Дождевые (синие): для ливня, вода уходит из-под протектора. На подсохшей трассе медленные и горят.' })[session.compound] + (session.mode === 'race' ? (session.laps >= 5 ? ' В гонке от 5 кругов обязательны два разных состава (в дождь — нет): без пит-стопа — дисквалификация.' : ' В гонке короче 5 кругов менять шины не обязательно.') : ''),
     }),
-    choice('weather', 'Погода', WEATHER_ORDER.map((v) => ({ v, name: WEATHERS[v].name })), () => session.weather, (v) => (session.weather = v), { hint: () => WEATHERS[session.weather].about }),
-    choice('slot', 'Место на решётке', SLOTS.map((s) => ({ v: s.v, name: s.name })), () => session.slot, (v) => (session.slot = v), {
-      hidden: () => session.mode !== 'race',
-      hint: () => (session.slot === -1 ? `Сначала квалификация: ты один на трассе, разгонный круг и два быстрых, в зачёт лучший. Решётку строит время — как в F1.` : 'С поула впереди пусто, с последнего места — весь круг обгонов.'),
-    }),
-    toggle('abs', 'ABS', () => session.abs, (v) => (session.abs = v), { hint: () => 'Помощник на торможении: не даёт заблокировать колёса. В гонке включается и выключается клавишей B.' }),
+    action('setup', 'Настройка болида', () => ctx.openSetup(), { hint: () => 'Крылья, подвеска, тормоза, давление шин — готовые настройки и свои. Закроешь — вернёшься сюда.' }),
     action('go', session.mode === 'race' ? 'На старт' : 'Выехать на трассу', () => {
       saveSession()
       hide()
       ctx.startSession({ ...session })
-    }, { cta: true, hint: () => 'Огни старта загорятся сразу. Esc в гонке — пауза.' }),
+    }, { cta: true, hint: () => (session.mode === 'race' ? 'Огни старта загорятся сразу. Esc в гонке — пауза.' : 'Esc на трассе — пауза.') }),
   ]
 
   const settingsTabs = () => [
@@ -109,6 +146,12 @@ export function createScreens(ctx) {
       rows: [
         slider('volume', 'Громкость', 0, 100, 5, () => settings.get('volume'), (v) => settings.set('volume', v), { fmt: (v) => `${v}%`, hint: () => 'Общая громкость мотора и шума гравия. В гонке звук выключает клавиша M.' }),
         choice('engineSound', 'Мотор', Object.entries(ENGINE_SOUNDS).map(([v, e]) => ({ v, name: e.name })), () => settings.get('engineSound'), (v) => settings.set('engineSound', v), { hint: () => ENGINE_SOUNDS[settings.get('engineSound')].about + ' Меняется сразу — можно слушать прямо в гонке из паузы.' }),
+      ],
+    },
+    {
+      name: 'Помощники',
+      rows: [
+        toggle('abs', 'ABS', () => !!ctx.abs?.get(), (v) => ctx.abs?.set(v), { hint: () => 'Не даёт заблокировать колёса на торможении: тормозить можно в пол. В гонке включается и выключается клавишей B.' }),
       ],
     },
     {
@@ -141,8 +184,8 @@ export function createScreens(ctx) {
   // ---------- главное меню ----------
   const mainItems = () =>
     [
-      ctx.canRace && { id: 'race', label: 'Гонка', about: 'Двенадцать болидов, огни старта, пит-стопы и правила F1. Выбор соперников, кругов и шин — на следующем экране.', go: () => push('race', () => (session.mode = 'race')) },
-      { id: 'time', label: 'Заезд на время', about: 'Один на трассе: ловишь лучший круг, секторы считаются, границы трассы по правилам.', go: () => push('race', () => (session.mode = 'time')) },
+      ctx.canRace && { id: 'race', label: 'Гонка', about: 'Двенадцать болидов, огни старта, пит-стопы и правила F1. Дальше по шагам: трасса, соперники и круги, шины.', go: () => openFlowFor('race') },
+      { id: 'time', label: 'Заезд на время', about: 'Один на трассе: ловишь лучший круг, секторы считаются, границы трассы по правилам.', go: () => openFlowFor('time') },
       { id: 'garage', label: 'Гараж', about: 'Команда и цвета болида, состояние силовой установки.', go: () => push('garage') },
       { id: 'setup', label: 'Настройка болида', about: 'Крылья, подвеска, тормоза, шины: готовые настройки и свои.', go: () => ctx.openSetup() },
       { id: 'records', label: 'Рекорды', about: 'Лучший круг, лучшие секторы и твоя статистика гонок.', go: () => push('records') },
@@ -185,6 +228,13 @@ export function createScreens(ctx) {
       .map((r, k) => {
         const cls = `sc-row${k === i ? ' on' : ''}${r.cta ? ' cta' : ''}`
         if (r.type === 'action') return `<button class="${cls}" data-i="${k}"><span class="sc-label">${r.label}</span></button>`
+        if (r.cards) {
+          // выбор карточками (трасса): название крупно, под ним вид и длина
+          const cur = r.get()
+          return `<div class="${cls} sc-cardrow" data-i="${k}"><div class="sc-pick">${r.options
+            .map((o, n) => `<button data-i="${k}" data-o="${n}" class="sc-pickcard${o.v === cur ? ' on' : ''}"><b>${esc(o.name)}</b><span>${esc(o.kind ?? '')}${o.km ? ` · ${esc(o.km)}` : ''}</span></button>`)
+            .join('')}</div></div>`
+        }
         if (r.type === 'slider') {
           const v = r.get()
           return `<div class="${cls}" data-i="${k}"><span class="sc-label">${r.label}</span><span class="sc-ctl"><input type="range" tabindex="-1" min="${r.min}" max="${r.max}" step="${r.step}" value="${v}" data-slider="${k}"><output>${r.fmt(v)}</output></span></div>`
@@ -205,11 +255,31 @@ export function createScreens(ctx) {
       </section>`
   }
 
-  function renderRace() {
-    const bits = [MODE_NAME[session.mode]]
-    if (session.mode === 'race') bits.push(`${session.laps} кр.`, AI_LEVELS[session.level].name.toLowerCase(), `старт ${SLOTS.find((s) => s.v === session.slot)?.name.toLowerCase() ?? ''}`)
-    bits.push(`шины: ${COMPOUNDS[session.compound].name.toLowerCase()}`)
-    const html = renderRows('race', session.mode === 'race' ? 'Гонка' : 'Заезд<br>на время', 'Перед стартом', raceRows(), '', [['↑ ↓', 'пункт'], ['← →', 'значение'], ['Enter', 'на старт'], ['Esc', 'назад']])
+  // шаги наверху экрана настройки заезда: пройденные — кликаются (назад), текущий подсвечен
+  function stepsBar(name) {
+    const steps = flowSteps()
+    const k = steps.findIndex(([id]) => id === name)
+    return `<nav class="sc-tabs sc-steps">${steps
+      .map(([id, label], n) => `<button ${n < k ? `data-step="${id}"` : 'disabled'} class="${n === k ? 'on' : n < k ? 'done' : ''}">${n + 1}&nbsp;&nbsp;${label}</button>`)
+      .join('')}</nav>`
+  }
+  const flowTitle = () => (session.mode === 'race' ? 'Гонка' : 'Заезд<br>на время')
+  const flowFoot = (enter) => [['↑ ↓', 'пункт'], ['← →', 'значение'], ['Enter', enter], ['Esc', 'назад']]
+
+  function renderTrack() {
+    return renderRows('track', flowTitle(), 'Перед стартом', trackRows(), stepsBar('track'), flowFoot('далее'))
+  }
+  function renderRaceFormat() {
+    return renderRows('race', flowTitle(), 'Перед стартом', raceRows(), stepsBar('race'), flowFoot('далее'))
+  }
+  function renderWeather() {
+    return renderRows('weather', flowTitle(), 'Перед стартом', weatherRows(), stepsBar('weather'), flowFoot('далее'))
+  }
+  function renderStart() {
+    const bits = [trackOf(ctx.trackId)?.name ?? ctx.trackLabel, MODE_NAME[session.mode]]
+    if (session.mode === 'race') bits.push(`${session.laps} кр.`, AI_LEVELS[session.level].name.toLowerCase(), SLOTS.find((s) => s.v === session.slot)?.name.toLowerCase() ?? '')
+    bits.push(WEATHERS[session.weather].name.toLowerCase(), `шины: ${COMPOUNDS[session.compound].name.toLowerCase()}`)
+    const html = renderRows('start', flowTitle(), 'Перед стартом', startRows(), stepsBar('start'), flowFoot(session.mode === 'race' ? 'на старт' : 'выехать'))
     return html + `<aside class="sc-plaque"><div class="sc-plaque-t">Твой заезд</div><p>${bits.join(' · ')}</p></aside>`
   }
 
@@ -306,7 +376,10 @@ export function createScreens(ctx) {
 
   const SCREENS = {
     main: { render: renderMain, shift: 0.17 },
-    race: { render: renderRace, shift: 0.2 },
+    track: { render: renderTrack, shift: 0.2 },
+    race: { render: renderRaceFormat, shift: 0.2 },
+    weather: { render: renderWeather, shift: 0.2 },
+    start: { render: renderStart, shift: 0.2 },
     garage: { render: renderGarage, shift: 0.2 },
     settings: { render: renderSettings, shift: 0.2 },
     records: { render: renderRecords, shift: 0.2 },
@@ -329,10 +402,17 @@ export function createScreens(ctx) {
   function push(name, before) {
     before?.()
     stack.push(name)
-    if (name === 'race') ctx.previewCompound?.(session.compound)
+    if (name === 'start') ctx.previewCompound?.(session.compound)
+    if (name === 'track') pendingTrack = ctx.trackId
     root.hidden = false
     ctx.showcase(true, SCREENS[name].shift)
     render()
+  }
+  // «Гонка» / «Заезд на время» из главного меню: первый шаг — трасса (если трасса одна — сразу следующий)
+  function openFlowFor(mode) {
+    session.mode = mode
+    if ((ctx.tracks?.length ?? 0) > 1) push('track')
+    else push(nextStep('track'))
   }
   const api = {
     isOpen: () => !root.hidden,
@@ -340,6 +420,11 @@ export function createScreens(ctx) {
     open(name) {
       stack = []
       push(name)
+    },
+    // после смены трассы (перезагрузки страницы) — снова в настройку заезда, на шаг после «Трассы»
+    openFlow() {
+      stack = ['main', 'track']
+      push(nextStep('track'))
     },
     back() {
       if (stack.length <= 1) {
@@ -380,7 +465,10 @@ export function createScreens(ctx) {
 
   const rowsOf = () => {
     const name = current()
+    if (name === 'track') return trackRows().filter((r) => !r.hidden?.())
     if (name === 'race') return raceRows().filter((r) => !r.hidden?.())
+    if (name === 'weather') return weatherRows().filter((r) => !r.hidden?.())
+    if (name === 'start') return startRows().filter((r) => !r.hidden?.())
     if (name === 'settings') return settingsTabs()[tab].rows.filter((r) => !r.hidden?.())
     if (name === 'garage') return garageRows()
     return null
@@ -409,7 +497,11 @@ export function createScreens(ctx) {
     if (!row) return
     sel[selKey()] = i
     if (row.type === 'action') row.run?.()
-    else if (row.type === 'team') applyLivery({ team: row.id, primary: row.team.primary, secondary: row.team.secondary, accent: row.team.accent })
+    else if (row.cards) {
+      // Enter на карточках — как «Далее»
+      rows.find((r) => r.id === 'next')?.run?.()
+      return
+    } else if (row.type === 'team') applyLivery({ team: row.id, primary: row.team.primary, secondary: row.team.secondary, accent: row.team.accent })
     else if (row.type === 'choice') change(row, 1)
     render()
   }
@@ -431,6 +523,14 @@ export function createScreens(ctx) {
       const row = rows[Number(opt.dataset.i)]
       sel[selKey()] = Number(opt.dataset.i)
       row.set(row.options[Number(opt.dataset.o)].v)
+      render()
+      return
+    }
+    const stepBtn = t.closest('[data-step]')
+    if (stepBtn) {
+      // назад на пройденный шаг
+      while (stack.length > 1 && current() !== stepBtn.dataset.step) stack.pop()
+      ctx.showcase(true, SCREENS[current()].shift)
       render()
       return
     }
@@ -499,6 +599,13 @@ export function createScreens(ctx) {
         return
       } else return
     } else if (e.code === 'Enter') {
+      // в настройке заезда Enter — всегда «Далее» / «На старт», с любой строки (значения меняют ← →)
+      const cta = FLOW.includes(name) && rows?.find((r) => r.cta)
+      if (cta && rows[sel[key] ?? 0]?.type !== 'action') {
+        cta.run()
+        if (current() === name) render()
+        return
+      }
       activate(sel[key] ?? 0)
       return
     } else if (name === 'settings' && (e.code === 'KeyQ' || e.code === 'KeyE')) {

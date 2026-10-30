@@ -380,6 +380,17 @@
   .sc-tabs { display: flex; gap: 3px; margin: -6px 0 14px; flex-wrap: wrap; }
   .sc-tabs button { appearance: none; border: 0; border-bottom: 3px solid #2B2F36; background: transparent; color: var(--muted); padding: 8px 14px; font: 700 14px var(--font); letter-spacing: .04em; cursor: pointer; text-transform: uppercase; }
   .sc-tabs button.on { color: var(--text); border-bottom-color: var(--red); }
+  /* шаги настройки заезда: пройденные — белые (кликаются, назад), будущие — тусклые */
+  .sc-steps button.done { color: #C5C8CD; border-bottom-color: #6B7079; }
+  .sc-steps button:disabled:not(.on) { opacity: .45; cursor: default; }
+  .sc-steps button:disabled.on { cursor: default; }
+  /* выбор карточками (трасса) */
+  .sc-row.sc-cardrow { display: block; padding: 10px 14px 10px 16px; }
+  .sc-pick { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 6px; }
+  .sc-pickcard { appearance: none; text-align: left; border: 1px solid #3A3F47; border-top: 3px solid #3A3F47; background: rgba(255, 255, 255, .03); color: var(--muted); padding: 14px 16px 16px; cursor: pointer; }
+  .sc-pickcard b { display: block; font: 900 italic 24px/1.05 var(--font); text-transform: uppercase; letter-spacing: .01em; }
+  .sc-pickcard span { display: block; margin-top: 6px; font: 600 13px var(--font); text-transform: none; letter-spacing: .02em; }
+  .sc-pickcard.on { background: var(--text); color: var(--bg); border-color: var(--text); border-top-color: var(--red); }
   .sc-team { appearance: none; display: flex; align-items: center; gap: 14px; border: 0; border-left: 4px solid transparent; background: rgba(255, 255, 255, .035); padding: 8px 14px; color: #C5C8CD; font: 700 16px var(--font); letter-spacing: .03em; text-align: left; cursor: pointer; text-transform: uppercase; }
   .sc-team i { width: 34px; height: 20px; background: linear-gradient(105deg, var(--a) 0 58%, var(--b) 58% 100%); border: 1px solid rgba(255, 255, 255, .2); }
   .sc-team.on { background: rgba(255, 255, 255, .1); border-left-color: var(--red); color: var(--text); }

@@ -6,7 +6,7 @@
 //   wheel_caliper — суппорт с поршнями: стоит на стойке, поворачивается с рулём, но не крутится;
 //   tyre_<состав> — шины пяти составов (tyre_tread_/tyre_sidewall_outer_/tyre_sidewall_inner_<состав>).
 // Центр — центр колеса, ось вращения X (как wheel_XX в f1.glb), внешняя сторона +X. Ширина в файле одна (0,376 м);
-// переднюю и заднюю ширину ставит car.js масштабом по X. Материал карбонового диска — brake_disc (светится от нагрева).
+// переднюю и заднюю ширину ставит car.js масштабом по X. Материал карбонового диска — brake_disc.
 // usage: node make_wheels.mjs <ШИНЫ.glb> <выход.glb> [ошибка, м] [множитель для канавок]
 import { NodeIO } from '@gltf-transform/core'
 import { ALL_EXTENSIONS, KHRLightsPunctual } from '@gltf-transform/extensions'
@@ -76,7 +76,7 @@ for (const n of root.listNodes()) {
 console.log('диск колеса:', spinParts.map((x) => x.getName()).join(', '))
 console.log('суппорт:', caliperParts.map((x) => x.getName()).join(', '))
 
-// безымянные материалы получают имя по детали; карбоновый диск — brake_disc (его свечение задаёт car.js)
+// безымянные материалы получают имя по детали; карбоновый диск — brake_disc
 for (const x of [...spinParts, ...caliperParts])
   for (const p of x.getMesh().listPrimitives()) {
     const mat = p.getMaterial()

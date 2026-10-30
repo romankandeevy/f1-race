@@ -101,8 +101,9 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
   const floorTop = Math.min(0, lowest) - 0.02
   const floor = world.createCollider(RAPIER.ColliderDesc.cuboid(3000, 0.5, 3000).setTranslation(0, floorTop - 0.5, 0).setFriction(1).setCollisionGroups(STATIC_GROUPS), body)
   surfaceOf.set(floor.handle, 'grass')
-  // трасса без газона (Marina Bay пока только асфальт): видимая земля под ней, иначе под краем асфальта пустота
-  if (!find('Газон')) {
+  // трасса без газона и без своей земли (Marina Bay пока только асфальт): видимая земля под ней, иначе под краем асфальта пустота.
+  // Своя земля у Marina Bay будет «Земля города» (ТЗ окружения, на −0,2 м) — тогда наша не нужна, иначе закроет её
+  if (!find('Газон') && !find('Земля города')) {
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), new THREE.MeshLambertMaterial({ color: 0x3d4a35 }))
     ground.rotation.x = -Math.PI / 2
     ground.position.y = floorTop - 0.01

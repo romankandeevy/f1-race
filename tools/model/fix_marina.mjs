@@ -1,7 +1,10 @@
 // Правка трассы Marina Bay из «MARINA.glb» (делал другой агент): поребрики лежали на полотне — полосой 1,2 м внутри
 // белой линии. Рома 30.10: «поребрики красно-белые должны быть не на трассе, а за линией». Каждая вершина поребрика
 // сдвигается наружу от оси трассы так, чтобы полоса начиналась сразу за белой линией (ширина до линии + white_line_width).
-// Ось и ширины — из служебных точек «Ось трассы» самого файла. Асфальт за линией пока узкий (~0,15 м) — расширим вместе с окружением.
+// Ось и ширины — из служебных точек «Ось трассы» самого файла. Сдвигаются только куски, которые заходят на полотно
+// (со второй версии агент кладёт их правильно — тогда ничего не меняется).
+// Пол боксов (версия с окружением, 30.10): он наклонный — у полосы проезда на 11 см выше асфальта пит-лейна, и болид
+// на 70 км/ч въезжал в этот порог носом (боты разбивались перед первым боксом). Выравнивается по высоте пит-лейна.
 // usage: node fix_marina.mjs <MARINA.glb> <выход.glb>
 import { NodeIO } from '@gltf-transform/core'
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions'
@@ -78,7 +81,8 @@ for (const name of ['Поребрики красные', 'Поребрики б�
     const shifts = []
     for (let i = 0; i < pos.getCount(); i++) {
       const { a, side } = lat[i]
-      const shift = (a.white_line_width ?? 0.35) - innerOf.get(top(i))
+      const inner = innerOf.get(top(i))
+      const shift = inner < 0 ? (a.white_line_width ?? 0.35) - inner : 0
       shifts.push(shift)
       // наружу от оси: «влево» по ходу — (tz, −tx)… в осях файла лево = (−tz, tx)·(−1); берём направление от оси к вершине
       const v = pos.getElement(i, [])
@@ -89,6 +93,25 @@ for (const name of ['Поребрики красные', 'Поребрики б�
     }
     console.log(name, 'кусков', innerOf.size, 'сдвиг наружу', Math.min(...shifts).toFixed(2), '…', Math.max(...shifts).toFixed(2), 'м')
   }
+}
+// пол боксов — на 1 см выше пит-лейна (вровень — мерцал бы с ним; 1 см болиду не мешает); узлы без поворота и масштаба:
+// высота в мире = высота в узле + сдвиг узла
+const laneNode = find('Пит-лейн')
+const floorNode = find('Пол боксов')
+if (laneNode && floorNode) {
+  const laneY = Math.min(...laneNode.getMesh().listPrimitives().map((p) => p.getAttribute('POSITION').getMin([])[1])) + laneNode.getWorldMatrix()[13] + 0.01
+  const M = floorNode.getWorldMatrix()
+  if (M[5] !== 1 || M[1] !== 0 || M[9] !== 0) throw new Error('Пол боксов повёрнут или растянут — выравнивание не рассчитано на это')
+  let moved = 0
+  for (const p of floorNode.getMesh().listPrimitives()) {
+    const pos = p.getAttribute('POSITION')
+    for (let i = 0; i < pos.getCount(); i++) {
+      const v = pos.getElement(i, [])
+      if (Math.abs(v[1] + M[13] - laneY) > 0.001) moved++
+      pos.setElement(i, [v[0], laneY - M[13], v[2]])
+    }
+  }
+  console.log('Пол боксов: выровнено вершин', moved, 'на высоту пит-лейна + 1 см', laneY.toFixed(3))
 }
 await io.write(OUT, doc)
 console.log('готово')

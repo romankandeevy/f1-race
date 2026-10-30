@@ -346,31 +346,9 @@ export async function loadCar(url, renderer, onProgress) {
   return car
 }
 
-// материалы, которые у каждого болида свои: цвет кузова и то, что светится при торможении
-const PER_CAR = ['paint', 'paint_livery', 'paint_secondary', 'accent_blue', 'light_rear', 'brake_disc']
-
-// свечение раскалённого тормоза: диск спрятан внутри колёсного диска модели, и его свечения снаружи почти не видно
-// (Рома 29.10: «сильнее, сейчас почти не видно»). Поэтому на наружной стороне ступицы — мягкое оранжевое пятно
-// (спрайт, складывается со светом), как свет, пробивающийся сквозь спицы. Картинка одна на все болиды.
-let glowTex = null
-function brakeGlowTexture() {
-  if (glowTex) return glowTex
-  const c = document.createElement('canvas')
-  c.width = c.height = 64
-  const g = c.getContext('2d')
-  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32)
-  grad.addColorStop(0, 'rgba(255,220,150,1)')
-  grad.addColorStop(0.25, 'rgba(255,140,40,0.85)')
-  grad.addColorStop(0.6, 'rgba(255,60,10,0.3)')
-  grad.addColorStop(1, 'rgba(255,30,0,0)')
-  g.fillStyle = grad
-  g.fillRect(0, 0, 64, 64)
-  glowTex = new THREE.CanvasTexture(c)
-  glowTex.colorSpace = THREE.SRGBColorSpace
-  return glowTex
-}
-const GLOW_OUT = 0.21 // м от центра колеса наружу: чуть за плоскостью обода
-const GLOW_SIZE = 0.62 // м
+// материалы, которые у каждого болида свои: цвет кузова и стоп-сигналы. Свечения раскалённых тормозов нет
+// (Рома 30.10: «убери свечение тормозов вообще, и из кода»): диск и пятно у ступицы больше не светятся
+const PER_CAR = ['paint', 'paint_livery', 'paint_secondary', 'accent_blue', 'light_rear']
 
 function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liveryBase = null, decals = [], tyreSets = null, shadows = true) {
   const livery = { primary: '#' + (materials.paint?.color.getHexString() ?? 'c8102e'), secondary: '#' + (materials.paint_secondary?.color.getHexString() ?? 'f2f0ea'), tex: null }
@@ -423,8 +401,6 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
         t.traverse((o) => {
           if (!o.isMesh) return
           if (!shadows) o.castShadow = false
-          // карбоновый диск — материал болида brake_disc (у бота свой): его свечение от нагрева задаёт sync
-          if (materials.brake_disc) o.material = Array.isArray(o.material) ? o.material.map((m) => (m.name === 'brake_disc' ? materials.brake_disc : m)) : o.material.name === 'brake_disc' ? materials.brake_disc : o.material
         })
         return t
       }
@@ -456,13 +432,7 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
         tyres[id] = t
       }
     }
-    const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: brakeGlowTexture(), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }))
-    glow.position.set(side * GLOW_OUT, 0, 0)
-    glow.scale.setScalar(GLOW_SIZE)
-    glow.visible = false
-    glow.renderOrder = 5
-    node.add(glow)
-    return { pivot, camber, node, side, glow, tyres }
+    return { pivot, camber, node, side, tyres }
   })
 
   const group = new THREE.Group()
@@ -638,27 +608,10 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
       if (rearWingNode) rearWingNode.visible = dm.rearWing < 0.95
       drs.visible = dm.rearWing < 0.95
 
-      // задние огни горят при торможении; диски светятся по температуре (wear.js): от ~330° тускло-красным, к 750° — ярко-оранжевым
+      // задние огни горят при торможении
       const braking = v.state.braking ? 1 : 0
       const rear = materials.light_rear
       if (rear) rear.emissiveIntensity = THREE.MathUtils.lerp(rear.emissiveIntensity, braking ? 5 : 0.8, 0.3)
-      const disc = materials.brake_disc
-      if (disc) {
-        const bt = Math.max(v.brakeTemp[0], v.brakeTemp[1])
-        // Рома 29.10: «сильнее, сейчас почти не видно» — светиться начинает с 330° (было 480°: за круг диски редко
-        // грелись выше ~520°, и свечения почти не было), к 750° горит в полную силу; горячее — желтее
-        const glow = THREE.MathUtils.clamp((bt - 330) / 420, 0, 1)
-        disc.emissive.setRGB(1, 0.12 + 0.4 * glow * glow, 0.02 + 0.08 * glow * glow)
-        disc.emissiveIntensity = THREE.MathUtils.lerp(disc.emissiveIntensity, 9 * glow, 0.2)
-      }
-      // свечение у ступицы — у каждого колеса по своему диску
-      wheels.forEach((w, i) => {
-        const k = THREE.MathUtils.clamp((v.brakeTemp[i] - 330) / 420, 0, 1)
-        const m = w.glow.material
-        m.opacity = THREE.MathUtils.lerp(m.opacity, 0.9 * k, 0.2)
-        w.glow.visible = m.opacity > 0.02
-        w.glow.scale.setScalar(GLOW_SIZE * (0.75 + 0.35 * k))
-      })
     },
   }
   return car

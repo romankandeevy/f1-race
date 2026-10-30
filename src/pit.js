@@ -14,7 +14,7 @@ import { COMPOUNDS, freshTyres, BLANKET, repairSeconds, needsRepair, applyRepair
 
 const G = 9.81
 export const PIT_SPEED = 80 / 3.6
-const FAST_LANE = 2 // м влево от оси пит-лейна (к трассе) — полоса проезда мимо боксов
+const FAST_LANE = 2 // м от оси пит-лейна в сторону от боксов (к трассе) — полоса проезда мимо боксов
 const ENTRY = [12, 45] // точки оси пит-лейна, где болид считается въехавшим (раньше — узкий клин у края трассы: ложные въезды)
 const STOP_DECEL = 4 // м/с² — мягкая остановка в боксе
 const ENTRY_DECEL = 9 // м/с² — торможение до 80 к линии ограничителя
@@ -22,8 +22,19 @@ const AUTO_RELEASE = 2 // с: не нажал газ — механик выпу
 const AUTO_RELEASE_PLAYER = 1 // с: игрок на автопилоте — выпуск сам, газ выпускает раньше
 const AUTO_HANDBACK = 15 // м после конца ограничителя: автопилот отдаёт управление игроку
 const PARK = 35 // м до бокса: дальше игра ставит болид игрока в бокс сама
+// подъезд к въезду по трассе (Marina Bay, 30.10): автопилот берёт руль за 25–100 м до начала пит-лейна и раньше целился
+// прямо в его начало — на LUMEN RING это было по траве, а у Марины въезд сразу за последним поворотом, и прямая срезала
+// поворот через внутреннюю стену (боты и игрок разбивались). Теперь до въезда он едет по оси трассы, смещаясь к стороне
+// пит-лейна: к началу пит-лейна — на APPROACH_LAT его смещения от оси (стена внутри кончается у самого въезда)
+// и скорость по поворотам трассы до въезда: у Марины перед въездом поворот радиусом 25 м, а «80 к линии ограничителя»
+// вело в него на 75–80 км/ч — болид проезжал поворот прямо в наружную стену (без стен уходил на траву)
+const APPROACH_LAT = 0.65
+const APPROACH_FROM = 200 // м до въезда по трассе, с которых работает подъезд
+const APPROACH_MU = 1.1 // запас сцепления в повороте на подъезде (на малой скорости прижима почти нет)
+const APPROACH_DECEL = 7 // м/с² — торможение к повороту
 
-export function createPitLane(pit) {
+// trackAxis — ось трассы (circuit.js → track.axis): по ней автопилот подъезжает к въезду; без неё — прямо на начало пит-лейна
+export function createPitLane(pit, trackAxis = null) {
   const a = pit.axis
   const n = a.length
   const nx = new Float64Array(n)
@@ -57,7 +68,45 @@ export function createPitLane(pit) {
     const { i, d } = nearestIdx(x, z)
     return d < (a[i].width ?? 6) / 2 + margin
   }
-  return { axis: a, n, nx, nz, boxes, limitStart: pit.limitStart, limitEnd: pit.limitEnd, length: a[n - 1].distance_m, nearestIdx, near }
+  // въезд на оси трассы: где пит-лейн отделяется и насколько он в стороне (влево по ходу — плюс)
+  let track = null
+  if (trackAxis?.length) {
+    const ta = trackAxis
+    const tn = ta.length
+    let ti = 0
+    let bd = Infinity
+    ta.forEach((t, i) => {
+      const d = (t.x - a[0].x) ** 2 + (t.z - a[0].z) ** 2
+      if (d < bd) {
+        bd = d
+        ti = i
+      }
+    })
+    const left = (i) => {
+      const p = ta[(i - 1 + tn) % tn]
+      const q = ta[(i + 1) % tn]
+      const len = Math.hypot(q.x - p.x, q.z - p.z) || 1
+      return [(q.z - p.z) / len, -(q.x - p.x) / len]
+    }
+    const [lx, lz] = left(ti)
+    // радиус оси трассы в каждой точке (по точкам через 10 м) — для скорости на подъезде
+    const radius = new Float64Array(tn)
+    for (let i = 0; i < tn; i++) {
+      const p = ta[(i - 5 + tn) % tn]
+      const q = ta[i]
+      const s = ta[(i + 5) % tn]
+      const ab = Math.hypot(q.x - p.x, q.z - p.z)
+      const bc = Math.hypot(s.x - q.x, s.z - q.z)
+      const ca = Math.hypot(p.x - s.x, p.z - s.z)
+      const area = Math.abs((q.x - p.x) * (s.z - p.z) - (s.x - p.x) * (q.z - p.z)) / 2
+      radius[i] = area < 1e-6 ? 1e6 : (ab * bc * ca) / (4 * area)
+    }
+    track = { axis: ta, n: tn, entryTi: ti, entryS: ta[ti].distance_m, entryLat: (a[0].x - ta[ti].x) * lx + (a[0].z - ta[ti].z) * lz, len: ta[tn - 1].distance_m + 2, left, radius }
+  }
+  // полоса проезда — по другую сторону оси от боксов: у LUMEN RING боксы справа от оси (−2,9 м), у Marina Bay слева (+2,9),
+  // и полоса «влево на 2 м» шла прямо через боксы — болид в боксе перегораживал её, едущие мимо в него врезались
+  const fast = boxes.length && boxes.reduce((s, b) => s + b.off, 0) > 0 ? -FAST_LANE : FAST_LANE
+  return { axis: a, n, nx, nz, boxes, fast, limitStart: pit.limitStart, limitEnd: pit.limitEnd, length: a[n - 1].distance_m, nearestIdx, near, track }
 }
 
 // болид въехал в пит-лейн: рядом с началом оси пит-лейна и едет по ней
@@ -97,10 +146,13 @@ export function createPitStop(lane, boxIndex, plan, opts = {}) {
 
   // сдвиг от оси пит-лейна в точке s: въезд по оси → быстрая полоса → бокс → полоса → выезд по оси
   function offsetAt(s) {
-    if (s < lane.limitStart) return FAST_LANE * smooth((s - (lane.limitStart - 40)) / 40)
-    if (s > lane.limitEnd) return FAST_LANE * (1 - smooth((s - lane.limitEnd) / 40))
+    // в полосу проезда — не сразу: у Марины пит-уолл на въезде в 1,3 м от оси (отходит на 6 м только к ~100 м),
+    // на выезде снова сходится; сразу на 2 м в сторону — болид бился о его начало
+    const fast = (lane.fast ?? FAST_LANE) * Math.min(smooth((s - 40) / 50), 1 - smooth((s - (lane.length - 60)) / 40))
+    if (s < lane.limitStart) return fast * smooth((s - (lane.limitStart - 40)) / 40)
+    if (s > lane.limitEnd) return fast * (1 - smooth((s - lane.limitEnd) / 40))
     const toBox = st.phase === 'in' ? smooth((s - (box.s - 30)) / 30) : 1 - smooth((s - box.s) / 25)
-    return FAST_LANE + (box.off - FAST_LANE) * Math.max(0, Math.min(1, toBox))
+    return fast + (box.off - fast) * Math.max(0, Math.min(1, toBox))
   }
 
   return {
@@ -186,19 +238,54 @@ export function createPitStop(lane, boxIndex, plan, opts = {}) {
         if (st.s >= lane.length - 30 || (opts.auto && st.s > lane.limitEnd + AUTO_HANDBACK)) st.phase = 'done'
       }
 
-      // руль: точка на линии пит-лейна впереди
+      // руль: точка на линии пит-лейна впереди; ещё до въезда — точка на трассе со смещением к стороне пит-лейна
       const look = 4 + 0.3 * speed
       let j = near.i
       while (j < lane.n - 1 && lane.axis[j].distance_m - st.s < look) j++
       const off = offsetAt(lane.axis[j].distance_m)
-      const tx = lane.axis[j].x + off * lane.nx[j] - p.x
-      const tz = lane.axis[j].z + off * lane.nz[j] - p.z
+      let gx = lane.axis[j].x + off * lane.nx[j]
+      let gz = lane.axis[j].z + off * lane.nz[j]
+      let approachCap = Infinity
+      const tr = lane.track
+      if (tr && st.phase === 'in' && near.i < 3) {
+        let ti = tr.entryTi
+        let bd = Infinity
+        for (let k = -110; k <= 5; k++) {
+          const i = (tr.entryTi + k + tr.n) % tr.n
+          const d = (tr.axis[i].x - p.x) ** 2 + (tr.axis[i].z - p.z) ** 2
+          if (d < bd) {
+            bd = d
+            ti = i
+          }
+        }
+        const rem = (tr.entryS - tr.axis[ti].distance_m + tr.len) % tr.len
+        if (rem > 6 && rem < APPROACH_FROM) {
+          const k = (ti + Math.max(1, Math.round(look / 2))) % tr.n
+          const [lx, lz] = tr.left(k)
+          // к стороне пит-лейна плавно; если болид уже ближе к ней — к середине не тянем
+          const side = Math.sign(tr.entryLat)
+          const goal = Math.abs(tr.entryLat) * APPROACH_LAT
+          const [cx, cz] = tr.left(ti)
+          const now = side * ((p.x - tr.axis[ti].x) * cx + (p.z - tr.axis[ti].z) * cz)
+          const lat = side * Math.max(goal * smooth(1 - (rem - 10) / 70), Math.min(now, goal))
+          gx = tr.axis[k].x + lat * lx
+          gz = tr.axis[k].z + lat * lz
+          // скорость: успеть оттормозиться к каждому повороту до въезда
+          for (let d = 0, i = ti; d < rem + 10; d += 2, i = (i + 1) % tr.n) {
+            const vc = Math.sqrt(APPROACH_MU * G * tr.radius[i])
+            approachCap = Math.min(approachCap, Math.sqrt(vc * vc + 2 * APPROACH_DECEL * d))
+          }
+        }
+      }
+      const tx = gx - p.x
+      const tz = gz - p.z
       const alpha = Math.atan2(tx * lx + tz * lz, tx * fx + tz * fz)
       const delta = Math.atan((2 * T.wheelBase * Math.sin(alpha)) / look)
       const aLim = T.tireMu * G * (1 + (v.aeroK * speed * speed) / (T.mass * G))
       const maxA = Math.min(T.steerLock, Math.atan((T.wheelBase * aLim) / Math.max(speed * speed, 1)) + T.steerSlipMargin)
       input.steer = Math.sign(delta) * Math.pow(Math.min(1, Math.abs(delta) / maxA), 1 / T.steerCurve)
 
+      vt = Math.min(vt, approachCap)
       const err = vt - speed
       if (err > 0.3) {
         input.throttle = Math.min(1, 0.25 + err * 0.35)
