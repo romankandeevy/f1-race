@@ -22,6 +22,8 @@ import { createPitLane, createPitStop, pitEntryHit, pitLimiter, defaultPlan } fr
 import { freshTyres, freshDamage, freshPowerUnit, freshBrakes, setFuel, fuelForRace, COMPOUNDS } from '../wear.js'
 import { retireReason, mechanicalFlag, judgeContact, contactPenalty, ORANGE_LAPS } from '../stewards.js'
 import { createRaceLine, createAiDriver } from '../ai.js'
+import { buildTuning, cleanBuild, STOCK_BUILD } from '../build.js'
+import { SETUP_DEFAULT } from '../tuning.js'
 
 export const STEP = 1 / 240 // шаг физики, как в main.js
 export const CARS = BOT_COUNT + 1 // болидов в гонке: 12
@@ -42,6 +44,13 @@ const FLAG_TICK = 0.25 // с: флаги решают 4 раза в секунд
 const PASS_PENALTY = 5 // с: обгон под флагом
 
 // ограничитель под флагами (как у игрока в main.js; клиент повторяет его в предсказании): cap — м/с, speed — скорость вперёд
+// настройка болида игрока из сети: только известные поля и только числа, остальное — по умолчанию
+export function cleanSetup(raw) {
+  const out = { ...SETUP_DEFAULT }
+  if (raw && typeof raw === 'object') for (const k of Object.keys(SETUP_DEFAULT)) if (Number.isFinite(Number(raw[k]))) out[k] = Number(raw[k])
+  return out
+}
+
 export function capInput(cmd, speed, cap) {
   cmd.boost = false
   cmd.aero = false
@@ -70,9 +79,10 @@ export function cleanInput(raw = {}) {
 }
 
 // track — из server/track-node.mjs (или circuit.js в браузере).
-// humans — [{ id, name, paint, slot, compound }]: живые игроки и их места на решётке (0 — поул). Без него — один игрок
-// 'player' на месте slot (проверки в Node, race-check).
-export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RACE_LAPS, botLevel = 'medium', humans = null, slot = BOT_COUNT, compound = 'medium', paint = '#e9e6df' }) {
+// humans — [{ id, name, paint, slot, compound, build, setup }]: живые игроки, их места на решётке (0 — поул), сборка болида
+// (build.js) и настройка. Без него — один игрок 'player' на месте slot (проверки в Node, race-check).
+// builds — сборки включены (свои у игроков, случайные у ботов); выключены — у всех стандартный болид
+export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RACE_LAPS, botLevel = 'medium', humans = null, slot = BOT_COUNT, compound = 'medium', paint = '#e9e6df', builds = false }) {
   clearHullOwners() // общий список (для браузера) серверу не нужен — не копим в нём болиды прошлых гонок
   const rand = seededRandom(seed)
   const physics = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
@@ -105,11 +115,13 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
     h.slot = s
   }
   const botSlots = [...Array(gridN).keys()].filter((i) => !taken.has(i))
+  // числа физики игрока: его сборка (если сборки включены) и его настройка болида (крылья, подвеска…)
+  const tuningOf = (h) => buildTuning(builds ? cleanBuild(h.build) : STOCK_BUILD, cleanSetup(h.setup))
   const tank = fuelForRace(lapCount, track.length)
 
   const H = people.map((h, k) => {
     const g = track.grid[h.slot]
-    const v = createVehicle(RAPIER, physics, { x: g.x, y: (g.y || 0) + 0.05, z: g.z, yaw: g.yaw }, TUNING)
+    const v = createVehicle(RAPIER, physics, { x: g.x, y: (g.y || 0) + 0.05, z: g.z, yaw: g.yaw }, tuningOf(h))
     v.rand = rand
     v.compound = COMPOUNDS[h.compound] ? h.compound : 'medium'
     v.tyres = freshTyres(80)
@@ -150,7 +162,7 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
   })
   const byHuman = new Map(H.map((h) => [h.id, h]))
 
-  const bots = createBots({ RAPIER, world: physics, track, lane, rand })
+  const bots = createBots({ RAPIER, world: physics, track, lane, rand, builds })
   bots.spawn(botLevel, botSlots.map((i) => track.grid[i]))
   for (const b of bots.list) setFuel(b.v, tank)
 
@@ -417,7 +429,7 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
       const p = v.body.translation()
       const toEntry = entryS === null ? Infinity : (entryS - track.axis[h.laps.state.idx].distance_m + L) % L
       if ((h.pitRequest && toEntry < PIT_TAKEOVER[0] && toEntry > PIT_TAKEOVER[1]) || pitEntryHit(lane, p.x, p.z, yawOf(v.body.rotation()))) {
-        h.pitCtl = createPitStop(lane, h.box, { ...h.pitPlan }, { player: true, auto: true, damage: v.damage, hold: () => flags.mode === 'red', rand })
+        h.pitCtl = createPitStop(lane, h.box, { ...h.pitPlan }, { player: true, auto: true, T: v.T, damage: v.damage, hold: () => flags.mode === 'red', rand })
         h.pitRequest = false
         input.aero = false
       }
@@ -593,6 +605,11 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
     get flagMode() {
       return flags.mode
     },
+    // настройку болида игрок поменял по ходу (баланс тормозов, дифференциал — быстрые клавиши): её же считает и сервер
+    setSetup(id, setup) {
+      const h = byHuman.get(id)
+      if (h) Object.assign(h.v.T.setup, cleanSetup(setup))
+    },
     // проверки: остановить мотор у болида (инцидент) — как отказ в гонке
     failEngine(id) {
       const v = vehicleOf(id)
@@ -602,7 +619,7 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
     setAutopilot(id, on) {
       const h = byHuman.get(id)
       if (!h) return
-      h.auto = on ? createAiDriver(createRaceLine(track.axis, 'medium', TUNING, {}), { T: TUNING, zone: track.straightZone }) : null
+      h.auto = on ? createAiDriver(createRaceLine(track.axis, 'medium', h.v.T, {}), { T: h.v.T, zone: track.straightZone }) : null
     },
     // болиды для снапшота: id, позиция, поворот, скорость, руль, тормоз, DRS, повреждения
     cars() {

@@ -11,6 +11,7 @@ import { COMPOUNDS, COMPOUND_ORDER } from './wear.js'
 import { AI_LEVELS } from './ai.js'
 import { formatTime } from './laps.js'
 import { WEATHERS, WEATHER_ORDER } from './weather.js'
+import { PARTS, BUDGET, STOCK_BUILD, buildCost, buildStats } from './build.js'
 
 const SESSION_KEY = 'f1-race.session.v1'
 const LAP_OPTIONS = [1, 3, 5, 10, 15, 20]
@@ -53,6 +54,7 @@ export function createScreens(ctx) {
   let stack = []
   let sel = {} // выбранный пункт по экрану
   let tab = 0 // вкладка настроек
+  let garageTab = 0 // вкладка гаража: 0 — ливрея, 1 — сборка
   let session = { mode: ctx.canRace ? 'race' : 'time', level: 'medium', laps: 5, compound: 'medium', slot: 11, weather: 'dry', time: 'day', ...ctx.session }
   try {
     Object.assign(session, JSON.parse(localStorage.getItem(SESSION_KEY) || '{}'))
@@ -191,7 +193,7 @@ export function createScreens(ctx) {
   // Рома 30.10: на главном только пять пунктов; режимы — карточками в «Играть», «Управление» — вкладка «Настроек»
   const mainItems = () => [
     { id: 'play', label: 'Играть', about: 'Заезд на время, гонка с ботами или онлайн с друзьями.', go: () => push('play') },
-    { id: 'garage', label: 'Гараж', about: 'Команда и цвета болида, состояние силовой установки.', go: () => push('garage') },
+    { id: 'garage', label: 'Гараж', about: 'Ливрея и сборка болида: мотор, батарея, коробка, аэропакет, тормоза, охлаждение, шасси — в рамках бюджета.', go: () => push('garage') },
     { id: 'setup', label: 'Настройка болида', about: 'Крылья, подвеска, тормоза, шины: готовые настройки и свои.', go: () => ctx.openSetup() },
     { id: 'records', label: 'Рекорды', about: 'Лучший круг, лучшие секторы и твоя статистика гонок.', go: () => push('records') },
     { id: 'settings', label: 'Настройки', about: 'Графика, звук, мышь, камеры, интерфейс и клавиши управления. Всё действует сразу.', go: () => push('settings') },
@@ -325,8 +327,31 @@ export function createScreens(ctx) {
       </section>`
   }
 
-  // гараж: команды списком, свои цвета, силовая установка
+  // гараж: две вкладки (Q E) — «Ливрея» (команды, свои цвета, силовая установка) и «Сборка» (Рома 30.10: «строить болид, что у
+  // него под капотом»): детали build.js с компромиссами в рамках бюджета; дороже бюджета — кнопка недоступна
+  const GARAGE_TABS = ['Ливрея', 'Сборка']
+  const buildRows = () => {
+    const b = ctx.build.get()
+    // хватит ли бюджета, если в узле part поставить деталь v
+    const fits = (part, v) => buildCost({ ...b, [part.id]: v }) <= BUDGET
+    return [
+      ...PARTS.map((part) => ({
+        type: 'choice',
+        id: part.id,
+        label: part.name,
+        options: part.options.map((o) => ({ v: o.id, name: o.name, cost: o.cost, off: !fits(part, o.id) })),
+        get: () => ctx.build.get()[part.id],
+        set: (v) => fits(part, v) && ctx.build.set({ ...ctx.build.get(), [part.id]: v }),
+        hint: () => {
+          const o = part.options.find((x) => x.id === ctx.build.get()[part.id])
+          return `<b>${esc(o.name)}</b> — ${esc(o.about)} Стоит ${o.cost} из бюджета ${BUDGET}.`
+        },
+      })),
+      { type: 'action', id: 'stock', label: 'Вернуть стандартную сборку', run: () => ctx.build.set({ ...STOCK_BUILD }), hint: () => 'Все узлы — стандарт: ровно тот болид, что был до сборок.' },
+    ]
+  }
   const garageRows = () => {
+    if (garageTab === 1 && ctx.build) return buildRows()
     const l = ctx.info().livery
     return [
       ...TEAMS.map((t) => ({ type: 'team', id: t.id, team: t })),
@@ -335,12 +360,66 @@ export function createScreens(ctx) {
       { type: 'action', id: 'pu', label: 'Новая силовая установка', run: () => ctx.newPowerUnit() },
     ]
   }
+  // карточка болида: цифры сборки и разница со стандартом (зелёная — лучше, красная — хуже)
+  function buildCard() {
+    const b = ctx.build.get()
+    const st = buildStats(b)
+    const S = buildStats(STOCK_BUILD)
+    const delta = (x, x0, better = 1, unit = '%', k = 100) => {
+      const d = unit === '%' ? Math.round((x / x0 - 1) * k) : Math.round(x - x0)
+      if (!d) return '<em></em>'
+      return `<em class="${d * better > 0 ? 'up' : 'down'}">${d > 0 ? '+' : '−'}${Math.abs(d)}${unit === '%' ? '%' : ' ' + unit}</em>`
+    }
+    const rel = (x) => (x === 1 ? 'стандарт' : `${x > 1 ? '+' : '−'}${Math.abs(Math.round((x - 1) * 100))}%`)
+    const row = (name, value, d) => `<span>${name}</span><b>${value}</b>${d}`
+    const left = BUDGET - st.cost
+    return `
+      <aside class="sc-plaque wide">
+        <div class="sc-plaque-t">Сборка болида</div>
+        <div class="sc-budget"><span>Бюджет</span><i class="sc-bar"><b style="width:${Math.round((st.cost / BUDGET) * 100)}%"></b></i><em>${st.cost} из ${BUDGET}</em></div>
+        <div class="sc-stats">
+          ${row('Мощность', `${st.powerKw} кВт · ${st.hp} л.с.`, delta(st.powerKw, S.powerKw))}
+          ${row('Максималка', `${st.topKmh} км/ч`, delta(st.topKmh, S.topKmh, 1, 'км/ч'))}
+          ${row('Разгон (тяга)', rel(st.accel), delta(st.accel, 1))}
+          ${row('Прижим', rel(st.downforce), delta(st.downforce, 1))}
+          ${row('Сопротивление', rel(st.drag), delta(st.drag, 1, -1))}
+          ${row('Масса', `${st.mass} кг`, delta(st.mass, S.mass, -1, 'кг'))}
+          ${row('Батарея', `${st.batteryMJ.toFixed(1).replace('.', ',')} МДж`, delta(st.batteryMJ, S.batteryMJ))}
+          ${row('Тормоза', rel(st.brakes), delta(st.brakes, 1))}
+          ${row('Надёжность', `${st.reliability}%`, delta(st.reliability, 100, 1, 'п.', 1))}
+        </div>
+        <p>${left > 0 ? `Осталось ${left} — можно поставить деталь получше.` : 'Бюджет потрачен весь.'} Своя сборка — в одиночной игре и в онлайн-комнатах «Свои сборки». У ботов — свои.</p>
+      </aside>`
+  }
   function renderGarage() {
     const info = ctx.info()
     const l = info.livery
     const rows = garageRows()
     const i = Math.min(sel.garage ?? 0, rows.length - 1)
     sel.garage = i
+    const tabsBar = `<nav class="sc-tabs">${GARAGE_TABS.map((t, k) => `<button data-gtab="${k}" class="${k === garageTab ? 'on' : ''}">${t}</button>`).join('')}</nav>`
+    if (garageTab === 1 && ctx.build) {
+      const left = BUDGET - buildCost(ctx.build.get())
+      const html = rows
+        .map((r, k) => {
+          const cls = `sc-row${k === i ? ' on' : ''}`
+          if (r.type === 'action') return `<button class="${cls}" data-i="${k}"><span class="sc-label">${r.label}</span></button>`
+          const cur = r.get()
+          return `<div class="${cls} sc-part" data-i="${k}"><span class="sc-label">${r.label}</span><span class="sc-ctl sc-seg">${r.options
+            .map((o, n) => `<button data-i="${k}" data-o="${n}" class="${o.v === cur ? 'on' : ''}${o.off ? ' off' : ''}" ${o.off && o.v !== cur ? 'disabled title="Не хватает бюджета"' : ''}>${esc(o.name)}<small>${o.cost}</small></button>`)
+            .join('')}</span></div>`
+        })
+        .join('')
+      return `
+      <section class="sc-col garage">
+        ${brand('Гараж', `Бюджет: осталось ${left} из ${BUDGET}`)}
+        ${tabsBar}
+        <div class="sc-rows">${html}</div>
+        <p class="sc-about">${rows[i]?.hint?.() ?? ''}</p>
+        ${hintBar([['Q E', 'вкладка'], ['↑ ↓', 'узел'], ['← →', 'деталь'], ['Esc', 'назад']])}
+      </section>
+      ${buildCard()}`
+    }
     const html = rows
       .map((r, k) => {
         const on = k === i ? ' on' : ''
@@ -360,8 +439,9 @@ export function createScreens(ctx) {
     return `
       <section class="sc-col garage">
         ${brand('Гараж', 'Твой болид')}
+        ${ctx.build ? tabsBar : ''}
         <div class="sc-rows">${html}</div>
-        ${hintBar([['↑ ↓', 'пункт'], ['← →', 'цвет'], ['Enter', 'выбрать'], ['Esc', 'назад'], ['Мышь', 'крутить болид']])}
+        ${hintBar([...(ctx.build ? [['Q E', 'вкладка']] : []), ['↑ ↓', 'пункт'], ['← →', 'цвет'], ['Enter', 'выбрать'], ['Esc', 'назад'], ['Мышь', 'крутить болид']])}
       </section>
       <aside class="sc-plaque wide">
         <div class="sc-plaque-t">${team ? esc(team.name) : 'Своя ливрея'}</div>
@@ -485,9 +565,15 @@ export function createScreens(ctx) {
   // изменить значение строки на шаг (dir = −1 или 1) или нажать
   function change(row, dir) {
     if (row.type === 'choice') {
+      // недоступные варианты (деталь сборки дороже бюджета) пропускаем
+      const n = row.options.length
       const cur = row.options.findIndex((o) => o.v === row.get())
-      const next = row.options[(cur + dir + row.options.length) % row.options.length]
-      row.set(next.v)
+      for (let k = 1; k < n; k++) {
+        const next = row.options[(cur + dir * k + n * k) % n]
+        if (next.off) continue
+        row.set(next.v)
+        break
+      }
     } else if (row.type === 'slider') {
       row.set(Math.min(row.max, Math.max(row.min, row.get() + dir * row.step)))
     }
@@ -561,6 +647,13 @@ export function createScreens(ctx) {
       // назад на пройденный шаг
       while (stack.length > 1 && current() !== stepBtn.dataset.step) stack.pop()
       ctx.showcase(true, SCREENS[current()].shift)
+      render()
+      return
+    }
+    const gtab = t.closest('[data-gtab]')
+    if (gtab) {
+      garageTab = Number(gtab.dataset.gtab)
+      sel.garage = 0
       render()
       return
     }
@@ -641,6 +734,9 @@ export function createScreens(ctx) {
       return
     } else if (name === 'settings' && (e.code === 'KeyQ' || e.code === 'KeyE')) {
       tab = (tab + (e.code === 'KeyE' ? 1 : -1) + settingsTabs().length) % settingsTabs().length
+    } else if (name === 'garage' && ctx.build && (e.code === 'KeyQ' || e.code === 'KeyE')) {
+      garageTab = 1 - garageTab
+      sel.garage = 0
     } else return
     e.preventDefault()
     render()

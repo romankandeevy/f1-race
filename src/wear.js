@@ -110,7 +110,7 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
   const dv = Math.hypot(dvx, dvz)
   if (dv < IMPACT_MIN) return null
   // тяжесть 0…1: слабый контакт — царапины, ~90 км/ч в стену — всё, что может сломаться по этому направлению, разрушено
-  const sev = Math.min(1, (dv - IMPACT_MIN) / 22)
+  const sev = Math.min(1, ((dv - IMPACT_MIN) / 22) * (v.T?.damageK ?? 1)) // прочное шасси (build.js) — удары ломают меньше
   const q = v.body.rotation()
   const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.x * q.x))
   const along = dvx * Math.sin(yaw) + dvz * Math.cos(yaw) // < 0 — толкнуло назад (удар носом)
@@ -223,7 +223,8 @@ export function updateEngineHeat(v, dt, throttle, speed) {
   if (v.pu.failed) return false
   const air = 0.4 + 0.6 * Math.min(1, speed / 60)
   // радиаторы из настройки (вкладка «Охлаждение»): закрытые — меньше сопротивления, но на медленной трассе мотор греется
-  const target = Math.min(1.8, (0.2 + 0.4 * throttle) / (coolingOf(v.damage) * engineCoolOf(v.T?.setup ?? {}) * air))
+  // heatK — мотор и охлаждение из сборки (build.js): форсированный греется сильнее, усиленное охлаждение — меньше
+  const target = Math.min(1.8, ((0.2 + 0.4 * throttle) * (v.T?.heatK ?? 1)) / (coolingOf(v.damage) * engineCoolOf(v.T?.setup ?? {}) * air))
   v.engineHeat += (target - v.engineHeat) * (1 - Math.exp(-dt / 12))
   if (v.engineHeat > ENGINE_DEAD) {
     v.hotTime += dt
@@ -262,10 +263,12 @@ export function brakeEff(temp) {
 // за шаг; возвращает true, когда тормоза только что перегрелись (для строки на экране; снова — после остывания ниже 950°)
 export function updateBrakes(v, dt, speed) {
   // воздуховоды тормозов из настройки: открытые — остывают быстрее, но сопротивления больше (coolDragOf)
-  const cool = (BRAKE_COOL + BRAKE_COOL_V * speed) * (1 - 0.7 * v.damage.brakes) * brakeCoolOf(v.T?.setup ?? {})
+  // тормоза из сборки (build.js): стойкие остывают быстрее, мощные греются сильнее
+  const cool = (BRAKE_COOL + BRAKE_COOL_V * speed) * (1 - 0.7 * v.damage.brakes) * brakeCoolOf(v.T?.setup ?? {}) * (v.T?.brakeCoolK ?? 1)
+  const heatK = v.T?.brakeHeatK ?? 1
   let hottest = 0
   for (let i = 0; i < 4; i++) {
-    const t = v.brakeTemp[i] + dt * (v.wheels[i].brakeP / BRAKE_HEAT_CAP - (v.brakeTemp[i] - BRAKE_AMBIENT) * cool)
+    const t = v.brakeTemp[i] + dt * ((v.wheels[i].brakeP * heatK) / BRAKE_HEAT_CAP - (v.brakeTemp[i] - BRAKE_AMBIENT) * cool)
     v.brakeTemp[i] = t
     hottest = Math.max(hottest, t)
   }
@@ -327,9 +330,10 @@ const BOX_RATE = 0.00005
 export function updatePowerUnit(v, dt, throttle, deployShare, rand = Math.random) {
   const pu = v.pu
   if (pu.failed) return false
-  pu.ice = Math.min(1, pu.ice + dt * ICE_RATE * throttle * (0.6 + 0.4 * v.state.rpm) * (1 + 0.6 * deployShare))
+  // износ мотора и коробки из сборки (build.js): форсированный мотор и бесшовная коробка изнашиваются быстрее
+  pu.ice = Math.min(1, pu.ice + dt * ICE_RATE * (v.T?.iceWear ?? 1) * throttle * (0.6 + 0.4 * v.state.rpm) * (1 + 0.6 * deployShare))
   pu.ers = Math.min(1, pu.ers + dt * ERS_RATE * deployShare * 3)
-  pu.gearbox = Math.min(1, pu.gearbox + dt * BOX_RATE * throttle)
+  pu.gearbox = Math.min(1, pu.gearbox + dt * BOX_RATE * (v.T?.boxWear ?? 1) * throttle)
   // отказ: только у сильно изношенного (риск растёт после 90%)
   const worst = Math.max(pu.ice, pu.gearbox)
   if (worst > 0.9 && rand() < (worst - 0.9) * 0.02 * dt) {

@@ -6,12 +6,13 @@
 // Тактика: мягкие на старте — заезд на 2–3-м круге, средние — на 3-м; раньше — если шины стёрлись больше
 // 62%, прокол или крыло сломано; правило двух составов — не позже предпоследнего круга.
 import { createVehicle, stepVehicle, setGhost } from './vehicle.js'
-import { TUNING, SETUP_DEFAULT } from './tuning.js'
+import { SETUP_DEFAULT } from './tuning.js'
 import { createRaceLine, createAiDriver, makePilots } from './ai.js'
 import { freshTyres } from './wear.js'
 import { createPitStop, defaultPlan, rainTyreFor } from './pit.js'
 import { retireReason, mechanicalFlag } from './stewards.js'
 import { TWO_COMPOUND_MIN_LAPS } from './race.js'
+import { buildTuning, randomBuild, STOCK_BUILD } from './build.js'
 
 export const BOT_COUNT = 11 // с игроком 12 болидов (Рома 28.10)
 // трёхбуквенные коды, как в таблице F1; имена выдуманные
@@ -26,8 +27,9 @@ const RECOVERY_TIME = 90 // с: запасной срок; обычно боли
 // без картинки (сервер, тесты): болид-пустышка, ничего не рисует и в сцену не ставится
 const NO_CAR = { spawn: () => ({ group: { visible: true }, snapshot() {}, setCompound() {}, sync() {} }) }
 
-// lane — пит-лейн (pit.js) или null; car и scene — картинка (без них боты только едут, для сервера); rand — ГПСЧ (по умолчанию Math.random)
-export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, lane, rand = Math.random }) {
+// lane — пит-лейн (pit.js) или null; car и scene — картинка (без них боты только едут, для сервера); rand — ГПСЧ (по умолчанию Math.random);
+// builds — у каждого бота своя сборка болида (build.js, в рамках бюджета); без него — у всех стандартная
+export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, lane, rand = Math.random, builds = false }) {
   let list = []
   // где на оси трассы начинается пит-лейн
   let entryS = null
@@ -118,8 +120,9 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
       }
       list = slots.slice(0, BOT_COUNT).map((p, slot) => {
         const i = order[slot]
-        // своя копия чисел: у бота своя настройка, игрок свою крутит в гараже
-        const T = { ...TUNING, setup: { ...SETUP_DEFAULT } }
+        // своя копия чисел: у бота своя настройка (игрок свою крутит в гараже) и своя сборка болида
+        const build = builds ? randomBuild(rand) : { ...STOCK_BUILD }
+        const T = buildTuning(build, { ...SETUP_DEFAULT })
         const v = createVehicle(RAPIER, world, { x: p.x, y: (p.y || 0) + 0.05, z: p.z, yaw: p.yaw }, T)
         // стартовые шины и план: мягкие — заезд на 2–3-м круге, средние — на 3-м
         v.compound = rand() < 0.55 ? 'soft' : 'medium'
@@ -130,7 +133,7 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
         scene?.add(c.group)
         const pilot = pilots[slot]
         const d = createAiDriver(createRaceLine(track.axis, level, T, pilot), { T, zone: track.straightZone })
-        return { id: 'bot' + i, name: NAMES[i % NAMES.length], paint: PAINTS[i % PAINTS.length], pilot, v, car: c, d, input: d.input, box: slot, stops: 0, planLap, pit: null }
+        return { id: 'bot' + i, name: NAMES[i % NAMES.length], paint: PAINTS[i % PAINTS.length], pilot, build, v, car: c, d, input: d.input, box: slot, stops: 0, planLap, pit: null }
       })
     },
 

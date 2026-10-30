@@ -158,11 +158,11 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
   )
   // низкий «грузовой» блок: даёт массу и задаёт центр масс. Длина подобрана под инерцию
   // поворота ~1150 кг·м², как у болида (чем меньше, тем охотнее болид поворачивается)
-  world.createCollider(
+  const massCollider = world.createCollider(
     RAPIER.ColliderDesc.cuboid(0.55, 0.175, 2.0)
       .setCollisionGroups(WALL_GROUPS) // как корпус: стены видит, других болидов — нет
       .setTranslation(0, T.comY, T.comZ)
-      .setMass(T.mass)
+      .setMass(T.mass + (T.buildMass || 0)) // сборка (build.js): облегчённое шасси, тяжёлая батарея
       .setFriction(0.1)
       .setRestitution(0),
     body,
@@ -283,9 +283,16 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
     wet: 0, // насколько мокрая трасса 0…1 (погода, main.js); шины держат по wetGrip
   }
   v.hullCar = hullCar
+  v.massCollider = massCollider
   registerHull(world, hull.handle, v)
   registerHull(world, hullCar.handle, v)
   return v
+}
+
+// другая сборка болида (build.js) у уже созданной машины: свои числа физики и масса кузова
+export function applyTuning(v, T) {
+  v.T = T
+  v.massCollider?.setMass(T.mass + (T.buildMass || 0))
 }
 
 export function gearInfo(speedKmh, T = TUNING) {

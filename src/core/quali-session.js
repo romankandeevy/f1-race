@@ -11,13 +11,14 @@ import { createLimits, wheelsOut } from '../limits.js'
 import { freshTyres, freshDamage, freshPowerUnit, freshBrakes, COMPOUNDS } from '../wear.js'
 import { retireReason } from '../stewards.js'
 import { createRaceLine, createAiDriver } from '../ai.js'
-import { cleanInput, STEP } from './race-session.js'
+import { cleanInput, cleanSetup, STEP } from './race-session.js'
+import { buildTuning, cleanBuild, STOCK_BUILD } from '../build.js'
 
 const OVERTIME = 180 // с после конца сессии: дольше начатый круг не ждём
 const WRONG_WAY_RESET = 3 // с против хода — вернуть на трассу
 const yawOf = (q) => Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.x * q.x))
 
-export function createQualiSession({ RAPIER, track, seed = 1, minutes = 10, humans }) {
+export function createQualiSession({ RAPIER, track, seed = 1, minutes = 10, humans, builds = false }) {
   clearHullOwners()
   const rand = seededRandom(seed)
   const physics = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
@@ -44,7 +45,8 @@ export function createQualiSession({ RAPIER, track, seed = 1, minutes = 10, huma
   const H = humans.slice(0, gridN).map((h, k) => {
     const slot = Math.min(k, gridN - 1)
     const g = track.grid[slot]
-    const v = createVehicle(RAPIER, physics, { x: g.x, y: (g.y || 0) + 0.05, z: g.z, yaw: g.yaw }, TUNING)
+    // своя сборка (если сборки включены) и своя настройка болида
+    const v = createVehicle(RAPIER, physics, { x: g.x, y: (g.y || 0) + 0.05, z: g.z, yaw: g.yaw }, buildTuning(builds ? cleanBuild(h.build) : STOCK_BUILD, cleanSetup(h.setup)))
     v.rand = rand
     fresh(v, h.compound)
     setGhost(v, true) // призраки: болиды друг друга не видят, стены и трасса — как обычно
@@ -156,9 +158,13 @@ export function createQualiSession({ RAPIER, track, seed = 1, minutes = 10, huma
       if (!h) return null
       return { v: h.v, slot: h.slot, auto: false, pit: null, retired: false, removed: false, pitRequest: false, autopilot: !!h.auto, lap: h.laps.state, cap: Infinity, banner: null, orange: null }
     },
+    setSetup(id, setup) {
+      const h = byId.get(id)
+      if (h) Object.assign(h.v.T.setup, cleanSetup(setup))
+    },
     setAutopilot(id, on) {
       const h = byId.get(id)
-      if (h) h.auto = on ? createAiDriver(createRaceLine(track.axis, 'medium', TUNING, {}), { T: TUNING, zone: track.straightZone }) : null
+      if (h) h.auto = on ? createAiDriver(createRaceLine(track.axis, 'medium', h.v.T, {}), { T: h.v.T, zone: track.straightZone }) : null
     },
     cars: () => H.map((h) => ({ id: h.id, v: h.v })),
     takeNews: () => news.splice(0),

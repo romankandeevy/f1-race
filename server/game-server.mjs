@@ -1,6 +1,7 @@
 // Онлайн-сервер игры. На одном порту: раздаёт собранную игру (dist/, `npm run build`) и ведёт гонки по WebSocket (/ws) —
 // друзьям хватает одного адреса (туннель с Mac или VPS).
-// Комнаты по коду из 4 букв: создатель выбирает трассу, круги и уровень ботов; до 12 живых игроков, свободные места — боты.
+// Комнаты по коду из 4 букв: создатель выбирает трассу, круги, уровень ботов и болиды (свои сборки или одинаковые);
+// до 12 живых игроков, свободные места — боты. Сборку (src/build.js) и настройку болида игрок присылает в профиле.
 // Гонка — src/core/race-session.js (та же физика, что в игре): 240 шагов в секунду, ввод игроков окнами по 1/60 с
 // (нет ввода к окну — едет с прошлым), снапшоты 30 раз в секунду (двоичные, src/net/wire.js), таблица гонки 2 раза в секунду.
 // Обрыв связи: в гонке болид ведёт автопилот, место держится; вернулся с тем же токеном — управление снова у него.
@@ -12,7 +13,8 @@ import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
 import RAPIER from '@dimforge/rapier3d-compat'
 import { loadTrack } from './track-node.mjs'
-import { createRaceSession, STEP, CARS } from '../src/core/race-session.js'
+import { createRaceSession, cleanSetup, STEP, CARS } from '../src/core/race-session.js'
+import { cleanBuild } from '../src/build.js'
 import { createQualiSession } from '../src/core/quali-session.js'
 import { exportVehicle } from '../src/net/state.js'
 import { AI_LEVELS } from '../src/ai.js'
@@ -58,6 +60,11 @@ function newCode() {
 const newToken = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
 const clean = (s, n) => String(s ?? '').replace(/[<>&"]/g, '').trim().slice(0, n)
 const isColor = (c) => /^#[0-9a-f]{6}$/i.test(c)
+// сборка и настройка болида из профиля: только проверенные (незнакомое — стандарт); в гонке не меняются — до следующего старта
+function profile(p, m) {
+  if (m.build) p.build = cleanBuild(m.build)
+  if (m.setup) p.setup = cleanSetup(m.setup)
+}
 
 function send(p, msg) {
   if (p.ws && p.ws.readyState === 1) p.ws.send(typeof msg === 'string' || msg instanceof Uint8Array ? msg : JSON.stringify(msg))
@@ -71,6 +78,7 @@ function roomInfo(room) {
     track: room.track,
     laps: room.laps,
     level: room.level,
+    builds: room.builds,
     host: room.host,
     state: room.state,
     players: room.players.map((p) => ({ id: p.id, name: p.name, paint: p.paint, compound: p.compound, connected: p.connected })),
@@ -99,14 +107,15 @@ function closeRoom(room) {
 
 // ---------- гонка ----------
 function startRace(room) {
-  const humans = room.players.slice(0, CARS).map((p, k) => ({ id: p.id, name: p.name, paint: p.paint, slot: CARS - 1 - k, compound: p.compound }))
+  const humans = room.players.slice(0, CARS).map((p, k) => ({ id: p.id, name: p.name, paint: p.paint, slot: CARS - 1 - k, compound: p.compound, build: p.build, setup: p.setup }))
+  const builds = room.builds === 'own'
   room.session?.dispose()
   const seed = Math.floor(Math.random() * 2 ** 31)
   // онлайн-заезд на время — призраки, таймер, лучший круг (quali-session); гонка — с ботами (race-session)
   const s =
     room.mode === 'quali'
-      ? createQualiSession({ RAPIER, track: TRACKS[room.track], seed, minutes: room.minutes, humans })
-      : createRaceSession({ RAPIER, track: TRACKS[room.track], seed, laps: room.laps, botLevel: room.level, humans })
+      ? createQualiSession({ RAPIER, track: TRACKS[room.track], seed, minutes: room.minutes, humans, builds })
+      : createRaceSession({ RAPIER, track: TRACKS[room.track], seed, laps: room.laps, botLevel: room.level, humans, builds })
   room.session = s
   room.state = 'race'
   room.acc = 0
@@ -125,7 +134,7 @@ function startRace(room) {
 }
 function sendStart(room, p) {
   const h = room.session.human(p.id)
-  send(p, { t: 'start', code: room.code, mode: room.mode, minutes: room.minutes, track: room.track, laps: room.laps, roster: room.roster, you: p.id, slot: h?.slot ?? 0, compound: h?.v.compound ?? 'medium', tick: room.session.tick })
+  send(p, { t: 'start', code: room.code, mode: room.mode, minutes: room.minutes, track: room.track, laps: room.laps, builds: room.builds, roster: room.roster, you: p.id, slot: h?.slot ?? 0, compound: h?.v.compound ?? 'medium', tick: room.session.tick })
 }
 
 const flagsOf = (v) => {
@@ -285,7 +294,12 @@ function onMessage(p, m) {
       p.name = clean(m.name, 16) || p.name
       if (isColor(m.paint)) p.paint = m.paint
       if (COMPOUNDS[m.compound]) p.compound = m.compound // шины на старт
+      profile(p, m)
       if (room) broadcastRoom(room)
+      return
+    case 'setup': // настройку болида поменял по ходу (быстрые клавиши, гараж из паузы): сервер считает так же
+      p.setup = cleanSetup(m.setup)
+      if (room?.state === 'race') room.session.setSetup?.(p.id, p.setup)
       return
     case 'create': {
       if (room) leaveRoom(p)
@@ -297,6 +311,7 @@ function onMessage(p, m) {
         track: TRACKS[m.track] ? m.track : 'marina',
         laps: Math.max(1, Math.min(MAX_LAPS, Math.round(Number(m.laps) || 5))),
         level: AI_LEVELS[m.level] ? m.level : 'medium',
+        builds: m.builds === 'same' ? 'same' : 'own',
         host: p.id,
         players: [p],
         state: 'lobby',
@@ -322,6 +337,7 @@ function onMessage(p, m) {
       if (TRACKS[m.track]) room.track = m.track
       if (m.laps) room.laps = Math.max(1, Math.min(MAX_LAPS, Math.round(Number(m.laps))))
       if (AI_LEVELS[m.level]) room.level = m.level
+      if (m.builds === 'same' || m.builds === 'own') room.builds = m.builds
       if (MINUTES.includes(Number(m.minutes)) || (DEBUG && Number(m.minutes) > 0)) room.minutes = Number(m.minutes)
       return broadcastRoom(room)
     case 'start':
@@ -419,12 +435,13 @@ wss.on('connection', (ws) => {
         p.ws = ws
         p.connected = true
       } else {
-        p = { id: 'p' + nextId++, token: newToken(), name: 'Игрок', paint: '#e9e6df', compound: 'medium', ws, room: null, connected: true, lostAt: 0, queue: [], last: {}, ack: 0, seqSeen: 0 }
+        p = { id: 'p' + nextId++, token: newToken(), name: 'Игрок', paint: '#e9e6df', compound: 'medium', build: null, setup: null, ws, room: null, connected: true, lostAt: 0, queue: [], last: {}, ack: 0, seqSeen: 0 }
         byToken.set(p.token, p)
       }
       p.name = clean(m.name, 16) || p.name
       if (isColor(m.paint)) p.paint = m.paint
       if (COMPOUNDS[m.compound]) p.compound = m.compound
+      profile(p, m)
       send(p, { t: 'welcome', id: p.id, token: p.token })
       const room = rooms.get(p.room)
       if (room) {

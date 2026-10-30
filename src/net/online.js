@@ -17,6 +17,10 @@ const TICK_MS = 1000 / 240
 const BASE_BUF = 100 // мс: буфер чужих машин
 const NAME_KEY = 'f1-race.online.name'
 const COMPOUND_KEY = 'f1-race.online.compound'
+const BUILD_MODES = [
+  { v: 'own', name: 'Свои сборки' },
+  { v: 'same', name: 'Одинаковые' },
+]
 const START_TYRES = [{ v: 'soft', name: 'Мягкие' }, { v: 'medium', name: 'Средние' }, { v: 'hard', name: 'Жёсткие' }]
 const TOKEN_KEY = 'f1-race.online.token'
 const LEVELS = ['light', 'medium', 'hard']
@@ -126,7 +130,7 @@ export function createOnline(deps) {
     ws.onopen = () => {
       connecting = false
       msg = ''
-      ws.send(JSON.stringify({ t: 'hello', token, name: myName(), paint: deps.livery().primary, compound: myCompound() }))
+      ws.send(JSON.stringify({ t: 'hello', token, ...profile() }))
     }
     ws.onclose = () => {
       connecting = false
@@ -208,7 +212,13 @@ export function createOnline(deps) {
   // ---------- лобби ----------
   const myName = () => store.get(NAME_KEY) || 'Игрок'
   const myCompound = () => (START_TYRES.some((t) => t.v === store.get(COMPOUND_KEY)) ? store.get(COMPOUND_KEY) : 'medium')
-  const sendProfile = () => send({ t: 'name', name: myName(), paint: deps.livery().primary, compound: myCompound() })
+  // профиль: имя, цвет, шины на старт, сборка болида (гараж) и настройка болида — сервер считает физику с ними
+  const profile = () => ({ name: myName(), paint: deps.livery().primary, compound: myCompound(), build: deps.build?.(), setup: deps.setup?.() })
+  let sentSetup = ''
+  const sendProfile = () => {
+    sentSetup = JSON.stringify(deps.setup?.() ?? null)
+    send({ t: 'name', ...profile() })
+  }
   const trackName = (id) => deps.tracks.find((t) => t.id === id)?.name ?? id
   const MODES = {
     quali: { name: 'Заезд на время', kick: 'Призраки · до 12 игроков', about: 'Все на трассе одновременно, но болиды — призраки: сквозь друг друга, без столкновений. Кто за отведённые минуты проедет самый быстрый круг — тот победил. Ботов нет.' },
@@ -244,11 +254,13 @@ export function createOnline(deps) {
           ? `<div class="sc-row"><span class="sc-label">Время сессии</span>${seg('minutes', MINUTES.map((n) => ({ v: n, name: n + ' мин' })), room.minutes)}</div>`
           : `<div class="sc-row"><span class="sc-label">Круги</span>${seg('laps', LAPS.map((n) => ({ v: n, name: String(n) })), room.laps)}</div>
              <div class="sc-row"><span class="sc-label">Боты</span>${seg('level', LEVELS.map((l) => ({ v: l, name: AI_LEVELS[l].name })), room.level)}</div>`,
+        `<div class="sc-row"><span class="sc-label">Болиды</span>${seg('builds', BUILD_MODES, room.builds ?? 'own')}</div>`,
         `<div class="sc-row"><span class="sc-label">Мои шины${quali ? '' : ' на старт'}</span><span class="sc-ctl sc-seg">${START_TYRES.map((t) => `<button data-tyre="${t.v}" class="${t.v === myCompound() ? 'on' : ''}">${t.name}</button>`).join('')}</span></div>`,
       ]
       const about = quali
         ? `${room.players.length} из 12 · болиды — призраки, столкновений нет. Победит лучший круг за ${room.minutes} мин.`
         : `${room.players.length} из 12 · свободные места — боты (${AI_LEVELS[room.level].name.toLowerCase()}).`
+      const buildsAbout = room.builds === 'same' ? ' Болиды у всех одинаковые (стандартная сборка), настройка — своя.' : ' У каждого своя сборка из гаража' + (quali ? '.' : ', у ботов — свои.')
       root.innerHTML = `${shade}<section class="sc-col">
         <header class="sc-brand"><span class="sc-tag">Онлайн · ${MODES[room.mode].name.toLowerCase()} · скажи код другу</span></header>
         <div class="ol-code">${esc(room.code)}</div>
@@ -257,7 +269,7 @@ export function createOnline(deps) {
         <div class="ol-players">${room.players
           .map((p) => `<div class="ol-player${p.connected ? '' : ' off'}" style="--c:${esc(p.paint)}"><i></i><span>${esc(p.name)}${p.id === myId ? ' (ты)' : ''}</span><em>${esc(START_TYRES.find((t) => t.v === p.compound)?.name ?? '')}</em>${p.id === room.host ? '<em class="host">создатель</em>' : p.connected ? '' : '<em>нет связи</em>'}</div>`)
           .join('')}</div>
-        <p class="sc-about">${about} ${host ? 'Все собрались — жми «Старт».' : 'Старт даёт создатель комнаты.'}${room.state === 'race' ? (quali ? ' Идёт заезд.' : ' Идёт гонка.') : ''}</p>
+        <p class="sc-about">${about}${buildsAbout} ${host ? 'Все собрались — жми «Старт».' : 'Старт даёт создатель комнаты.'}${room.state === 'race' ? (quali ? ' Идёт заезд.' : ' Идёт гонка.') : ''}</p>
         <div class="ol-row2">
           ${host ? '<button class="sc-row cta" data-act="start">Старт</button>' : ''}
           <button class="sc-row" data-act="leave">Выйти из комнаты</button>
@@ -321,6 +333,7 @@ export function createOnline(deps) {
       sendProfile()
       send({ t: 'create', mode: pick, track: deps.trackId, laps: 5, level: 'medium', minutes: 10 })
     } else if (a === 'join') {
+      sendProfile()
       const code = root.querySelector('[data-k=code]')?.value.trim().toUpperCase()
       if (!code || code.length !== 4) {
         msg = 'Код комнаты — 4 буквы'
@@ -408,9 +421,10 @@ export function createOnline(deps) {
       orange: null, // чёрно-оранжевый флаг: текст
       removed: false, // эвакуатор увёз свою машину
       sc: null, // машина безопасности: { phase, s, l, v, t, armed, at }
+      setupAt: 0,
     }
     lastTable = null
-    deps.onStart({ code: m.code, mode: m.mode, minutes: m.minutes, laps: m.laps, slot: m.slot, roster: m.roster, compound: m.compound })
+    deps.onStart({ code: m.code, mode: m.mode, minutes: m.minutes, laps: m.laps, slot: m.slot, roster: m.roster, compound: m.compound, builds: m.builds ?? 'own' })
     pingSent = 0
   }
 
@@ -506,6 +520,15 @@ export function createOnline(deps) {
     if (now - pingSent > 2000) {
       pingSent = now
       send({ t: 'ping', c: now })
+    }
+    // настройку поменяли по ходу (баланс тормозов, дифференциал, гараж из паузы) — сервер должен считать так же, иначе откаты
+    if (now - race.setupAt > 500) {
+      race.setupAt = now
+      const cur = JSON.stringify(deps.setup?.() ?? null)
+      if (cur !== sentSetup) {
+        sentSetup = cur
+        send({ t: 'setup', setup: deps.setup?.() })
+      }
     }
     const rt = now - race.est - race.buf
     let failed = false
@@ -668,6 +691,7 @@ export function createOnline(deps) {
     open() {
       root.hidden = false
       connect()
+      sendProfile() // сборку или настройку могли поменять в гараже, пока онлайн был закрыт
       render()
     },
     isOpen: () => !root.hidden,

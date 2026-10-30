@@ -6,7 +6,8 @@ import { createOnline } from './net/online.js'
 import { buildTrack } from './track.js'
 import { loadCircuit } from './circuit.js'
 import { loadCar, PAINTS } from './car.js'
-import { createVehicle, stepVehicle, collectImpacts, setGhost } from './vehicle.js'
+import { createVehicle, stepVehicle, collectImpacts, setGhost, applyTuning } from './vehicle.js'
+import { loadBuild, saveBuild, buildTuning, STOCK_BUILD } from './build.js'
 import { CameraRig } from './camera.js'
 import { createHud, createTelemetry } from './hud.js'
 import { scanCar } from './carScan.js'
@@ -107,6 +108,10 @@ async function main() {
 
   const pose = track.startPose
   const vehicle = createVehicle(RAPIER, world, { x: pose.x, y: (pose.y || 0) + 0.05, z: pose.z, yaw: pose.yaw })
+  // сборка болида (гараж, build.js): из чего сделан болид; настройка (TUNING.setup) — общий объект, его крутит экран настройки
+  let build = loadBuild()
+  const useBuild = (b) => applyTuning(vehicle, buildTuning(b, TUNING.setup))
+  useBuild(build)
   const rig = new CameraRig(camera, car)
   const hud = createHud(track)
   hud.setCarScan(scanCar(renderer, car.group)) // схема болида на табло — из той же модели, пока колёса и крылья на месте
@@ -238,7 +243,7 @@ async function main() {
     botLevel = 'medium'
   }
   const canRace = !!(track.grid?.length > BOT_COUNT && track.axis?.length)
-  const bots = canRace ? createBots({ RAPIER, world, scene, track, car, lane }) : null
+  const bots = canRace ? createBots({ RAPIER, world, scene, track, car, lane, builds: true }) : null // у ботов свои сборки
   let race = null
   // флаги, машина безопасности и эвакуатор (flags.js, tow.js): только в гонке с соперниками
   const sc = canRace && lane ? createSafetyCar(scene, track.axis, track.length, lane) : null // настоящая машина безопасности перед лидером
@@ -343,6 +348,15 @@ async function main() {
       car.setLivery(l)
       saveLivery(l)
     },
+    // сборка болида в гараже: сразу в физику (кроме онлайн-гонки — там сборку задаёт комната)
+    build: {
+      get: () => build,
+      set: (b) => {
+        build = b
+        saveBuild(b)
+        if (!online.inRace) useBuild(b)
+      },
+    },
     previewCompound: (c) => {
       if (inMenu) vehicle.compound = c
     },
@@ -381,6 +395,8 @@ async function main() {
     trackId: useTest ? 'test' : trackId,
     tracks: useTest ? [] : Object.entries(TRACKS).map(([id, t]) => ({ id, name: t.name })),
     livery: () => livery,
+    build: () => build,
+    setup: () => TUNING.setup,
     onStart: (s) => startOnline(s),
     onExit: () => enterMenu(),
     showResults: (st) => hud.showResults(st),
@@ -429,6 +445,7 @@ async function main() {
     vehicle.steerIn = vehicle.steerCmd = vehicle.steerVel = vehicle.delta = 0
     vehicle.throttle = vehicle.brake = 0
     vehicle.compound = COMPOUNDS[s.compound] ? s.compound : 'medium' // шины на старт — выбор в лобби
+    useBuild(s.builds === 'same' ? STOCK_BUILD : build) // комната «одинаковые болиды» — у всех стандартная сборка
     vehicle.tyres = freshTyres(80)
     vehicle.damage = freshDamage()
     vehicle.battery = 1
@@ -466,6 +483,7 @@ async function main() {
   function enterMenu() {
     if (online.inRace) online.quit() // из онлайн-гонки — выйти из комнаты (болид доедет на автопилоте)
     inMenu = true
+    useBuild(build) // после онлайна с одинаковыми болидами — снова своя сборка
     weather.set('dry')
     quali = null
     qualiShown = false
@@ -512,6 +530,7 @@ async function main() {
   // начало гонки или заезда с экрана «Гонка»
   function startSession(o) {
     inMenu = false
+    useBuild(build)
     document.body.classList.remove('menu-mode')
     botLevel = o.mode === 'race' && canRace ? o.level : 'off'
     startCompound = o.compound
@@ -971,13 +990,13 @@ async function main() {
       const planText = `шины: ${COMPOUNDS[pitPlan.compound].name}${pitPlan.wing ? ', ремонт кузова' : ''}`
       if (pitRequest && toEntry < PIT_TAKEOVER[0] && toEntry > PIT_TAKEOVER[1]) {
         // автопилот берёт руль заранее, как у ботов: не нужно успевать самому ни тормозить, ни попадать в въезд
-        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, damage: vehicle.damage, hold: () => flags?.mode === 'red' })
+        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, T: vehicle.T, damage: vehicle.damage, hold: () => flags?.mode === 'red' })
         pitRequest = false
         input.aero = false
         hud.notify(`Автопилот: заезд в боксы · ${planText}`, false, 4)
       } else if (pitEntryHit(lane, p.x, p.z, yaw)) {
         // въехал в пит-лейн сам, без заказа — дальше то же самое
-        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, damage: vehicle.damage, hold: () => flags?.mode === 'red' })
+        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, T: vehicle.T, damage: vehicle.damage, hold: () => flags?.mode === 'red' })
         pitRequest = false
         input.aero = false
         hud.notify(`Пит-лейн · автопилот, ограничитель 80 · ${planText}${pitPlan.wing ? ` · стоянка +${repairSeconds(vehicle.damage)} с` : ''}`, false, 4)
