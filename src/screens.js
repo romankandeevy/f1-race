@@ -4,7 +4,7 @@
 //
 // Клавиши: ↑ ↓ — пункт, ← → — значение, Enter — выбрать, Esc — назад, Q E — вкладки настроек. Мышь работает везде.
 // Модуль ничего не знает про физику: всё, что делает игру, приходит из main.js через ctx (см. createScreens).
-import { settings, QUALITY, DEFAULTS } from './settings.js'
+import { settings, QUALITY, DEFAULTS, ENGINE_SOUNDS } from './settings.js'
 import { TEAMS, BODY_SWATCHES, ZONE_SWATCHES, teamById } from './teams.js'
 import { KEYS } from './menu.js'
 import { COMPOUNDS, COMPOUND_ORDER } from './wear.js'
@@ -75,13 +75,13 @@ export function createScreens(ctx) {
     }),
     choice('laps', 'Круги', LAP_OPTIONS.map((v) => ({ v, name: String(v) })), () => session.laps, (v) => (session.laps = v), {
       hidden: () => session.mode !== 'race',
-      hint: () => (session.laps <= 3 ? 'Короткая гонка: пит-стоп можно не планировать, но два состава шин всё равно обязательны.' : session.laps >= 10 ? 'Длинная гонка: шины и мотор изнашиваются, без пит-стопов не обойтись.' : 'Классическая дистанция: один-два пит-стопа.'),
+      hint: () => (session.laps < 5 ? 'Короткая гонка: менять шины не обязательно (правило двух составов — с 5 кругов, как в спринте F1 его тоже нет).' : session.laps >= 10 ? 'Длинная гонка: шины и мотор изнашиваются, без пит-стопов не обойтись.' : 'Классическая дистанция: один-два пит-стопа.'),
     }),
     choice('compound', 'Шины на старт', COMPOUND_ORDER.map((v) => ({ v, name: COMPOUNDS[v].name })), () => session.compound, (v) => {
       session.compound = v
       ctx.previewCompound?.(v) // на витрине сразу видно цвет шин выбранного состава
     }, {
-      hint: () => ({ soft: 'Мягкие: быстрее всех, но живут около трёх кругов.', medium: 'Средние: золотая середина, около шести кругов.', hard: 'Твёрдые: медленнее, зато около десяти кругов.', intermediate: 'Промежуточные (зелёные): для влажной трассы. На сухой перегреваются и сгорают за пару кругов.', wet: 'Дождевые (синие): для ливня, вода уходит из-под протектора. На подсохшей трассе медленные и горят.' })[session.compound] + (session.mode === 'race' ? ' В гонке обязательны два разных состава (в дождь — нет): без пит-стопа — дисквалификация.' : ''),
+      hint: () => ({ soft: 'Мягкие: быстрее всех, но живут около трёх кругов.', medium: 'Средние: золотая середина, около шести кругов.', hard: 'Твёрдые: медленнее, зато около десяти кругов.', intermediate: 'Промежуточные (зелёные): для влажной трассы. На сухой перегреваются и сгорают за пару кругов.', wet: 'Дождевые (синие): для ливня, вода уходит из-под протектора. На подсохшей трассе медленные и горят.' })[session.compound] + (session.mode === 'race' ? (session.laps >= 5 ? ' В гонке от 5 кругов обязательны два разных состава (в дождь — нет): без пит-стопа — дисквалификация.' : ' В гонке короче 5 кругов менять шины не обязательно.') : ''),
     }),
     choice('weather', 'Погода', WEATHER_ORDER.map((v) => ({ v, name: WEATHERS[v].name })), () => session.weather, (v) => (session.weather = v), { hint: () => WEATHERS[session.weather].about }),
     choice('slot', 'Место на решётке', SLOTS.map((s) => ({ v: s.v, name: s.name })), () => session.slot, (v) => (session.slot = v), {
@@ -106,7 +106,10 @@ export function createScreens(ctx) {
     },
     {
       name: 'Звук',
-      rows: [slider('volume', 'Громкость', 0, 100, 5, () => settings.get('volume'), (v) => settings.set('volume', v), { fmt: (v) => `${v}%`, hint: () => 'Общая громкость мотора и шума гравия. В гонке звук выключает клавиша M.' })],
+      rows: [
+        slider('volume', 'Громкость', 0, 100, 5, () => settings.get('volume'), (v) => settings.set('volume', v), { fmt: (v) => `${v}%`, hint: () => 'Общая громкость мотора и шума гравия. В гонке звук выключает клавиша M.' }),
+        choice('engineSound', 'Мотор', Object.entries(ENGINE_SOUNDS).map(([v, e]) => ({ v, name: e.name })), () => settings.get('engineSound'), (v) => settings.set('engineSound', v), { hint: () => ENGINE_SOUNDS[settings.get('engineSound')].about + ' Меняется сразу — можно слушать прямо в гонке из паузы.' }),
+      ],
     },
     {
       name: 'Мышь',

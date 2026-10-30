@@ -11,6 +11,7 @@ import { createRaceLine, createAiDriver, makePilots } from './ai.js'
 import { freshTyres } from './wear.js'
 import { createPitStop, defaultPlan, rainTyreFor } from './pit.js'
 import { retireReason, mechanicalFlag } from './stewards.js'
+import { TWO_COMPOUND_MIN_LAPS } from './race.js'
 
 export const BOT_COUNT = 11 // с игроком 12 болидов (Рома 28.10)
 // трёхбуквенные коды, как в таблице F1; имена выдуманные
@@ -76,6 +77,8 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
     const t = b.v.tyres
     const wear = (t[0].wear + t[1].wear + t[2].wear + t[3].wear) / 4
     if (t.some((x) => x.puncture)) return true
+    // последний круг: до финиша доедут и так (крыло, износ, погода, флаг — уже не важно), заезд — только с проколом
+    if (lap >= laps) return false
     // чёрно-оранжевый флаг или заметно побитый болид: в боксы, как делает команда в F1
     const dm = b.v.damage
     if (mechanicalFlag(b.v) || Math.max(dm.wingL, dm.wingR, dm.rearWing, dm.floor, dm.sideL, dm.sideR) > 0.4) return true
@@ -83,7 +86,7 @@ export function createBots({ RAPIER, world, scene, track, car, lane }) {
     const need = rainTyreFor(b.v.wet || 0)
     const onRain = b.v.compound === 'intermediate' || b.v.compound === 'wet'
     if ((need && need !== b.v.compound) || (!need && onRain && (b.v.wet || 0) < 0.2)) return true
-    if (b.stops === 0 && (lap >= b.planLap || lap >= laps - 1)) return true
+    if (laps >= TWO_COMPOUND_MIN_LAPS && b.stops === 0 && (lap >= b.planLap || lap >= laps - 1)) return true
     return wear > 0.62 && lap < laps
   }
 

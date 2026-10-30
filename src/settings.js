@@ -10,10 +10,18 @@ export const QUALITY = {
   ultra: { name: 'Максимум', ratio: 2, shadows: true, about: 'Самая чёткая картинка. На ноутбуке греется.' },
 }
 
+// звук мотора на выбор (sound.js ENGINES): все — из физического симулятора engine-sim, выбирают на слух
+export const ENGINE_SOUNDS = {
+  ls: { name: 'V8 большой (GM LS)', about: 'Низкий басовитый V8 до 6500 об/мин — больше всего рыка.' },
+  v10: { name: 'V10 (Lexus LFA)', about: 'Высокий злой V10 до 9000 об/мин — ближе всего к F1 2000-х.' },
+  f136: { name: 'V8 Ferrari 458', about: 'V8 Ferrari F136 до 9000 об/мин: звонкий, с рыком на сбросе.' },
+}
+
 export const DEFAULTS = {
   quality: 'high', // low | medium | high | ultra
   fps: 60, // 30 | 60 | 120 | 0 (без лимита)
   volume: 100, // 0…100, общая громкость
+  engineSound: 'ls', // звук мотора: ls | v10 | f136 (ENGINE_SOUNDS); по умолчанию большой V8 (Рома 30.10: «берём V8 большой GM LS»)
   mouse: 100, // чувствительность мыши при обзоре, %
   invertY: false, // обратное направление по вертикали при обзоре мышью
   camera: 'chase', // камера при старте: chase | onboard | tcam | nose

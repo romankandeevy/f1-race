@@ -25,11 +25,11 @@ import { AI_LEVELS } from './ai.js'
 import { wheelsOut, createLimits } from './limits.js'
 import { COMPOUNDS, COMPOUND_ORDER, freshTyres, freshDamage, freshPowerUnit, freshBrakes, setFuel, fuelForRace, FUEL_PER_KM } from './wear.js'
 import { createPitLane, pitEntryHit, createPitStop, defaultPlan, pitLimiter, rainTyreFor } from './pit.js'
-import { RACE_LAPS } from './race.js'
+import { RACE_LAPS, TWO_COMPOUND_MIN_LAPS } from './race.js'
 import { settings, QUALITY } from './settings.js'
 import { createScreens } from './screens.js'
 import { retireReason, mechanicalFlag, ORANGE_LAPS, judgeContact, contactPenalty } from './stewards.js'
-import { repairSeconds } from './wear.js'
+import { repairSeconds, needsRepair } from './wear.js'
 import { createFlags, VSC_SPEED } from './flags.js'
 import { createTow } from './tow.js'
 import { createSafetyCar } from './safetycar.js'
@@ -211,6 +211,12 @@ async function main() {
   const flags = canRace ? createFlags(track.axis, track.length, { safetyCar: !!sc }) : null
   const tow = canRace ? createTow(scene, track.axis, track.length) : null
   let flagAcc = 0
+  // отказ техники у соперника (Рома 29.10: «ни разу не видел машину безопасности»; в F1 она выезжает примерно в каждой
+  // второй гонке): в гонке от 2 кругов с вероятностью BOT_FAIL_CHANCE у случайного бота в случайный момент гонки отказывает
+  // мотор — он встаёт на трассе (инцидент → машина безопасности или VSC, потом эвакуатор)
+  const BOT_FAIL_CHANCE = 0.45
+  let botFail = null // { id, at — пройденные лидером метры }
+  let ruleWarn = 0 // предупреждения о правиле двух составов: 1 — на старте, 2 — на последних кругах
   let playerGap = 0 // зазор до болида впереди, м (для коридора под машиной безопасности)
   let prevAhead = null // кто был впереди игрока при флагах: если обогнал — штраф
   let lastPassPenalty = -1e9
@@ -486,6 +492,12 @@ async function main() {
     }
     // топливо — только в гонке: бак на дистанцию с запасом в круг, у всех одинаковый (в заезде на время бак не тратится)
     const tank = race ? fuelForRace(raceLaps, track.length) : 0
+    botFail = null
+    ruleWarn = 0
+    if (race && raceLaps >= 2 && bots?.list.length && Math.random() < BOT_FAIL_CHANCE) {
+      const b = bots.list[Math.floor(Math.random() * bots.list.length)]
+      botFail = { id: b.id, at: (0.3 + Math.random() * (raceLaps - 0.8)) * track.length }
+    }
     setFuel(vehicle, tank)
     for (const b of bots?.list ?? []) setFuel(b.v, tank)
     hud.setMode(race ? `Гонка · ${AI_LEVELS[botLevel].name.toLowerCase()} соперники` : quali ? `Квалификация · круг 1 из ${QUALI_LAPS}` : 'Заезд на время')
@@ -507,7 +519,7 @@ async function main() {
   const mfdTexts = () => ({ brakeBias: TUNING.setup.brakeBias + '%', diffOn: TUNING.setup.diffOn + '%', ers: TUNING.ersModes[input.ersMode].name, pitTyre: COMPOUNDS[pitPlan.compound].name, pitWing: pitPlan.wing ? 'ремонт кузова' : 'без ремонта' })
   hud.setPitPickHandler((kind, value) => {
     if (kind === 'compound') pitPlan.compound = value
-    else pitPlan.wing = !pitPlan.wing
+    else pitPlan.wing = value ?? !pitPlan.wing
   })
   const MFD_KEYS = { BracketLeft: ['brakeBias', -1, 50, 70], BracketRight: ['brakeBias', 1, 50, 70], Minus: ['diffOn', -5, 10, 100], Equal: ['diffOn', 5, 10, 100] }
 
@@ -531,6 +543,7 @@ async function main() {
         })
       }
     } else if (k === 'volume') sound.setVolume(v / 100)
+    else if (k === 'engineSound') sound.setEngine(v)
     else if (k === 'mouse') rig.mouseK = v / 100
     else if (k === 'invertY') rig.invertY = v
     else if (k === 'shake') rig.shakeK = v / 100
@@ -606,14 +619,6 @@ async function main() {
     sc?.hide()
     start?.begin()
     hud.setTrackFlag(null)
-  }
-
-  // громкость звука болида по расстоянию до камеры: рядом — полная, к 80 м — тишина
-  const nearCam = (v) => {
-    if (v === vehicle) return 1
-    const t = v.body.translation()
-    const c = camera.position
-    return Math.max(0, 1 - Math.hypot(t.x - c.x, t.z - c.z) / 80)
   }
 
   function judgeContactPair(a, b) {
@@ -715,7 +720,9 @@ async function main() {
       }
       if (code === 'KeyL' && lane && !pitCtl) {
         pitRequest = !pitRequest
-        hud.notify(pitRequest ? 'Заезд в боксы заказан: выбери шины и ремонт (I, K или клик), автопилот включится у въезда' : 'Заезд в боксы отменён', false, 3)
+        // план считался раньше (на старте, после прошлого пит-стопа): повреждения с тех пор — ремонт включён сам
+        if (pitRequest && needsRepair(vehicle.damage)) pitPlan.wing = true
+        hud.notify(pitRequest ? 'Заезд в боксы заказан: справа выбери шины (I) и ремонт (K), автопилот заведёт сам' : 'Заезд в боксы отменён', false, 3)
       }
       if (code in ERS_KEYS) {
         input.ersMode = TUNING.ersOrder[ERS_KEYS[code]]
@@ -808,11 +815,11 @@ async function main() {
         (v, r) => {
           if (v === vehicle) hud.notify(`Повреждение: ${r.hits.join(', ')}`, true, 3)
           marks.debris.spawn(v, r, v === vehicle ? livery.primary : bots?.list.find((b) => b.v === v)?.paint)
-          sound.hit(r.sev, nearCam(v))
+          sound.hit(r.sev, v.body.translation()) // громкость и сторона — по месту удара относительно камеры
         },
         (a, b, force) => {
           judgeContactPair(a, b)
-          if (a === vehicle || b === vehicle) sound.touch(Math.min(1, force / 120000), 1)
+          sound.touch(Math.min(1, force / 120000), a.body.translation())
         },
       )
       acc -= STEP
@@ -853,8 +860,16 @@ async function main() {
       } else hud.setFlag(null)
     } else if (!race) hud.setFlag(null)
     // флаги раз в 0,25 с: инциденты, машина безопасности, эвакуатор, обгон под жёлтым
-    flagAcc += dt
-    if (flags && race?.state.running && flagAcc > 0.25) {
+    flagAcc = start?.waiting ? 0 : flagAcc + dt
+    // пройдено лидером от первого пересечения линии (решётка стоит перед линией: до него progress — почти целый круг)
+    const leadDone = race?.state.order[0] && race.state.order[0].lap >= 1 ? race.state.order[0].progress - track.length : -1
+    if (botFail && race?.state.running && !paused && leadDone >= botFail.at) {
+      const b = bots?.list.find((x) => x.id === botFail.id)
+      if (b && !b.gone && !b.retired && !b.pit) b.v.pu.failed = true
+      botFail = b?.pit ? { ...botFail, at: botFail.at + 400 } : null // в боксах — откажет чуть позже, на трассе
+    }
+    // пока горят огни старта (в том числе после красного флага), болиды стоят на решётке — это не инцидент
+    if (flags && race?.state.running && !start?.waiting && flagAcc > 0.25) {
       const step = flagAcc
       flagAcc = 0
       const cars = [
@@ -1067,6 +1082,20 @@ async function main() {
         if (race) hud.notify(now === 'wet' ? 'Ливень — нужны дождевые шины (L — в боксы)' : now === 'intermediate' ? 'Трасса мокрая — нужны промежуточные (L — в боксы)' : 'Трасса подсохла — пора на слики (L — в боксы)', false, 6)
       }
     }
+    // правило двух составов: на первом круге — напомнить, за два круга до финиша без смены шин — предупредить
+    if (race?.state.running && !paused && race.state.laps >= TWO_COMPOUND_MIN_LAPS && !retired) {
+      const me = race.car('player')
+      const dry = ![...me.compounds].some((c) => c === 'intermediate' || c === 'wet')
+      if (dry && me.compounds.size === 1) {
+        if (ruleWarn < 1 && me.lap >= 1) {
+          ruleWarn = 1
+          hud.notify('Правило F1: за гонку нужны два разных состава шин — заедь в боксы (L), иначе дисквалификация', true, 8)
+        } else if (ruleWarn < 2 && me.lap >= race.state.laps - 1) {
+          ruleWarn = 2
+          hud.notify(`Ты ещё не менял шины: осталось ${race.state.laps - me.lap + 1} кр. — жми L, иначе дисквалификация`, true, 8)
+        }
+      }
+    }
     particles.update(paused ? 0 : dt, vehicle, bots?.list, camera, renderer, weather.state.wet)
     marks.update(paused ? 0 : dt, vehicle, bots?.list, camera, weather.state.wet)
     env.follow(car.group.position)
@@ -1089,7 +1118,7 @@ async function main() {
       return p < track.length / 2 ? p : 0
     })(), vehicle.damage)
     telemetry.update(vehicle)
-    sound.update(vehicle, lastInput, paused, { bots: bots?.list, camera, rain: weather.state.rain, dt: paused ? 0 : dt })
+    sound.update(vehicle, lastInput, paused, { bots: bots?.list, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
     renderer.render(scene, camera)
   }
   requestAnimationFrame(frame)

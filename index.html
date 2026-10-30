@@ -11,8 +11,8 @@
   /* ДНК — телевизионная графика F1: угольный карбон, белый, фирменный красный, скошенные углы.
      Время: зелёный — быстрее своего лучшего, жёлтый — медленнее. Фиолетовый не используем. */
   :root {
-    --bg: #0A0B0D; --carbon: #121418; --panel: rgba(11, 12, 15, .84); --raise: #1A1D22; --line: #272B32;
-    --text: #F4F4F2; --muted: #8E949E; --red: #E10600; --green: #22D36B; --yellow: #FFC400; --blue: #2F7BFF;
+    --bg: #0A0B0D; --carbon: #121418; --panel: rgba(18, 20, 24, .62); --raise: #1A1D22; --line: #272B32;
+    --text: #F4F4F2; --muted: #A9AFB8; --red: #E10600; --green: #22D36B; --yellow: #FFC400; --blue: #2F7BFF;
     --font: "Titillium Web", system-ui, -apple-system, sans-serif;
     --cut: 14px;
     --hud: .82; /* масштаб интерфейса поверх экрана (Рома 28.10: было 1 — «меньше», 0,72 — «чуть больше») */
@@ -22,7 +22,8 @@
   canvas { display: block; }
   button { font-family: var(--font); }
   #hud { position: fixed; inset: 0; pointer-events: none; font-variant-numeric: tabular-nums; }
-  .panel { position: absolute; background: var(--panel); }
+  /* подложка всех панелей — как в F1 24/25, GT7, Forza: ровная тёмная полупрозрачная, без размытия («стеклянное» Роме не нравится, 29.10) */
+  .panel { position: absolute; background: var(--panel); text-shadow: 0 1px 2px rgba(0, 0, 0, .5); }
   .caps { font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
   .num { font-weight: 700; font-variant-numeric: tabular-nums; }
   .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
@@ -161,7 +162,8 @@
   /* справа внизу одной колонкой: быстрые настройки (появляются) над состоянием болида — не налезают друг на друга и на таблицу слева */
   #rightcol { position: absolute; right: 16px; bottom: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; transform: scale(var(--hud)); transform-origin: bottom right; }
   #rightcol > .panel { position: relative; }
-  #carStatus { width: 204px; padding: 8px 12px 10px; }
+  /* узкая (Рома 29.10: «чуть поменьше»), подложка общая полупрозрачная; подписи схемы с тёмной обводкой */
+  #carStatus { width: 172px; padding: 6px 8px 8px; text-shadow: 0 1px 3px rgba(0, 0, 0, .9), 0 0 6px rgba(0, 0, 0, .6); }
   #carStatus .cs-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; font-weight: 700; }
   #csPlan { margin-left: auto; font-size: 10px; white-space: nowrap; }
   #csName { min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -174,10 +176,11 @@
   #carStatus .tyre { fill: rgba(34, 211, 107, .6); stroke: #FFFFFF; stroke-width: .9; transition: fill .3s, stroke .3s; }
   #carStatus .tyre.cold { fill: rgba(51, 180, 255, .65); }
   #carStatus .tyre.hot { fill: rgba(255, 122, 26, .75); }
-  #carStatus .tyre.pop { fill: var(--red); }
+  #carStatus .tyre.pop { fill: #8A0303; stroke: #C4161C; } /* прокол — кроваво-красная шина и «100%» */
+  #carStatus .wheel-v.pop { fill: #D0141B; }
   #carStatus .tyre.gone { fill: none; stroke: var(--red); stroke-dasharray: 3 2; }
-  #carStatus .wheel-v { font: 800 10px var(--font); fill: #FFFFFF; letter-spacing: .02em; }
-  #carStatus .wheel-t { font: 600 8px var(--font); fill: #9AA1AB; }
+  #carStatus .wheel-v { font: 800 10px var(--font); fill: #FFFFFF; letter-spacing: .02em; paint-order: stroke; stroke: rgba(0, 0, 0, .8); stroke-width: 2.4px; }
+  #carStatus .wheel-t { font: 600 8px var(--font); fill: #B4BAC3; paint-order: stroke; stroke: rgba(0, 0, 0, .8); stroke-width: 2.2px; }
   #carStatus .cs-worst { margin-top: 6px; min-height: 14px; font-size: 11px; font-weight: 700; color: var(--muted); }
   #carStatus .cs-pu[hidden] { display: none; }
   #carStatus .cs-pu { display: flex; justify-content: space-between; align-items: baseline; margin-top: 8px; font-size: 13px; font-weight: 700; }
@@ -193,16 +196,25 @@
   #trackFlag.sc, #trackFlag.vsc { background: repeating-linear-gradient(135deg, #FFC400 0 16px, #E5B000 16px 32px); }
   #results .res-why { margin: -6px 0 12px; color: #F3A64A; font-size: 17px; font-weight: 700; }
   /* план пит-стопа (L): справа над схемой болида, а не по центру — по центру он закрывал болид */
-  #pitPlan { width: 204px; padding: 0 0 8px; pointer-events: auto; }
+  /* план пит-стопа (L): справа над схемой болида; две строки кнопок-боксов — «Шины» (I) и «Ремонт» (K), выбранное — белым
+     (Рома 30.10: «неудобно, не смог разобраться, как сделать ремонт — надо, чтобы были боксы») */
+  #pitPlan { width: 264px; padding: 0 0 10px; pointer-events: auto; }
   #pitPlan[hidden] { display: none; }
-  #pitPlan .caps { display: block; padding: 7px 12px 4px; }
-  #ppTyres { display: flex; justify-content: space-between; padding: 2px 12px 0; }
-  #ppTyres button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; background: transparent; border: 2px solid transparent; border-radius: 50%; cursor: pointer; }
-  #ppTyres button i { font-style: normal; font-weight: 900; width: 22px; height: 22px; line-height: 16px; border-radius: 50%; border: 3px solid var(--c); color: var(--text); font-size: 11px; text-align: center; box-sizing: border-box; }
-  #ppTyres button.on { border-color: var(--text); background: rgba(255, 255, 255, .12); }
-  #pitPlan .pp-name { display: block; padding: 3px 12px 6px; font-size: 12px; font-weight: 700; }
-  #ppWing { display: block; width: calc(100% - 24px); margin: 0 12px; padding: 5px 6px; background: transparent; color: var(--text); border: 1px solid var(--muted); font: 600 11px/1.25 var(--font); text-align: left; cursor: pointer; }
-  #pitPlan .pp-hint { display: block; padding: 6px 12px 0; font-size: 10px; line-height: 1.3; color: var(--muted); }
+  #pitPlan kbd { display: inline-block; min-width: 18px; padding: 1px 5px; font: 800 11px/1.2 var(--font); text-align: center; color: var(--text); border: 1px solid rgba(255, 255, 255, .45); border-bottom-width: 2px; border-radius: 3px; }
+  #pitPlan .pp-top { display: flex; align-items: center; justify-content: space-between; padding: 9px 12px 2px; }
+  #pitPlan .pp-top b { font: 900 italic 16px/1 var(--font); letter-spacing: .06em; text-transform: uppercase; }
+  #pitPlan .pp-top span { font-size: 11px; color: var(--muted); }
+  #pitPlan .pp-sub { display: block; padding: 2px 12px 6px; font-size: 11px; color: var(--muted); }
+  #pitPlan .pp-row { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px 4px; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  #ppTyres, #ppFix { display: flex; gap: 5px; padding: 0 12px; }
+  #ppTyres button, #ppFix button { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 2px 5px; background: rgba(255, 255, 255, .06); color: var(--text); border: 2px solid rgba(255, 255, 255, .18); font: 700 10px/1.1 var(--font); cursor: pointer; }
+  #ppTyres button { flex: 1 1 0; min-width: 0; padding: 6px 0 5px; font-size: 9px; overflow: hidden; }
+  #ppTyres button i { font-style: normal; font-weight: 900; width: 22px; height: 22px; line-height: 16px; border-radius: 50%; border: 3px solid var(--c); font-size: 11px; text-align: center; box-sizing: border-box; }
+  #ppTyres button.on, #ppFix button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  #ppTyres button.on i { color: var(--bg); }
+  #ppFix button { font-size: 12px; padding: 8px 4px; }
+  #pitPlan .pp-damage { display: block; padding: 5px 12px 0; font-size: 11px; line-height: 1.3; color: #F3A64A; }
+  #pitPlan .pp-damage:empty { display: none; }
   #pitInfo.go { background: var(--green); color: #0A0B0D; border-left-color: #fff; font-size: 30px; }
   /* значок состава шин в таблице */
   #twList li .cmp { width: 15px; height: 15px; border-width: 2px; font-size: 8px; }
@@ -437,7 +449,15 @@
   <div id="lights" hidden><i></i><i></i><i></i><i></i><i></i></div>
   <div id="notice" hidden></div>
   <div id="rightcol">
-    <div id="pitPlan" class="panel cut" hidden><span class="caps">Пит-стоп · автопилот</span><div id="ppTyres"></div><span class="pp-name"></span><button id="ppWing" type="button"></button><span class="pp-hint"></span></div>
+    <div id="pitPlan" class="panel cut" hidden>
+      <div class="pp-top"><b>Пит-стоп</b><span><kbd>L</kbd> отмена</span></div>
+      <span class="pp-sub"></span>
+      <div class="pp-row"><span>Шины</span><kbd>I</kbd></div>
+      <div id="ppTyres"></div>
+      <div class="pp-row"><span>Ремонт</span><kbd>K</kbd></div>
+      <div id="ppFix"><button type="button" data-fix="0">Не чинить</button><button type="button" data-fix="1"></button></div>
+      <span class="pp-damage"></span>
+    </div>
     <div id="mfd" class="panel cut" hidden><span class="caps">Быстрые настройки</span><div class="mfd-row" data-k="brakeBias"><span>Баланс тормозов</span><b></b></div><div class="mfd-row" data-k="diffOn"><span>Дифференциал</span><b></b></div><div class="mfd-row" data-k="ers"><span>Батарея</span><b></b></div><div class="mfd-row" data-k="pitTyre"><span>Пит-стоп: шины</span><b></b></div><div class="mfd-row" data-k="pitWing"><span>Пит-стоп: ремонт</span><b></b></div></div>
     <div id="carStatus" class="panel cut">
       <div class="cs-head"><span id="csComp" class="cmp"></span><span id="csName"></span><span id="csPlan" class="caps"></span></div>

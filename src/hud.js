@@ -177,15 +177,22 @@ export function createHud(track) {
   // план пит-стопа: состав и крыло выбираются кликом или клавишами I и K, пока игрок едет к въезду (L)
   const pitPlanEl = el('pitPlan')
   const ppTyres = el('ppTyres')
-  const ppWing = el('ppWing')
+  const ppFix = el('ppFix')
+  const ppFixOn = ppFix.lastElementChild
+  const ppSub = pitPlanEl.querySelector('.pp-sub')
+  const ppDamage = pitPlanEl.querySelector('.pp-damage')
   let onPitPick = null
-  const ppName = pitPlanEl.querySelector('.pp-name')
-  ppTyres.innerHTML = COMPOUND_ORDER.map((c) => `<button type="button" data-c="${c}" title="${COMPOUNDS[c].name}" style="--c:${COMPOUNDS[c].color}"><i>${COMPOUNDS[c].short}</i></button>`).join('')
+  // короткие имена под кружком: в боксе 264 px пять полных названий не помещаются
+  const SHORT_NAME = { soft: 'Мягкие', medium: 'Средние', hard: 'Твёрдые', intermediate: 'Промеж.', wet: 'Дождь' }
+  ppTyres.innerHTML = COMPOUND_ORDER.map((c) => `<button type="button" data-c="${c}" title="${COMPOUNDS[c].name}" style="--c:${COMPOUNDS[c].color}"><i>${COMPOUNDS[c].short}</i>${SHORT_NAME[c] || COMPOUNDS[c].name}</button>`).join('')
   ppTyres.addEventListener('click', (e) => {
     const b = e.target.closest('button')
     if (b) onPitPick?.('compound', b.dataset.c)
   })
-  ppWing.addEventListener('click', () => onPitPick?.('wing'))
+  ppFix.addEventListener('click', (e) => {
+    const b = e.target.closest('button')
+    if (b) onPitPick?.('wing', b.dataset.fix === '1')
+  })
   let lastCar = 0
   const dmgColor = (d) => (d < 0.15 ? '#22D36B' : d < 0.5 ? '#FFC400' : '#E10600')
   // полоска тормоза в колесе — температура диска: в окне 350–900° прозрачная, холодный — голубой, горячий — оранжевый, перегретый — красный
@@ -295,11 +302,13 @@ export function createHud(track) {
       if (pitPlanEl.hidden === requested) pitPlanEl.hidden = !requested
       if (!requested) return
       for (const b of ppTyres.children) setClass(b, b.dataset.c === plan.compound ? 'on' : '')
-      setText(ppName, 'Шины: ' + COMPOUNDS[plan.compound].name)
       const jobs = damage ? repairList(damage) : []
       const list = jobs.map((j) => j.name.toLowerCase()).join(', ')
-      setText(ppWing, plan.wing ? (jobs.length ? `Ремонт: ${list} · +${repairSeconds(damage)} с` : 'Ремонт: чинить нечего') : jobs.length ? `Без ремонта · повреждено: ${list}` : 'Без ремонта')
-      setText(pitPlanEl.lastElementChild, (toEntry > 0 ? `До въезда ${Math.round(toEntry)} м · ` : '') + 'I шины · K ремонт · L отмена')
+      setClass(ppFix.firstElementChild, plan.wing ? '' : 'on')
+      setClass(ppFixOn, plan.wing ? 'on' : '')
+      setText(ppFixOn, jobs.length ? `Чинить · +${repairSeconds(damage)} с` : 'Чинить')
+      setText(ppDamage, jobs.length ? `Повреждено: ${list}` : 'Повреждений нет')
+      setText(ppSub, (toEntry > 0 ? `До въезда ${Math.round(toEntry)} м — ` : '') + 'автопилот сам заведёт в боксы. Выбор — клавишами или мышью.')
     },
 
     // состояние болида (4 раза в секунду) и пит-лейн
@@ -319,7 +328,8 @@ export function createHud(track) {
             const w = wheelEls[i]
             const gone = d.lost[i]
             setClass(w.tyre, 'tyre' + (gone ? ' gone' : t.puncture ? ' pop' : t.temp < lo ? ' cold' : t.temp > hi ? ' hot' : ''))
-            setText(w.wear, gone ? '' : t.puncture ? 'ПРОК' : Math.round(t.wear * 100) + '%')
+            setText(w.wear, gone ? '' : t.puncture ? '100%' : Math.round(t.wear * 100) + '%') // прокол — «100%» красным (не влезало «ПРОК»)
+            setClass(w.wear, 'wheel-v' + (t.puncture && !gone ? ' pop' : ''))
             setText(w.temp, gone || t.puncture ? '' : Math.round(t.temp) + '°')
             brakePaint(w.brk, v.brakeTemp[i])
           })

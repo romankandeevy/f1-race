@@ -1,7 +1,9 @@
 // Флаги и нейтрализация гонки (Рома 29.10: «чтобы я был пилотом Формулы-1, точь-в-точь»): жёлтые флаги, виртуальная машина безопасности (VSC),
 // машина безопасности (SC) и красный флаг. Без Three.js, проверяется в Node. Решения принимает main.js, ограничения скорости читают боты и игрок.
 //
-// Как в F1 (упрощённо): остановившийся сошедший болид — инцидент. Рядом с трассой — жёлтый флаг на участке и VSC; на асфальте — машина безопасности;
+// Как в F1 (упрощённо): остановившийся сошедший болид — инцидент. Несошедший болид, который стоит вне боксов дольше STUCK_TIME
+// (развернуло, упёрся в стену), — тоже инцидент (Рома 29.10: «ни разу не видел машину безопасности, если сам не сошёл»);
+// поехал дальше — инцидент снят сам, без эвакуатора. Рядом с трассой — жёлтый флаг на участке и VSC; на асфальте — машина безопасности;
 // два остановившихся на асфальте болида одновременно — красный флаг. Пока инцидент не убран эвакуатором, нейтрализация держится; потом ещё SC_END_TIME с — зелёный.
 // Под флагами обгонять нельзя (штраф), под SC и VSC скорость ограничена всем.
 // Красный флаг (Рома 29.10: «возврат в боксы и новый старт с места»): все едут медленно (RED_SPEED) в пит-лейн и встают в боксах — там меняют шины
@@ -20,6 +22,8 @@ const YELLOW_BEFORE = 250 // м до инцидента — жёлтый
 const YELLOW_AFTER = 40 // м после
 const STOP_SPEED = 3 // м/с: ниже — стоит
 const STOP_TIME = 1.5 // с стоит — инцидент
+const STUCK_TIME = 5 // с стоит несошедший болид вне боксов — инцидент
+const MOVING = 8 // м/с: несошедший болид поехал — его инцидент снят
 const SC_DELAY = 3 // с с остановки на асфальте до машины безопасности
 
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x))
@@ -63,21 +67,30 @@ export function createFlags(axis, length, opts = {}) {
       st.t += dt
       const events = []
       for (const c of cars) {
-        if (c.retired && !c.inPit && c.speed < STOP_SPEED && !known.has(c.id)) {
+        // несошедший болид поехал: его инцидент снят (эвакуатор не нужен)
+        const live = st.incidents.find((i) => i.id === c.id && i.live && !i.cleared)
+        if (live && !c.retired && c.speed > MOVING) {
+          live.cleared = true
+          known.delete(c.id)
+          stopT.delete(c.id)
+          continue
+        }
+        if (live && c.retired) live.live = false // стоял и сошёл — теперь за ним эвакуатор
+        if (!c.inPit && c.speed < STOP_SPEED && !known.has(c.id)) {
           const t = (stopT.get(c.id) ?? 0) + dt
           stopT.set(c.id, t)
-          if (t > STOP_TIME) {
+          if (t > (c.retired ? STOP_TIME : STUCK_TIME)) {
             const p = nearest(c.x, c.z)
-            const inc = { id: c.id, s: p.s, l: p.l, onTrack: p.l < p.wl + 1 && p.l > -p.wr - 1, since: st.t, tow: false, cleared: false }
+            const inc = { id: c.id, s: p.s, l: p.l, onTrack: p.l < p.wl + 1 && p.l > -p.wr - 1, since: st.t, tow: false, cleared: false, live: !c.retired }
             st.incidents.push(inc)
             known.add(c.id)
             events.push({ type: 'incident', inc, text: inc.onTrack ? 'Болид остановился на трассе' : 'Болид остановился у трассы' })
           }
-        }
+        } else if (!known.has(c.id)) stopT.delete(c.id)
       }
-      // эвакуатор выезжает не сразу
+      // эвакуатор выезжает не сразу (и только за сошедшим)
       for (const i of active()) {
-        if (!i.tow && st.t - i.since > TOW_DELAY) {
+        if (!i.tow && !i.live && st.t - i.since > TOW_DELAY) {
           i.tow = true
           events.push({ type: 'tow', inc: i })
         }
@@ -106,11 +119,12 @@ export function createFlags(axis, length, opts = {}) {
           st.allInAt = 0
           events.push({ type: 'restart', text: 'Старт с места: болиды на решётке' })
         }
-      } else if (on.length >= 2) {
+      } else if (on.filter((i) => !i.live).length >= 2) {
+        // красный — только за двумя сошедшими на асфальте: вставшие, но живые болиды (развернуло, затор) уедут сами
         st.redSince = st.t
         st.allInAt = 0
         set('red', 'Красный флаг: на трассе два остановившихся болида, гонка остановлена, все в боксы')
-      } else if (on.length === 1 && st.mode !== 'sc') set('sc', 'Машина безопасности: на трассе остановившийся болид, обгон запрещён')
+      } else if (on.length >= 1 && st.mode !== 'sc') set('sc', 'Машина безопасности: на трассе остановившийся болид, обгон запрещён')
       else if (any.length > 0 && st.mode === 'green') set('vsc', 'Виртуальная машина безопасности: болид у трассы, скорость ограничена')
       // инциденты убраны — машина безопасности ещё едет, потом зелёный
       if ((st.mode === 'sc' || st.mode === 'vsc') && active().length === 0) {

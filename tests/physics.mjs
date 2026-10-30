@@ -1339,10 +1339,20 @@ function hitWall(kmhIn, wallDeg) {
     check('после красного флага: один круг у всех, пересечение линии — +1', `a ${la}, b ${lb}, после линии b ${r.car('b').lap}`, la === 3 && lb === 3 && r.car('b').lap === 4)
   }
 
-  // болид в боксах или едущий — не инцидент
+  // болид в боксах, едущий или ненадолго вставший несошедший — не инцидент
   const f5 = createFlags(axisS, L)
-  const ev5 = run2([car('a', 1, 800, { inPit: true }), car('b', 1, 900, { retired: false, speed: 0 })], 8, f5)
-  check('стоящий в боксах или не сошедший болид не вызывает флаги', `событий ${ev5.length}`, ev5.length === 0 && f5.mode === 'green')
+  const ev5 = run2([car('a', 1, 800, { inPit: true }), car('b', 1, 900, { retired: false, speed: 20 }), car('c', 1, 1000, { retired: false, speed: 0 })], 4, f5)
+  check('стоящий в боксах, едущий и вставший на 4 с болид не вызывают флаги', `событий ${ev5.length}`, ev5.length === 0 && f5.mode === 'green')
+  // несошедший болид стоит на трассе дольше 5 с (развернуло, упёрся) — инцидент и машина безопасности, без эвакуатора; поехал — снят
+  {
+    const fs = createFlags(axisS, L)
+    const stuck = car('s', 1, 800, { retired: false, speed: 0 })
+    const evs = run2([stuck], 10, fs)
+    const live = fs.incidents[0]
+    stuck.speed = 20
+    run2([stuck], 1, fs)
+    check('несошедший болид стоит на трассе 10 с: SC без эвакуатора, поехал — инцидент снят', `${evs.map((e) => e.type).join(', ')}; снят: ${live?.cleared}`, evs.some((e) => e.type === 'sc') && !evs.some((e) => e.type === 'tow') && live?.live && live.cleared)
+  }
 }
 
 // 26. Пит-стоп на пит-лейне LUMEN RING. Бот: целиком на автомате — въезд с 220 км/ч, в зоне не больше 80,
@@ -1424,14 +1434,23 @@ function hitWall(kmhIn, wallDeg) {
     check('въезд в пит-лейн только с дороги пит-лейна', `ложных срабатываний у края трассы ${falseHits}, на пит-лейне ${realHit ? 'въезд' : 'нет'}`, falseHits === 0 && realHit)
   }
 }
-// 27. Правило двух составов: без смены шин — дисквалификация, со сменой — нет
+// 27. Правило двух составов: без смены шин — дисквалификация, со сменой — нет; в спринте на 1–2 круга правила нет
 {
-  const race = createRace(1000, [{ id: 'a', name: 'A', player: true, compound: 'medium' }, { id: 'b', name: 'B', compound: 'soft' }], 2)
+  const sprint = createRace(1000, [{ id: 'a', name: 'A', player: true, compound: 'medium' }], 3)
+  const ps = { a: 990 }
+  sprint.update(0, (c) => ps[c.id])
+  sprint.go()
+  for (let t = 0; t < 70; t += 0.05) {
+    ps.a = (ps.a + 50 * 0.05) % 1000
+    sprint.update(0.05, (c) => ps[c.id])
+  }
+  check('гонка на 3 круга: без пит-стопа не дисквалифицируют (правило двух составов — с 5 кругов)', `${sprint.car('a').finished ? 'финиш' : 'едет'}, ${sprint.car('a').dsq ? 'ДСК' : 'зачёт'}`, sprint.car('a').finished && !sprint.car('a').dsq)
+  const race = createRace(1000, [{ id: 'a', name: 'A', player: true, compound: 'medium' }, { id: 'b', name: 'B', compound: 'soft' }], 5)
   const pos = { a: 990, b: 995 }
   race.update(0, (c) => pos[c.id])
   race.go()
   race.pitStop('b', 'medium')
-  for (let t = 0; t < 60; t += 0.05) {
+  for (let t = 0; t < 140; t += 0.05) {
     pos.a = (pos.a + 50 * 0.05) % 1000
     pos.b = (pos.b + 45 * 0.05) % 1000
     race.update(0.05, (c) => pos[c.id])

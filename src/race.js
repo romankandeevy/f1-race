@@ -5,6 +5,10 @@
 // Правила F1: за гонку обязательны два разных состава шин (иначе дисквалификация); отказ — сход.
 // Классификация: финишировавшие → ещё едущие → сошедшие → дисквалифицированные.
 export const RACE_LAPS = 5
+// правило двух составов — с этой длины гонки (Рома 29.10: в гонке на один круг все боты «просто так» заехали в боксы):
+// в короткой гонке пит-стоп ничего не даёт, кроме потери ~20 с; в спринте F1 его тоже нет. С 30.10 — с 5 кругов
+// (Рома получил дисквалификацию в гонке на 3 круга: «что блять??»), и игра предупреждает об этом в гонке (main.js)
+export const TWO_COMPOUND_MIN_LAPS = 5
 
 // entries: [{ id, name, player, compound }] — порядок не важен
 export function createRace(length, entries, laps = RACE_LAPS) {
@@ -52,7 +56,7 @@ export function createRace(length, entries, laps = RACE_LAPS) {
               c.finished = true
               c.finishTime = st.time
               // правило двух составов
-              if (st.laps >= 2 && c.compounds.size === 1 && !c.compounds.has('intermediate') && !c.compounds.has('wet')) c.dsq = true // в дождь правило двух составов не действует (как в F1)
+              if (st.laps >= TWO_COMPOUND_MIN_LAPS && c.compounds.size === 1 && !c.compounds.has('intermediate') && !c.compounds.has('wet')) c.dsq = true // в дождь правило двух составов не действует (как в F1)
               if (c.player) st.playerDone = true
             }
           } else if (c.prevS < length * 0.25 && s > length * 0.75) c.lap-- // проехал линию назад
