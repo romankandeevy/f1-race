@@ -67,7 +67,9 @@ export function pitEntryHit(lane, x, z, yaw) {
   const p = lane.axis[i]
   const q = lane.axis[i + 1]
   const along = Math.sin(yaw) * (q.x - p.x) + Math.cos(yaw) * (q.z - p.z)
-  return d < (p.width ?? 6) / 2 + 0.3 && along > 0.5
+  // ширина: у LUMEN RING в точке `width`, у Marina Bay `width_left`/`width_right` (въезд расширяется от 0 до 13 м)
+  const width = p.width ?? (p.width_left != null ? p.width_left + p.width_right : 6)
+  return d < width / 2 + 0.3 && along > 0.5
 }
 
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t))

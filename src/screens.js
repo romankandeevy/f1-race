@@ -33,7 +33,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const pct = (x) => `${Math.round(x * 100)}%`
 
 // ctx: {
-//   canRace — есть ли трасса с решёткой (на тестовой гонки нет), trackLabel — «LUMEN RING · 3 729 м»,
+//   canRace — есть ли трасса с решёткой (на тестовой гонки нет), trackLabel — «MARINA BAY · 4 940 м»,
 //   session — { mode, level, laps, compound, slot, abs } начальные значения (из прошлого запуска),
 //   info() → { bestLap, bestSectors, pu: { ice, ers, gearbox }, career: { races, wins, podiums, dnf }, livery },
 //   previewCompound(id) — показать шины состава на витрине; showcase(on, shift) — включить витрину; previewLivery(l) — показать ливрею на болиде и сохранить;

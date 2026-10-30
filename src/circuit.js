@@ -1,4 +1,5 @@
-// Настоящая трасса из модели (public/models/track.glb, «LUMEN RING»): картинка, физика и служебные точки.
+// Настоящая трасса из модели: картинка, физика и служебные точки. С 30.10 по умолчанию — public/models/marina.glb
+// (Marina Bay, пока только асфальт, пит-лейн и разметка — окружение будет потом), прежняя — track.glb («LUMEN RING», адрес ?track=lumen).
 // Физика берётся из групп модели по именам:
 //   «Покрытие (коллизия)» и «Газон…» — по чему едут колёса (тип покрытия — по имени детали);
 //   «Поребрики красные/белые» — в модели они в разметке без коллизии, здесь делаем их физическими:
@@ -30,6 +31,14 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
     if (!o.isMesh) return
     o.receiveShadow = true
     o.castShadow = false
+    // у Marina Bay (30.10, вторая версия) в файле нет нормалей — загрузчик тогда рисует гранями; считаем гладкие
+    if (!o.geometry.getAttribute('normal')) {
+      o.geometry.computeVertexNormals()
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+        m.flatShading = false
+        m.needsUpdate = true
+      }
+    }
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
       for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap']) {
         if (m[key]) m[key].anisotropy = maxAniso
@@ -51,6 +60,7 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
   const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
   const surfaceOf = new Map()
   const v = new THREE.Vector3()
+  let lowest = 0 // самая низкая точка покрытия: страховочная земля должна быть ниже
   function addTrimesh(mesh, surface, friction = 1) {
     const pos = mesh.geometry.getAttribute('position')
     const verts = new Float32Array(pos.count * 3)
@@ -59,6 +69,7 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
       verts[i * 3] = v.x
       verts[i * 3 + 1] = v.y
       verts[i * 3 + 2] = v.z
+      if (surface && v.y < lowest) lowest = v.y
     }
     const index = mesh.geometry.index
     const idx = index ? Uint32Array.from(index.array) : Uint32Array.from({ length: pos.count }, (_, i) => i)
@@ -85,9 +96,21 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
   const fence = find('Сетка (без коллизии)')
   for (const m of meshesIn(find('Ограждения (коллизия)'), (o) => fence && isInside(o, fence))) addTrimesh(m, null, 0.3)
 
-  // страховочная земля чуть ниже всего: если между деталями есть щель, болид не провалится
-  const floor = world.createCollider(RAPIER.ColliderDesc.cuboid(3000, 0.5, 3000).setTranslation(0, -0.52, 0).setFriction(1).setCollisionGroups(STATIC_GROUPS), body)
+  // страховочная земля чуть ниже всего: если между деталями есть щель, болид не провалится.
+  // У Marina Bay улицы с горбом: края асфальта на 11 см ниже оси — земля на 2 см ниже самой низкой точки покрытия
+  const floorTop = Math.min(0, lowest) - 0.02
+  const floor = world.createCollider(RAPIER.ColliderDesc.cuboid(3000, 0.5, 3000).setTranslation(0, floorTop - 0.5, 0).setFriction(1).setCollisionGroups(STATIC_GROUPS), body)
   surfaceOf.set(floor.handle, 'grass')
+  // трасса без газона (Marina Bay пока только асфальт): видимая земля под ней, иначе под краем асфальта пустота
+  if (!find('Газон')) {
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), new THREE.MeshLambertMaterial({ color: 0x3d4a35 }))
+    ground.rotation.x = -Math.PI / 2
+    ground.position.y = floorTop - 0.01
+    ground.receiveShadow = true
+    ground.renderOrder = -1
+    ground.material.depthWrite = false
+    scene.add(ground)
+  }
 
   // служебные точки
   const dir = new THREE.Vector3()
@@ -96,7 +119,8 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
     o.getWorldDirection(dir)
     return { x: v.x, y: v.y, z: v.z, yaw: Math.atan2(dir.x, dir.z) }
   }
-  const axis = (find('Ось трассы')?.children || []).map((o) => ({ ...pose(o), ...o.userData }))
+  // по distance_m: в файле Marina Bay точки записаны с конца
+  const axis = (find('Ось трассы')?.children || []).map((o) => ({ ...pose(o), ...o.userData })).sort((a, b) => a.distance_m - b.distance_m)
   const start = find('Старт P1')
   const startPose = start ? pose(start) : axis[0] || { x: 0, z: 0, yaw: 0 }
   // решётка: P1…P20 по порядку (для гонки с ботами)

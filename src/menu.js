@@ -36,7 +36,7 @@ export const KEYS = [
 
 // actions: { setup, restart, settings, mainmenu, telemetry } — что делает пункт;
 // state(): { telemetry, vehicle } — для подписей и экрана «Состояние болида»
-export function createPauseMenu(actions, state) {
+export function createPauseMenu(actions, state, trackName = 'LUMEN RING') {
   const root = document.getElementById('menu')
   const ITEMS = [
     { id: 'resume', label: 'Продолжить', key: 'Esc', about: 'Вернуться на трассу. Гонка стоит на паузе, пока открыто меню.' },
@@ -53,7 +53,7 @@ export function createPauseMenu(actions, state) {
   root.innerHTML = `
     <div class="pause">
       <div class="pause-left">
-        <div class="sheet-kicker">LUMEN RING</div>
+        <div class="sheet-kicker">${trackName}</div>
         <h2 class="sheet-title">Пауза</h2>
         <nav class="pause-items"></nav>
       </div>

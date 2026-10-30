@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { TUNING } from './tuning.js'
 
 const WHEELS = ['FL', 'FR', 'RL', 'RR']
-const MAX_SPIN_PER_FRAME = 0.5 // рад за кадр, ~29°
+const MAX_SPIN_PER_FRAME = 0.3 // рад за кадр, ~17°: меньше половины шага спиц (10 спиц — 36°)
 export const PAINTS = ['#c4101a', '#f07a12', '#0d7a55', '#1f5fbf', '#e9e6df', '#1a1c20']
 
 // Цвет маркировки на боковине по составу, как у Pirelli: мягкие красные, средние жёлтые, твёрдые белые.
@@ -270,6 +270,39 @@ export async function loadCar(url, renderer, onProgress) {
     }
   }
 
+  // Колёса целиком из «ШИНЫ.glb» (Рома 30.10: «взять полностью каждое колесо — со спицами, колодками, со всем»):
+  // public/models/wheels.glb, собирает tools/model/make_wheels.mjs. wheel_spin — что крутится (обод, спицы, ступица с гайкой,
+  // карбоновый тормозной диск), wheel_caliper — суппорт (на стойке, не крутится), *_lo — облегчённые для ботов,
+  // tyre_<состав> — шины пяти составов. Центр — центр колеса, ось X, внешняя сторона +X. Нет файла — колёса из модели болида.
+  let tyreSets = null
+  try {
+    const tg = await new GLTFLoader().loadAsync('/models/wheels.glb')
+    tyreSets = { width: 0.376 }
+    for (const id of ['soft', 'medium', 'hard', 'intermediate', 'wet']) {
+      const n = tg.scene.getObjectByName('tyre_' + id)
+      if (n) tyreSets[id] = n
+    }
+    for (const [key, name] of [['spin', 'wheel_spin'], ['caliper', 'wheel_caliper'], ['spinLo', 'wheel_spin_lo'], ['caliperLo', 'wheel_caliper_lo']])
+      tyreSets[key] = tg.scene.getObjectByName(name)
+    if (tyreSets.soft) {
+      const b = new THREE.Box3().setFromObject(tyreSets.soft)
+      tyreSets.width = b.max.x - b.min.x
+    }
+    tg.scene.traverse((o) => {
+      if (!o.isMesh) return
+      o.castShadow = true
+      o.receiveShadow = true
+      for (const m of [].concat(o.material))
+        for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap']) {
+          if (!m[key]) continue
+          m[key].anisotropy = maxAniso
+          textures.add(m[key])
+        }
+    })
+  } catch {
+    tyreSets = null
+  }
+
   // Картинки текстур нужны только чтобы один раз отправить их в видеокарту. После этого
   // распакованная копия в обычной памяти (~60 МБ) больше не нужна — отпускаем её.
   const liveryBase = materials.paint_livery?.map ? liveryPixels(materials.paint_livery.map) : null
@@ -285,7 +318,7 @@ export async function loadCar(url, renderer, onProgress) {
 
   // заготовка для копий (боты): геометрия и текстуры общие, копируются только узлы
   const template = scene.clone(true)
-  const car = build(scene, carRoot, materials, sidewalls, sidewallMats, liveryBase, decals)
+  const car = build(scene, carRoot, materials, sidewalls, sidewallMats, liveryBase, decals, tyreSets, true)
   // копия болида для бота: свой цвет и свои стоп-сигналы, тени не отбрасывает (дорого)
   car.spawn = (paint) => {
     const copy = template.clone(true)
@@ -306,7 +339,7 @@ export async function loadCar(url, renderer, onProgress) {
     copy.traverse((o) => {
       if (o.isMesh && [].concat(o.material).some((m) => m.name === 'tyre_sidewall_soft')) botSidewalls.push(o)
     })
-    const bot = build(copy, copy.getObjectByName('car_root'), { ...materials, ...own }, botSidewalls, sidewallMats, liveryBase)
+    const bot = build(copy, copy.getObjectByName('car_root'), { ...materials, ...own }, botSidewalls, sidewallMats, liveryBase, [], tyreSets, false)
     bot.setLivery({ primary: paint, secondary: car.defaults.secondary, accent: car.defaults.accent })
     return bot
   }
@@ -339,7 +372,7 @@ function brakeGlowTexture() {
 const GLOW_OUT = 0.21 // м от центра колеса наружу: чуть за плоскостью обода
 const GLOW_SIZE = 0.62 // м
 
-function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liveryBase = null, decals = []) {
+function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liveryBase = null, decals = [], tyreSets = null, shadows = true) {
   const livery = { primary: '#' + (materials.paint?.color.getHexString() ?? 'c8102e'), secondary: '#' + (materials.paint_secondary?.color.getHexString() ?? 'f2f0ea'), tex: null }
   // у колеса центр вращения на оси: оборачиваем его, чтобы отдельно рулить и крутить
   const wheels = WHEELS.map((k) => {
@@ -362,13 +395,74 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
       if (part) camber.attach(part)
     }
     const side = pivot.position.x > 0 ? 1 : -1
+    // колёса из wheels.glb: всё колесо из модели болида (шины, обод, диск) прячем, суппорт и тормозной барабан болида — тоже
+    // (барабан закрыл бы новый диск и суппорт); воздуховод остаётся. Ставим обод с диском, суппорт и пять комплектов шин —
+    // виден комплект текущего состава. Ширина в файле одна, у болида передние уже, задние шире: масштаб по оси.
+    // Правые колёса развёрнуты на 180° (внешняя сторона −X), суппорт справа отражён — стоит там же, где слева (сзади сверху)
+    const tyres = {}
+    if (tyreSets) {
+      node.updateMatrixWorld(true)
+      const inv = new THREE.Matrix4().copy(node.matrixWorld).invert()
+      const box = new THREE.Box3()
+      for (const pre of ['tyre_tread_', 'tyre_sidewall_outer_', 'tyre_sidewall_inner_']) {
+        const o = node.getObjectByName(pre + k)
+        if (!o) continue
+        o.geometry.computeBoundingBox()
+        box.union(o.geometry.boundingBox.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld)))
+        o.visible = false
+      }
+      const width = box.isEmpty() ? tyreSets.width : box.max.x - box.min.x
+      const sx = width / tyreSets.width
+      const old = node.getObjectByName('tyre_soft_' + k)
+      if (old) old.visible = false
+      for (const pre of ['caliper_', 'brake_drum_lip_', 'brake_drum_']) {
+        const part = camber.getObjectByName(pre + k)
+        if (part) part.visible = false
+      }
+      const own = (t) => {
+        t.traverse((o) => {
+          if (!o.isMesh) return
+          if (!shadows) o.castShadow = false
+          // карбоновый диск — материал болида brake_disc (у бота свой): его свечение от нагрева задаёт sync
+          if (materials.brake_disc) o.material = Array.isArray(o.material) ? o.material.map((m) => (m.name === 'brake_disc' ? materials.brake_disc : m)) : o.material.name === 'brake_disc' ? materials.brake_disc : o.material
+        })
+        return t
+      }
+      const spinSrc = shadows ? tyreSets.spin : tyreSets.spinLo || tyreSets.spin
+      if (spinSrc) {
+        const r = own(spinSrc.clone(true))
+        r.position.set(0, 0, 0)
+        r.rotation.set(0, side > 0 ? 0 : Math.PI, 0)
+        r.scale.set(sx, 1, 1)
+        node.add(r)
+      }
+      const calSrc = shadows ? tyreSets.caliper : tyreSets.caliperLo || tyreSets.caliper
+      if (calSrc) {
+        const c = own(calSrc.clone(true))
+        c.position.set(0, 0, 0)
+        c.rotation.set(0, 0, 0)
+        c.scale.set(side * sx, 1, 1)
+        camber.add(c)
+      }
+      for (const id of ['soft', 'medium', 'hard', 'intermediate', 'wet']) {
+        if (!tyreSets[id]) continue
+        const t = tyreSets[id].clone(true)
+        t.position.set(0, 0, 0)
+        t.rotation.set(0, side > 0 ? 0 : Math.PI, 0)
+        t.scale.set(sx, 1, 1)
+        t.visible = id === 'soft'
+        if (!shadows) t.traverse((o) => o.isMesh && (o.castShadow = false))
+        node.add(t)
+        tyres[id] = t
+      }
+    }
     const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: brakeGlowTexture(), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true, opacity: 0 }))
     glow.position.set(side * GLOW_OUT, 0, 0)
     glow.scale.setScalar(GLOW_SIZE)
     glow.visible = false
     glow.renderOrder = 5
     node.add(glow)
-    return { pivot, camber, node, side, glow }
+    return { pivot, camber, node, side, glow, tyres }
   })
 
   const group = new THREE.Group()
@@ -396,8 +490,14 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
 
     // состав шин: цвет маркировки на боковинах (мягкие красные, средние жёлтые, твёрдые белые); вызывать можно каждый кадр
     setCompound(id) {
+      if (current === id) return
+      if (wheels[0].tyres[id]) {
+        current = id
+        for (const w of wheels) for (const [c, t] of Object.entries(w.tyres)) t.visible = c === id
+        return
+      }
       const m = sidewallMats[id] || sidewallMats.soft
-      if (!m || current === id) return
+      if (!m) return
       current = id
       for (const o of sidewalls) o.material = Array.isArray(o.material) ? o.material.map(() => m) : m
     },
@@ -461,10 +561,11 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
         screen.name = 'mirror_screen_' + k
         screen.position.set(ctr.x, ctr.y, box.min.z - 0.002)
         carRoot.add(screen)
-        // камера: из точки зеркала назад, чуть развёрнута наружу (видно заднее колесо и трассу сбоку)
+        // камера: из точки зеркала назад, чуть развёрнута наружу (видно заднее колесо и трассу сбоку). Камера three.js и так
+        // смотрит в −Z, а нос болида — +Z: то есть назад без разворота (30.10 был разворот на 180° — зеркала показывали перед)
         const cam = new THREE.PerspectiveCamera(22, size.x / size.y, 0.3, 400)
         cam.position.set(ctr.x * 1.05, ctr.y + 0.02, box.min.z - 0.03)
-        cam.rotation.set(0, Math.PI - (k === 'L' ? -1 : 1) * 0.12, 0)
+        cam.rotation.set(0, k === 'L' ? -0.12 : 0.12, 0)
         carRoot.add(cam)
         list.push({ rt, cam, screen })
       }
@@ -521,7 +622,7 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
         w.camber.rotation.z = -w.side * pw.camberBody
 
         // Колесо на экране не должно проворачиваться за кадр больше, чем половина шага между
-        // прорезями диска (72° / 2): иначе глаз видит вращение назад или остановку («эффект колеса»)
+        // спицами (36° / 2 у диска из wheels.glb): иначе глаз видит вращение назад или остановку («эффект колеса»)
         const phys = pw.spin
         if (w.lastPhys === undefined) w.lastPhys = phys
         const step = THREE.MathUtils.clamp(phys - w.lastPhys, -MAX_SPIN_PER_FRAME, MAX_SPIN_PER_FRAME)

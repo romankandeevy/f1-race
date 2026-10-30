@@ -63,11 +63,21 @@ async function main() {
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = STEP
   const bar = document.querySelector('#bar i')
-  // настоящая трасса из модели; плоская тестовая — по адресу ?track=test (удобно для настройки физики)
-  const useTest = new URLSearchParams(location.search).get('track') === 'test'
+  // настоящая трасса из модели: с 30.10 — Marina Bay (Рома: «обновить трассу полностью»; пока только асфальт),
+  // прежняя LUMEN RING — по адресу ?track=lumen, плоская тестовая — ?track=test (удобно для настройки физики)
+  // quali — круг пилота с темпом 1 у каждого уровня, с (замер: автопилот ботов, второй круг в одиночку).
+  // Marina Bay, вторая версия (повороты ≥ 22 м): tools/track/lap.mjs (плоская земля) 116,2 / 120,9 / 130,5 с × поправка
+  // на настоящую трассу (горб улиц, высоты) 1,04 / 1,035 / 1,025 — её дал замер в игре на первой версии
+  const TRACKS = {
+    marina: { url: '/models/marina.glb', name: 'MARINA BAY', quali: { light: 133.8, medium: 125.1, hard: 120.8 } },
+    lumen: { url: '/models/track.glb', name: 'LUMEN RING', quali: { light: 80.6, medium: 72.8, hard: 68.9 } },
+  }
+  const trackParam = new URLSearchParams(location.search).get('track')
+  const useTest = trackParam === 'test'
+  const trackInfo = TRACKS[trackParam] || TRACKS.marina
   const track = useTest
     ? buildTrack(scene, RAPIER, world)
-    : await loadCircuit('/models/track.glb', scene, renderer, RAPIER, world, (e) => {
+    : await loadCircuit(trackInfo.url, scene, renderer, RAPIER, world, (e) => {
         if (e.total) bar.style.width = (e.loaded / e.total) * 50 + '%'
       })
   const car = await loadCar('/models/f1.glb', renderer, (e) => {
@@ -90,7 +100,8 @@ async function main() {
   // laps2: с 28.10 считаются границы трассы — старые рекорды со срезками не берём
   const laps = track.axis?.length ? createLaps(track, `f1-race.laps2.${Math.round(track.length)}`) : null
   const ghost = laps ? createGhost(scene, car, `f1-race.laps2.${Math.round(track.length)}.ghost`) : null // призрак лучшего круга
-  const start = track.lamps?.length ? createStart(track.lamps) : null
+  // огни старта: на портале трассы и на табло; у Marina Bay портала пока нет — только табло
+  const start = track.lamps?.length || track.grid?.length ? createStart(track.lamps || []) : null
   let goShownUntil = 0
   const limits = createLimits()
   const LIMIT_WARNINGS = 3 // три предупреждения, дальше +5 с за каждый выезд: в гонке — к итогу, в заезде на время — к кругу
@@ -145,7 +156,7 @@ async function main() {
   let playerSlot = BOT_COUNT // место на решётке: 0 — поул, 11 — последнее
   // квалификация (Рома 29.10): без соперников разгонный круг и два быстрых, в зачёт лучший; решётку строит время, как в F1
   const QUALI_LAPS = 3
-  const QUALI_BASE = { light: 80.6, medium: 72.8, hard: 68.9 } // с: круг LUMEN RING пилота с темпом 1 у каждого уровня (замер ботов)
+  const QUALI_BASE = trackInfo.quali // с: круг пилота с темпом 1 у каждого уровня (замер ботов на этой трассе)
   let quali = null // идёт квалификация: { level, times, seen, text }
   let qualiTime // время игрока после квалификации (null — без времени); undefined — гонка без квалификации
   let qualiFresh = false // квалификация только что кончилась — показать таблицу
@@ -240,6 +251,7 @@ async function main() {
       telemetry: () => telemetry.toggle(),
     },
     () => ({ telemetry: !document.getElementById('telemetry').hidden, vehicle }),
+    useTest ? 'Тестовая трасса' : trackInfo.name,
   )
   function openSetup(fromMenu) {
     setupFromMenu = fromMenu
@@ -273,7 +285,7 @@ async function main() {
   }
   const ui = createScreens({
     canRace: canRace,
-    trackLabel: useTest ? 'Тестовая трасса' : `LUMEN RING · ${Math.round(track.length).toLocaleString('ru-RU')} м`,
+    trackLabel: useTest ? 'Тестовая трасса' : `${trackInfo.name} · ${Math.round(track.length).toLocaleString('ru-RU')} м`,
     session: { level: botLevel === 'off' ? 'medium' : botLevel, compound: startCompound, abs: input.abs },
     info: () => ({ bestLap: laps?.state.bestLap ?? null, bestSectors: laps?.state.bestSectors ?? null, pu: vehicle.pu, career, livery }),
     // витрина — только в главном меню; настройки поверх паузы показываем на фоне самой гонки
@@ -381,7 +393,7 @@ async function main() {
 
   // решётка по квалификации: время игрока и времена ботов (темп пилота от уровня + разброс), места по времени
   function qualiGrid() {
-    const base = (QUALI_BASE[botLevel] * track.length) / 3729
+    const base = QUALI_BASE[botLevel]
     const rows = [{ id: 'player', name: 'ТЫ', paint: livery.primary, player: true, time: qualiTime ?? Infinity }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, time: base / b.pilot.pace + (Math.random() * 0.6 - 0.2) }))]
     rows.sort((a, b) => a.time - b.time)
     rows.forEach((r, i) => {

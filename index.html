@@ -365,12 +365,13 @@
   .sc-foot { margin-top: auto; padding: 18px 0 3vh; display: flex; flex-wrap: wrap; gap: 6px 20px; color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
   .sc-foot kbd { display: inline-block; min-width: 18px; margin-right: 7px; padding: 1px 6px; font: 700 11px var(--font); color: var(--text); border: 1px solid #4A4F58; border-bottom-width: 2px; text-align: center; }
   .sc-rows { display: flex; flex-direction: column; gap: 3px; }
-  .sc-row { appearance: none; display: grid; grid-template-columns: minmax(120px, 1fr) max-content; align-items: center; gap: 14px; width: 100%; box-sizing: border-box; padding: 9px 14px 9px 16px; border: 0; border-left: 4px solid transparent; background: rgba(255, 255, 255, .035); color: #C5C8CD; font: 700 15px var(--font); letter-spacing: .03em; text-transform: uppercase; text-align: left; cursor: default; }
+  .sc-row { appearance: none; display: grid; grid-template-columns: minmax(120px, 1fr) auto; align-items: center; gap: 14px; width: 100%; box-sizing: border-box; padding: 9px 14px 9px 16px; border: 0; border-left: 4px solid transparent; background: rgba(255, 255, 255, .035); color: #C5C8CD; font: 700 15px var(--font); letter-spacing: .03em; text-transform: uppercase; text-align: left; cursor: default; }
   .sc-row.on { background: rgba(255, 255, 255, .1); border-left-color: var(--red); color: var(--text); }
   button.sc-row { cursor: pointer; }
   .sc-row.cta { margin-top: 12px; background: var(--red); color: #fff; font: 900 italic 22px var(--font); padding: 14px 22px; clip-path: polygon(0 0, 100% 0, calc(100% - 14px) 100%, 0 100%); display: block; }
   .sc-row.cta.on { background: var(--text); color: var(--bg); }
-  .sc-seg { display: flex; gap: 3px; justify-content: flex-end; }
+  /* кнопки не шире строки: не влезают — переносятся на вторую строку (шины на старт — пять составов; Рома 30.10: «съехало») */
+  .sc-seg { display: flex; flex-wrap: wrap; gap: 3px; justify-content: flex-end; min-width: 0; }
   .sc-seg button { appearance: none; border: 1px solid #3A3F47; background: transparent; color: var(--muted); padding: 6px 10px; font: 700 13px var(--font); letter-spacing: .03em; cursor: pointer; text-transform: none; white-space: nowrap; }
   .sc-seg button.on { background: var(--text); color: var(--bg); border-color: var(--text); }
   .sc-ctl { display: flex; align-items: center; gap: 12px; }
