@@ -347,6 +347,23 @@
 
   /* ===== Экраны вне гонки (Рома 29.10): главное меню, гараж, настройка гонки, настройки, рекорды, управление ===== */
   body.menu-mode #hud { display: none; }
+  /* ===== Повтор гонки (replay.js) ===== */
+  body.replay-mode #hud, body.replay-mode #results { display: none; }
+  #replayBar { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); width: min(760px, calc(100vw - 32px)); z-index: 9; background: var(--panel); color: var(--text); font-family: var(--font); padding: 10px 14px 12px; user-select: none; }
+  #replayBar[hidden] { display: none; }
+  #replayBar .rp-top { display: flex; align-items: center; gap: 14px; font-size: 14px; font-weight: 700; }
+  #replayBar .rp-tag { background: var(--red); color: #fff; padding: 2px 8px; font-style: italic; font-weight: 900; text-transform: uppercase; letter-spacing: .06em; font-size: 12px; }
+  #replayBar .rp-car { display: flex; align-items: center; gap: 6px; }
+  #replayBar .rp-car::before { content: ''; width: 4px; height: 14px; background: var(--paint, #fff); }
+  #replayBar .rp-cam { color: var(--muted); }
+  #replayBar .rp-time { margin-left: auto; font-variant-numeric: tabular-nums; }
+  #replayBar .rp-seek { width: 100%; margin: 8px 0; accent-color: var(--red); cursor: pointer; }
+  #replayBar .rp-btns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  #replayBar button { appearance: none; border: 0; background: rgba(255, 255, 255, .1); color: var(--text); font: 700 13px var(--font); padding: 6px 10px; cursor: pointer; }
+  #replayBar button:hover { background: var(--text); color: var(--bg); }
+  #replayBar .rp-play { min-width: 70px; }
+  #replayBar .rp-speed { min-width: 38px; text-align: center; font-weight: 700; font-size: 13px; }
+  #replayBar .rp-exit { margin-left: auto; background: var(--red); color: #fff; }
   body.no-minimap #mapbox { display: none; }
   #screens { position: fixed; inset: 0; z-index: 8; pointer-events: none; color: var(--text); font-family: var(--font); user-select: none; }
   #screens[hidden] { display: none; }

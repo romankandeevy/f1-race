@@ -4,6 +4,19 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { TUNING } from './tuning.js'
 
 const WHEELS = ['FL', 'FR', 'RL', 'RR']
+
+// Вмятины (Рома 31.10: «видимые повреждения»): удар мнёт кузов в месте удара — точки модели в шаре вокруг места
+// сдвигаются внутрь по направлению толчка с «мятым» разбросом, нормали наклоняются (свет ложится по-мятому).
+// Детали, которые помялись, получают свою копию геометрии (у ботов она общая), починили в боксах или новый старт — оригинал обратно.
+// Половина переднего крыла, разрушенная на 90%, отваливается (её точки схлопываются), обе — крыло исчезает целиком (как раньше).
+const DENT_SKIP = /^(pivot_|camber_|wheel_|steering_wheel|driver|cam_|mirror)/
+const DENT_ZONE_KEYS = { front: ['wingL', 'wingR'], rear: ['rearWing'], left: ['sideL'], right: ['sideR'] }
+const DENT_GAP = 0.12 // с: при скольжении вдоль стены удары идут подряд — мнём не чаще
+const DENT_MAX = 0.22 // м: глубже одна вмятина не бывает
+const hash = (i) => {
+  const x = Math.sin(i * 12.9898) * 43758.5453
+  return x - Math.floor(x)
+}
 const MAX_SPIN_PER_FRAME = 0.3 // рад за кадр, ~17°: меньше половины шага спиц (10 спиц — 36°)
 export const PAINTS = ['#c4101a', '#f07a12', '#0d7a55', '#1f5fbf', '#e9e6df', '#1a1c20']
 
@@ -12,6 +25,35 @@ export const PAINTS = ['#c4101a', '#f07a12', '#0d7a55', '#1f5fbf', '#e9e6df', '#
 // Рома 29.10: «шины не меняются, хотя на диске I у нас есть модель шин» — та модель (80 МБ, все пять комплектов) в игру не идёт,
 // а перекраска боковины даёт то же самое по виду за пару мегабайт.
 const TYRE_MARK = { soft: null, medium: [255, 196, 0], hard: [244, 244, 242], intermediate: [67, 176, 42], wet: [46, 139, 230] }
+
+// Протектор — матовая чёрная резина, как у слика Pirelli: ровное мелкое зерно без полос и пятен
+function rubberTexture() {
+  const size = 1024
+  const cell = 2
+  const n = size / cell
+  const small = document.createElement('canvas')
+  small.width = small.height = n
+  const sg = small.getContext('2d')
+  const sImg = sg.createImageData(n, n)
+  for (let i = 0; i < n * n; i++) {
+    const v = (Math.random() - 0.5) * 6
+    sImg.data[i * 4] = 28 + v
+    sImg.data[i * 4 + 1] = 28 + v
+    sImg.data[i * 4 + 2] = 30 + v
+    sImg.data[i * 4 + 3] = 255
+  }
+  sg.putImageData(sImg, 0, 0)
+  const c = document.createElement('canvas')
+  c.width = c.height = size
+  const g = c.getContext('2d')
+  g.imageSmoothingEnabled = true
+  g.drawImage(small, 0, 0, size, size)
+  const t = new THREE.CanvasTexture(c)
+  t.wrapS = t.wrapT = THREE.RepeatWrapping
+  t.colorSpace = THREE.SRGBColorSpace
+  t.anisotropy = 8
+  return t
+}
 
 function recolorSidewall(map, rgb) {
   const img = map.image
@@ -330,6 +372,16 @@ export async function loadCar(url, renderer, onProgress) {
       const b = new THREE.Box3().setFromObject(tyreSets.soft)
       tyreSets.width = b.max.x - b.min.x
     }
+    // протектор: матовая резина вместо размазанной картинки из модели (она давала полосы); цвет — из текстуры
+    const rubber = rubberTexture()
+    tg.scene.traverse((o) => {
+      if (!o.isMesh) return
+      for (const m of [].concat(o.material)) {
+        if (!m.name.startsWith('tyre_tread_')) continue
+        m.map = rubber
+        m.color.set(0xffffff)
+      }
+    })
     tg.scene.traverse((o) => {
       if (!o.isMesh) return
       o.castShadow = true
@@ -779,10 +831,166 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
 
   let current = 'soft'
   decalContrast(decals, livery.primary, livery.secondary) // надписи на родной ливрее (Ray-Ban на карбоне крыла) — тоже читаемые
+  // --- вмятины ---
+  let dents = null // [{ o, orig, box, wing, zones: Set }]
+  let dentAt = 0
+  const lostHalf = { wingL: false, wingR: false }
+  const rootInv = new THREE.Matrix4()
+  const toMesh = new THREE.Matrix4()
+  const dc = new THREE.Vector3()
+  const dd = new THREE.Vector3()
+  const dp = new THREE.Vector3()
+  const dn = new THREE.Vector3()
+  const sphere = new THREE.Sphere()
+  function dentTargets() {
+    dents = []
+    carRoot.updateMatrixWorld(true)
+    rootInv.copy(carRoot.matrixWorld).invert()
+    carRoot.traverse((o) => {
+      if (!o.isMesh || !o.geometry?.attributes.position) return
+      let wing = false
+      for (let p = o; p && p !== carRoot; p = p.parent) {
+        if (DENT_SKIP.test(p.name)) return
+        if (p === frontWingNode) wing = true
+      }
+      // наклейки тоже: мнутся вместе с кузовом и отваливаются вместе с половиной крыла
+      o.geometry.computeBoundingBox()
+      const box = o.geometry.boundingBox.clone().applyMatrix4(toMesh.multiplyMatrices(rootInv, o.matrixWorld))
+      dents.push({ o, orig: null, box, wing, zones: new Set() })
+    })
+  }
+  const leftX = () => Math.sign(wheels[0].pivot.position.x) || 1
+  function own(e) {
+    if (e.orig) return
+    e.orig = e.o.geometry
+    e.o.geometry = e.orig.clone()
+    e.basePos = e.orig.attributes.position
+  }
+  // вдавить шар радиусом rad вокруг c (оси болида) на depth по направлению dir (оси болида)
+  function press(c, dir, rad, depth, zone, sag) {
+    sphere.set(c, rad)
+    for (const e of dents) {
+      if (!e.box.intersectsSphere(sphere)) continue
+      // в осях детали: из осей болида в её собственные
+      toMesh.multiplyMatrices(rootInv, e.o.matrixWorld)
+      const sc = toMesh.getMaxScaleOnAxis() || 1
+      const inv = toMesh.clone().invert()
+      const lc = dc.copy(c).applyMatrix4(inv)
+      const ld = dd.copy(dir).transformDirection(inv)
+      const lr = rad / sc
+      const lk = depth / sc
+      const pos = e.o.geometry.attributes.position
+      let touched = false
+      for (let i = 0; i < pos.count; i++) {
+        dp.fromBufferAttribute(pos, i)
+        const d = dp.distanceTo(lc)
+        if (d >= lr) continue
+        if (!touched) {
+          own(e)
+          touched = true
+        }
+        const f = (1 - d / lr) ** 2
+        const k = lk * f * (0.45 + 0.9 * hash(i + pos.count))
+        const p = e.o.geometry.attributes.position
+        p.setXYZ(i, p.getX(i) + ld.x * k, p.getY(i) + ld.y * k - (e.wing && sag ? (sag * f) / sc : 0), p.getZ(i) + ld.z * k)
+        const n = e.o.geometry.attributes.normal
+        if (n) {
+          dn.fromBufferAttribute(n, i)
+          // мятый металл: нормаль уводим вбок на случайный угол, сильнее в центре вмятины
+          dn.x += (hash(i * 3 + 1) - 0.5) * 1.6 * f
+          dn.y += (hash(i * 3 + 2) - 0.5) * 1.6 * f
+          dn.z += (hash(i * 3 + 3) - 0.5) * 1.6 * f
+          dn.normalize()
+          n.setXYZ(i, dn.x, dn.y, dn.z)
+        }
+      }
+      if (touched) {
+        e.zones.add(zone)
+        e.o.geometry.attributes.position.needsUpdate = true
+        if (e.o.geometry.attributes.normal) e.o.geometry.attributes.normal.needsUpdate = true
+        e.o.geometry.computeBoundingSphere()
+      }
+    }
+  }
+  // половина переднего крыла отлетела: её точки схлопываются в одну (треугольники пропадают)
+  function dropWingHalf(sideX) {
+    for (const e of dents) {
+      if (!e.wing) continue
+      own(e)
+      e.zones.add('front')
+      toMesh.multiplyMatrices(rootInv, e.o.matrixWorld)
+      const inv = toMesh.clone().invert()
+      const pos = e.o.geometry.attributes.position
+      const hide = dc.set(sideX * 0.1, 0.1, 2.6).applyMatrix4(inv)
+      for (let i = 0; i < pos.count; i++) {
+        dp.fromBufferAttribute(pos, i).applyMatrix4(toMesh)
+        if (dp.x * sideX > 0.14) pos.setXYZ(i, hide.x, hide.y, hide.z)
+      }
+      pos.needsUpdate = true
+    }
+  }
+  // починили (повреждения зоны снова 0) — у деталей, помятых только там, исходная геометрия
+  function dentRepairs(dm) {
+    for (const k of ['wingL', 'wingR']) {
+      if (dm[k] >= 0.9 && !lostHalf[k] && dm.wingL + dm.wingR < 1.8) {
+        lostHalf[k] = true
+        // wingL — левая половина: та, что со стороны левых колёс
+        dropWingHalf(k === 'wingL' ? leftX() : -leftX())
+      }
+    }
+    for (const e of dents) {
+      if (!e.orig) continue
+      let fixed = true
+      for (const z of e.zones) for (const key of DENT_ZONE_KEYS[z]) if (dm[key] > 0) fixed = false
+      if (dm.chassis > 0 && e.zones.size) fixed = false
+      if (!fixed) continue
+      e.o.geometry.dispose()
+      e.o.geometry = e.orig
+      e.orig = null
+      e.zones.clear()
+    }
+    if (dm.wingL < 0.9) lostHalf.wingL = false
+    if (dm.wingR < 0.9) lostHalf.wingR = false
+  }
+
   const car = {
     group,
     onboard,
     materials,
+
+    // для повтора гонки (replay.js): средний угол передних колёс и вращение колёс на экране
+    wheelPose() {
+      return { steer: wheels[0].pivot.rotation.y, spin: wheels[2].spin || 0 }
+    },
+    setWheelPose(steer, spin) {
+      for (const w of wheels) {
+        if (w === wheels[0] || w === wheels[1]) w.pivot.rotation.y = steer
+        w.node.rotation.x = spin
+      }
+      if (sw) {
+        sw.pivot.quaternion.copy(sw.base).multiply(tmpQ.setFromAxisAngle(Z_AXIS, THREE.MathUtils.clamp((steer / TUNING.steerVisualMax) * 0.42 * WHEEL_TURN, -1.7, 1.7)))
+        poseArms()
+      }
+    },
+
+    // удар (r — результат applyImpact): вмятина в месте удара, глубже — сильнее удар
+    dent(r) {
+      if (!r || r.sev < 0.05) return
+      const now = performance.now() / 1000
+      if (now - dentAt < DENT_GAP) return
+      dentAt = now
+      if (!dents) dentTargets()
+      const lx = leftX()
+      const rnd = Math.random
+      const k = Math.min(1, r.sev)
+      const rad = 0.22 + 0.35 * k
+      const depth = Math.min(DENT_MAX, 0.035 + 0.18 * k)
+      // side > 0 — толкнуло влево, значит удар справа
+      const hitX = r.side > 0 ? -lx : lx
+      if (r.zone === 'front') press(dc.set(hitX * (0.2 + 0.5 * rnd()), 0.12 + 0.15 * rnd(), 2.35 + 0.5 * rnd()).clone(), new THREE.Vector3(-hitX * 0.25, -0.15, -1).normalize(), rad * 1.2, depth, 'front', 0.05 * k)
+      else if (r.zone === 'rear') press(dc.set((rnd() - 0.5) * 0.8, 0.35 + 0.5 * rnd(), -2.3 - 0.3 * rnd()).clone(), new THREE.Vector3(0, -0.1, 1).normalize(), rad, depth, 'rear', 0)
+      else press(dc.set(hitX * 0.8, 0.3 + 0.25 * rnd(), (rnd() - 0.4) * 2.4).clone(), new THREE.Vector3(-hitX, 0, (rnd() - 0.5) * 0.4).normalize(), rad, depth, r.zone, 0)
+    },
 
     setPaint(hex) {
       materials.paint?.color.set(hex)
@@ -1027,6 +1235,7 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
       // разрушенные крылья отваливаются: переднее — обе половины выше 90%, заднее — выше 95%
       const dm = v.damage
       if (frontWingNode) frontWingNode.visible = Math.min(dm.wingL, dm.wingR) < 0.9
+      if (dents) dentRepairs(dm)
       if (rearWingNode) rearWingNode.visible = dm.rearWing < 0.95
       drs.visible = dm.rearWing < 0.95
 

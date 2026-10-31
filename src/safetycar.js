@@ -15,6 +15,12 @@ const OFF_ROAD_TIME = 4 // с: гасит огни, отходит вбок и �
 const ACCEL = 9 // м/с²
 const SHIFT_SPEED = 4 // м/с: уход вбок
 const TO_PIT = 380 // м до въезда в пит-лейн: начинает уходить к нему
+// Объезд болидов (Рома: «машина безопасности едет сквозь болиды»): в физике её нет, поэтому болиды впереди и сбоку она видит сама —
+// впереди ближе LOOK м и в полосе ближе SIDE_GAP вбок — уходит на свободную сторону; места нет — едет за ним со скоростью болида
+const LOOK = 45
+const SIDE_GAP = 2.7 // м центр к центру: машина 2 м, болид 1,9
+const EDGE = 1.3 // м от белой линии
+const AVOID_SHIFT = 6 // м/с: уход вбок при объезде
 
 function buildCar() {
   const g = new THREE.Group()
@@ -69,6 +75,8 @@ export function createSafetyCar(scene, axis, length, lane) {
     }
     return bi
   }
+  const wl = (a) => (a.width_left ?? 6) - EDGE
+  const wr = (a) => (a.width_right ?? 6) - EDGE
   const latOf = (p, a) => (p.x - a.x) * Math.cos(a.yaw) - (p.z - a.z) * Math.sin(a.yaw)
   // въезд и выезд пит-лейна на оси трассы: где и на каком расстоянии вбок
   let entry = { s: 0, l: 0 }
@@ -89,6 +97,76 @@ export function createSafetyCar(scene, axis, length, lane) {
   const st = { phase: 'off', s: 0, l: 0, v: 0, t: 0 }
 
   // между отсчётами оси (шаг 2 м) — интерполяция, иначе на 38 м/с машина дёргалась бы
+  // где болиды относительно машины — по оси трассы (вдоль: на сколько метров впереди по оси, вбок: от оси, как st.l).
+  // В её собственных осях нельзя: в повороте болид впереди в той же полосе казался сбоку, и она въезжала в него
+  const near = []
+  function sense(cars) {
+    near.length = 0
+    if (!cars || !mesh.visible) return
+    const n = axis.length
+    const i0 = Math.round((((st.s % length) + length) % length) / ds)
+    for (const c of cars) {
+      if ((c.x - mesh.position.x) ** 2 + (c.z - mesh.position.z) ** 2 > (LOOK + 10) ** 2) continue
+      let bi = i0
+      let bd = Infinity
+      for (let k = -8; k <= Math.ceil(LOOK / ds) + 4; k++) {
+        const i = (((i0 + k) % n) + n) % n
+        const d = (axis[i].x - c.x) ** 2 + (axis[i].z - c.z) ** 2
+        if (d < bd) {
+          bd = d
+          bi = i
+        }
+      }
+      let along = axis[bi].distance_m - (((st.s % length) + length) % length)
+      if (along > length / 2) along -= length
+      if (along < -length / 2) along += length
+      if (along < -8 || along > LOOK) continue
+      const l = latOf(c, axis[bi])
+      near.push({ along, l, v: c.speed ?? 0 })
+    }
+  }
+  // куда сместиться и до какой скорости ехать, чтобы не въехать ни в кого; want — куда хотела сама
+  let hard = false // кто-то вплотную впереди в полосе: тормозит сильнее
+  function avoid(want, target) {
+    const a = axis[Math.min(axis.length - 1, Math.max(0, Math.round((((st.s % length) + length) % length) / ds)))]
+    const hiL = a ? wl(a) : 5
+    const loL = a ? -wr(a) : -5
+    const blocks = (l, c) => Math.abs(c.l - l) < SIDE_GAP
+    const ahead = near.filter((c) => c.along > 0)
+    const beside = near.filter((c) => c.along <= 0 || c.along < 5.5)
+    // свободна ли полоса l: никого рядом сбоку и впереди в ней
+    const free = (l) => !near.some((c) => blocks(l, c))
+    let l = Math.max(loL, Math.min(hiL, want))
+    if (!free(l)) {
+      // ближайшая свободная полоса по обе стороны (шаг 0,5 м)
+      let best = null
+      for (let d = 0.5; d <= hiL - loL; d += 0.5) {
+        for (const c of [l - d, l + d]) if (c >= loL && c <= hiL && free(c)) best = best ?? c
+        if (best !== null) break
+      }
+      if (best !== null) l = best
+    }
+    // в полосе впереди всё равно кто-то (не успела уйти или места нет) — не догонять его
+    let v = target
+    hard = false
+    for (const c of ahead) {
+      // мешает и тот, кто в полосе сейчас, и тот, кто в полосе, куда уходим
+      const lat = Math.min(Math.abs(c.l - st.l), Math.abs(c.l - l))
+      if (lat > SIDE_GAP) continue
+      const room = c.along - 7
+      // успеть оттормозиться до его скорости: и по запасу, и по тормозному пути
+      v = Math.min(v, Math.max(0, c.v + 0.5 * room), Math.sqrt(c.v * c.v + 2 * ACCEL * Math.max(0, room)))
+      if (c.along < 14) hard = true
+    }
+    // сбоку вплотную — не прижиматься: ширина коридора с той стороны
+    for (const c of beside) {
+      if (Math.abs(c.along) > 5.5) continue
+      if (c.l > st.l) l = Math.min(l, c.l - SIDE_GAP)
+      else l = Math.max(l, c.l + SIDE_GAP)
+    }
+    return { l: Math.max(loL, Math.min(hiL, l)), v }
+  }
+
   function place() {
     const f = Math.min(axis.length - 1.001, Math.max(0, (((st.s % length) + length) % length) / ds))
     const i = Math.floor(f)
@@ -106,6 +184,11 @@ export function createSafetyCar(scene, axis, length, lane) {
 
   return {
     state: st,
+    mesh,
+    // для проверок: кого она видит рядом
+    get near() {
+      return near.slice()
+    },
     get active() {
       return st.phase !== 'off'
     },
@@ -143,8 +226,9 @@ export function createSafetyCar(scene, axis, length, lane) {
 
     // dt — кадр; leaderS — расстояние лидера по оси (null — нет); ending — нейтрализация кончается: уходит в боксы.
     // Возвращает true в кадр, когда зашла в боксы
-    update(dt, leaderS, ending) {
+    update(dt, leaderS, ending, cars) {
       if (st.phase === 'off') return false
+      sense(cars)
       st.t += dt
       let home = false
       if (st.phase === 'out' && leaderS != null) {
@@ -180,12 +264,17 @@ export function createSafetyCar(scene, axis, length, lane) {
         const g = ahead(leaderS, st.s)
         if (g < length / 2) target = Math.max(MIN_SPEED, Math.min(MAX_SPEED, SC_SPEED + 0.12 * (GAP - g)))
       }
-      st.v += Math.max(-ACCEL * dt, Math.min(ACCEL * dt, target - st.v))
-      st.s = (st.s + st.v * dt) % length
       // в сторону: с выезда к середине трассы, перед въездом — к пит-лейну
       let wantL = st.phase === 'in' && ahead(st.s, entry.s) < TO_PIT ? entry.l : st.phase === 'in' || st.phase === 'lead' ? 0 : 3.5
       if (st.phase === 'out' && st.t > 6) wantL = 3.5
-      st.l += Math.max(-SHIFT_SPEED * dt, Math.min(SHIFT_SPEED * dt, wantL - st.l))
+      // у самого въезда в пит-лейн объезд не нужен (там она уже не на трассе)
+      const nearEntry = st.phase === 'in' && ahead(st.s, entry.s) < 60
+      const way = nearEntry ? { l: wantL, v: target } : avoid(wantL, target)
+      target = way.v
+      const shift = way.l !== wantL ? AVOID_SHIFT : SHIFT_SPEED
+      st.v += Math.max(-ACCEL * (hard ? 3 : 1.6) * dt, Math.min(ACCEL * dt, target - st.v))
+      st.s = (st.s + st.v * dt) % length
+      st.l += Math.max(-shift * dt, Math.min(shift * dt, way.l - st.l))
       // въезд в пит-лейн: сначала должен оказаться впереди (если только что проехала его — идёт ещё круг)
       if (st.phase === 'in') {
         const d = ahead(st.s, entry.s)

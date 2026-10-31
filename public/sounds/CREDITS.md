@@ -52,3 +52,10 @@ V10 Lexus LFA (4,8 л, до 9000 об/мин), записанный из физ�
 - metal_1…4 — №798843 «MTLimpt_Metal Impact Medium Bang Resonate x17» (9839964): https://freesound.org/s/798843/ — самые глухие удары.
 - thump_1…5 — №396686 «Foley man hitting a car bonnet various.wav» (255403): https://freesound.org/s/396686/ — удары по капоту.
 - Прежние удары («75 CC0 breaking / falling / hit sfx», rubberduck) удалены: звучали как разбитое стекло и сломанная печенька.
+
+## Свои звуки (31.10, синтез без записей — `tools/sound/make_ambient.mjs`)
+
+- `music/menu.m4a` — музыка меню (64 с, 120 уд/мин, ля минор, петля): бочка, хлопок, хэты, бас, пэд, арпеджио, мелодия.
+- `ui/move|select|back|tab|hover.wav` — звуки интерфейса.
+- `amb/crowd.wav`, `amb/cheer.wav` — трибуны (сотни «голосов»: импульсы связок через форманты гласных), ликование с хлопками и свистом.
+- `amb/paddock.wav` — гаражи: генератор, вентиляторы, компрессор, звяканье инструмента, гайковёрт, голоса.

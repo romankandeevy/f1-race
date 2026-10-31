@@ -187,7 +187,7 @@ export function applyImpact(v, dvx, dvz, rand = Math.random) {
     up('chassis', (dv - CHASSIS_DV) * CHASSIS_K)
     hits.push('Монокок')
   }
-  return { sev, hits, zone, broke, big }
+  return { sev, hits, zone, broke, big, along, side, dv } // along/side — направление толчка в осях болида: куда мнётся кузов (car.dent)
 }
 
 // Повреждённая подвеска (Рома 29.10: «что происходит, когда ломаются палки, которые соединяют колесо с болидом?»).

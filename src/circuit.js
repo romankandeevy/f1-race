@@ -19,6 +19,80 @@ function surfaceByName(name) {
   return 'asphalt' // полотно, зоны безопасности, пит-лейн, пол боксов
 }
 
+// Повтор асфальтовой плитки (4 м) на единицу UV каждой модели: у LUMEN RING одна единица ≈ 8 м, у Marina Bay — метры
+const ASPHALT_UV_REPEAT = { '/models/track.glb': [2, 2], '/models/marina.glb': [0.25, 0.25] }
+
+// Асфальт трассы: ровный тёмно-серый битум, как на фото трасс (Poly Haven, asphalt_track, CC0): мелкое сглаженное
+// зерно и редкие светлые точки крошки. Никаких пятен и крупных узоров: полотно однотонное, отличие — только у гоночной
+// линии (темнее от резины) и за ней. Зерно сглажено (2 px, без попиксельного шума — он рябит на ходу).
+// Точки у края плитки рисуются с другой стороны, поэтому стык не виден.
+function asphaltTexture(repeatX, repeatY) {
+  const size = 512
+  const cell = 2
+  const n = size / cell
+  const small = document.createElement('canvas')
+  small.width = small.height = n
+  const sg = small.getContext('2d')
+  const sImg = sg.createImageData(n, n)
+  for (let i = 0; i < n * n; i++) {
+    const v = (Math.random() - 0.5) * 14
+    sImg.data[i * 4] = 42 + v
+    sImg.data[i * 4 + 1] = 42 + v
+    sImg.data[i * 4 + 2] = 44 + v
+    sImg.data[i * 4 + 3] = 255
+  }
+  sg.putImageData(sImg, 0, 0)
+  const c = document.createElement('canvas')
+  c.width = c.height = size
+  const g = c.getContext('2d')
+  g.imageSmoothingEnabled = true
+  g.drawImage(small, 0, 0, size, size)
+  g.fillStyle = 'rgba(96, 96, 98, 0.3)'
+  for (let k = 0; k < 900; k++) {
+    const x = Math.random() * size
+    const y = Math.random() * size
+    const r = 0.6 + Math.random() * 0.8
+    for (const dx of [-size, 0, size]) {
+      for (const dy of [-size, 0, size]) {
+        g.beginPath()
+        g.arc(x + dx, y + dy, r, 0, Math.PI * 2)
+        g.fill()
+      }
+    }
+  }
+  // рельеф по тому же зерну: матовый битум ловит свет неровностями, поэтому зерно видно и с дистанции камеры
+  const h = g.getImageData(0, 0, size, size).data
+  const nc = document.createElement('canvas')
+  nc.width = nc.height = size
+  const ng = nc.getContext('2d')
+  const nImg = ng.createImageData(size, size)
+  const at = (x, y) => h[(((y + size) % size) * size + ((x + size) % size)) * 4] / 255
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const nx = -(at(x + 1, y) - at(x - 1, y)) * 8
+      const ny = -(at(x, y + 1) - at(x, y - 1)) * 8
+      const len = Math.hypot(nx, ny, 1)
+      const i = (y * size + x) * 4
+      nImg.data[i] = (nx / len * 0.5 + 0.5) * 255
+      nImg.data[i + 1] = (ny / len * 0.5 + 0.5) * 255
+      nImg.data[i + 2] = (1 / len * 0.5 + 0.5) * 255
+      nImg.data[i + 3] = 255
+    }
+  }
+  ng.putImageData(nImg, 0, 0)
+  const normal = new THREE.CanvasTexture(nc)
+  normal.wrapS = normal.wrapT = THREE.RepeatWrapping
+  normal.repeat.set(repeatX, repeatY)
+  normal.anisotropy = 8
+
+  const t = new THREE.CanvasTexture(c)
+  t.wrapS = t.wrapT = THREE.RepeatWrapping
+  t.repeat.set(repeatX, repeatY)
+  t.colorSpace = THREE.SRGBColorSpace
+  t.anisotropy = 8
+  return { map: t, normal }
+}
+
 export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgress) {
   const gltf = await new GLTFLoader().loadAsync(url, onProgress)
   const root = gltf.scene
@@ -43,6 +117,23 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
       for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap']) {
         if (m[key]) m[key].anisotropy = maxAniso
       }
+    }
+  })
+  // асфальт: процедурная текстура вместо плоского цвета из модели; матовый, без бликов
+  const [repeatX, repeatY] = ASPHALT_UV_REPEAT[url] || [1, 1]
+  const asphalt = asphaltTexture(repeatX, repeatY)
+  const doneAsphalt = new Set()
+  root.traverse((o) => {
+    if (!o.isMesh) return
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      if (doneAsphalt.has(m) || !/^(асфальт|asphalt)$/i.test(m.name)) continue
+      doneAsphalt.add(m)
+      m.map = asphalt.map
+      m.normalMap = asphalt.normal
+      m.color.set(0xffffff)
+      m.roughness = 0.95
+      m.metalness = 0
+      m.needsUpdate = true
     }
   })
   // разметка лежит на 1 см выше асфальта — вдали этого мало, добавляем сдвиг глубины

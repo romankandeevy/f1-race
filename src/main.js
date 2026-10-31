@@ -37,6 +37,10 @@ import { repairSeconds, needsRepair } from './wear.js'
 import { createFlags, VSC_SPEED } from './flags.js'
 import { createTow } from './tow.js'
 import { createSafetyCar } from './safetycar.js'
+import { createCrew } from './crew.js'
+import { createReplay } from './replay.js'
+import { createMenuAudio } from './menuaudio.js'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { loadLivery, saveLivery } from './teams.js'
 import { createMotionBlur, BLUR_LEVELS } from './motionblur.js'
 
@@ -230,6 +234,7 @@ async function main() {
   const telemetry = createTelemetry()
   const setupScreen = createSetupScreen()
   const sound = createSound()
+  const menuAudio = createMenuAudio() // музыка меню и звуки интерфейса
 
   // ABS: включает сам игрок (B), выбор помним между заходами
   const ABS_KEY = 'f1-race.abs'
@@ -277,6 +282,51 @@ async function main() {
   const sc = canRace && lane ? createSafetyCar(scene, track.axis, track.length, lane) : null // настоящая машина безопасности перед лидером
   const flags = canRace ? createFlags(track.axis, track.length, { safetyCar: !!sc }) : null
   const tow = canRace ? createTow(scene, track.axis, track.length) : null
+  // трибуны и гаражи для звука: центры трибун из модели трассы (длинные — несколько точек), три бокса пит-лейна
+  {
+    const stands = []
+    const box = new THREE.Box3()
+    const c = new THREE.Vector3()
+    const sz = new THREE.Vector3()
+    scene.traverse((o) => {
+      if (!/трибун|grandstand|paddock_club/i.test(o.name)) return
+      box.setFromObject(o)
+      if (box.isEmpty()) return
+      box.getSize(sz)
+      if (Math.max(sz.x, sz.z) > 500) return // группа «Трибуны» целиком
+      box.getCenter(c)
+      const long = Math.max(sz.x, sz.z)
+      const n = Math.max(1, Math.round(long / 70))
+      for (let i = 0; i < n; i++) {
+        const u = n === 1 ? 0.5 : i / (n - 1)
+        const p = sz.x > sz.z ? { x: box.min.x + sz.x * (0.15 + 0.7 * u), y: c.y, z: c.z } : { x: c.x, y: c.y, z: box.min.z + sz.z * (0.15 + 0.7 * u) }
+        if (!stands.some((s) => Math.hypot(s.x - p.x, s.z - p.z) < 40)) stands.push(p)
+      }
+    })
+    const pits = []
+    if (lane?.boxes.length) {
+      for (const k of [0, Math.floor(lane.boxes.length / 2), lane.boxes.length - 1]) {
+        const b = lane.boxes[k]
+        let i = 0
+        while (i < lane.n - 1 && lane.axis[i].distance_m < b.s) i++
+        pits.push({ x: lane.axis[i].x + (b.off + Math.sign(b.off - lane.fast) * 6) * lane.nx[i], y: lane.axis[i].y ?? 0, z: lane.axis[i].z + (b.off + Math.sign(b.off - lane.fast) * 6) * lane.nz[i] })
+      }
+    }
+    sound.setAmbience({ stands: stands.slice(0, 12), pits })
+  }
+  // повтор гонки (replay.js): запись идёт всю гонку, смотреть — кнопкой «Повтор» на итогах
+  const replay = createReplay({ camera, axis: track.axis, length: track.length })
+  // механики на пит-стопе (crew.js): модель грузится в фоне, без неё пит-стоп как раньше
+  let crew = null
+  if (lane) new GLTFLoader().loadAsync('/models/crew.glb').then((g) => (crew = createCrew(scene, g, lane))).catch(() => {})
+  const crewStops = []
+  function updateCrew(dt) {
+    if (!crew) return
+    crewStops.length = 0
+    if (pitCtl && !pitCtl.drive) crewStops.push({ key: 'player', ctl: pitCtl, box: PLAYER_BOX, group: car.group, color: livery.primary })
+    for (const b of bots?.list ?? []) if (b.pit && !b.gone) crewStops.push({ key: b.id, ctl: b.pit, box: b.box, group: b.car.group, color: b.paint })
+    crew.update(dt, crewStops)
+  }
   let flagAcc = 0
   // отказ техники у соперника (Рома 29.10: «ни разу не видел машину безопасности»; в F1 она выезжает примерно в каждой
   // второй гонке): в гонке от 2 кругов с вероятностью BOT_FAIL_CHANCE у случайного бота в случайный момент гонки отказывает
@@ -631,7 +681,7 @@ async function main() {
     seasonNote = `Этап ${n} из ${season.rounds}: ${r.dnf ? 'без очков' : `${r.pos}-е место, +${r.pts} очк.`} · призовые +${r.prize} — бюджет сборки ${r.budget}`
   }
   // кнопки итогов: в чемпионате — «К чемпионату» вместо «Ещё раз» (этап засчитан)
-  const resultsOpts = () => (seasonRace ? { note: seasonNote, actions: [['season', 'К чемпионату'], ['menu', 'В главное меню']] } : {})
+  const resultsOpts = () => (seasonRace ? { note: seasonNote, actions: [['season', 'К чемпионату'], ['replay', 'Повтор'], ['menu', 'В главное меню']] } : { actions: [['again', 'Ещё раз'], ['replay', 'Повтор'], ['menu', 'В главное меню']] })
 
   function startSession(o) {
     inMenu = false
@@ -803,6 +853,9 @@ async function main() {
         }
       }
     }
+    // повтор: пишем всю гонку с этого старта
+    if (race) replay.begin([{ id: 'player', name: playerName(), paint: livery.primary, car }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, car: b.car }))], sc)
+    else replay.stop()
     // топливо — только в гонке: бак на дистанцию с запасом в круг, у всех одинаковый (в заезде на время бак не тратится)
     const tank = race ? fuelForRace(raceLaps, track.length) : 0
     botFail = null
@@ -861,7 +914,11 @@ async function main() {
         })
       }
     } else if (k === 'blur') post.level = BLUR_LEVELS[v] ?? 0
-    else if (k === 'volume') sound.setVolume(v / 100)
+    else if (k === 'volume') {
+      sound.setVolume(v / 100)
+      menuAudio.setVolume(v / 100)
+    } else if (k === 'music') menuAudio.setMusicVolume(v / 100)
+    else if (k === 'uiSound') menuAudio.setUiVolume(v / 100)
     else if (k === 'engineSound') sound.setEngine(v)
     else if (k === 'mouse') rig.mouseK = v / 100
     else if (k === 'invertY') rig.invertY = v
@@ -881,7 +938,9 @@ async function main() {
   hud.onResultsAction((act) => {
     hud.showResults(null)
     if (online.inRace) online.results(act) // онлайн: «Ещё раз» — в комнату, «В меню» — выйти из комнаты
-    else if (act === 'again') gridStart()
+    else if (act === 'replay') {
+      if (!replay.enter(() => race && hud.showResults(race.state, resultsOpts()))) hud.showResults(race.state, resultsOpts())
+    } else if (act === 'again') gridStart()
     else if (act === 'race') goRace()
     else if (act === 'season') {
       enterMenu()
@@ -916,6 +975,8 @@ async function main() {
 
   let acc = 0
   let last = performance.now()
+  let cheerPos = -1 // место игрока на прошлом кадре — для ликования трибун на обгоне
+  let cheerAt = 0
   let lastInput = input.read()
 
   // разбор контакта двух болидов стюардами: кто виноват, штраф к итоговому времени (в F1: +5 с за заметный контакт, +10 за тяжёлый)
@@ -941,6 +1002,21 @@ async function main() {
     if (selfId !== 'player' && !retired && !pitCtl) test(laps.state.s)
     for (const b of bots?.list ?? []) if (b.id !== selfId && !b.gone && !b.retired && !b.pit) test(bots.distanceOf(b))
     return best === Infinity ? 1000 : best
+  }
+  // болиды на трассе для машины безопасности: она их объезжает (в физике её нет)
+  const scList = []
+  function scCars() {
+    scList.length = 0
+    if (!retired) {
+      const p = vehicle.body.translation()
+      scList.push({ x: p.x, z: p.z, speed: vehicle.state.fwdSpeed })
+    }
+    for (const b of bots?.list ?? []) {
+      if (b.gone) continue
+      const t = b.v.body.translation()
+      scList.push({ x: t.x, z: t.z, speed: b.v.state.fwdSpeed })
+    }
+    return scList
   }
   function botLimit(b) {
     if (!flags || flags.mode === 'green' && !flags.incidents.length) return null
@@ -1055,6 +1131,10 @@ async function main() {
     last = now
 
     for (const code of input.takePressed()) {
+      if (replay.active) {
+        replay.key(code)
+        continue
+      }
       // в главном меню и экранах свои клавиши (стрелки, Enter, Q, E): игровые не трогаем, кроме Esc
       if ((inMenu || ui.isOpen()) && code !== 'Escape') continue
       // в гараже и меню свои клавиши (стрелки, Enter, Q, E) — игровые не трогаем
@@ -1129,7 +1209,7 @@ async function main() {
     // пока открыты гараж или меню — гонка на паузе
     // онлайн-гонку на паузу не поставить (едут все): с открытым меню своя машина просто без газа и руля
     const menuOpen = setupScreen.isOpen() || menu.isOpen() || ui.isOpen()
-    const paused = !online.active && (menuOpen || inMenu || qualiShown)
+    const paused = !online.active && (menuOpen || inMenu || qualiShown || replay.active)
     if (paused) acc = 0
     else acc += dt
     let simDt = 0
@@ -1184,6 +1264,7 @@ async function main() {
             if (v !== vehicle) return
             hud.notify(`Повреждение: ${r.hits.join(', ')}`, true, 3)
             marks.debris.spawn(v, r, livery.primary)
+            car.dent(r)
             sound.hit(r.sev, v.body.translation())
           })
         }
@@ -1234,6 +1315,7 @@ async function main() {
         (v, r) => {
           if (v === vehicle) hud.notify(`Повреждение: ${r.hits.join(', ')}`, true, 3)
           marks.debris.spawn(v, r, v === vehicle ? livery.primary : bots?.list.find((b) => b.v === v)?.paint)
+          ;(v === vehicle ? car : bots?.list.find((b) => b.v === v)?.car)?.dent(r)
           sound.hit(r.sev, v.body.translation()) // громкость и сторона — по месту удара относительно камеры
         },
         (a, b, force) => {
@@ -1427,6 +1509,7 @@ async function main() {
       if (wasWaiting && !start.waiting) {
         goShownUntil = performance.now() + 1500
         race?.go()
+        if (race) sound.cheer(null, 0.8) // огни погасли — трибуны ревут
       }
     }
     if (online.inRace) hud.setLights(Math.max(0, online.lights()), online.lights() >= 0) // огни — с сервера
@@ -1483,8 +1566,16 @@ async function main() {
       }
       const wasDone = race.state.playerDone
       race.update(simDt, (c) => (c.player ? laps.state.s : bots.distanceOf(byId.get(c.id))))
+      // обгон игроком: ближайшие трибуны ликуют (не чаще раза в 6 с)
+      const myPos = race.state.order.findIndex((c) => c.player)
+      if (race.state.running && myPos >= 0 && cheerPos >= 0 && myPos < cheerPos && performance.now() > cheerAt) {
+        sound.cheer(car.group.position, 0.55)
+        cheerAt = performance.now() + 6000
+      }
+      cheerPos = myPos
       if (!wasDone && race.state.playerDone) {
         seasonAward()
+        sound.cheer(car.group.position, 1) // финиш — трибуны у линии ликуют
         hud.showResults(race.state, resultsOpts())
         const me = race.state.cars.find((c) => c.player)
         const pos = race.state.order.indexOf(me) + 1
@@ -1512,13 +1603,14 @@ async function main() {
     // машина безопасности и эвакуатор — после того, как болиды выставлены: кран двигает поднятый болид сам
     if (sc?.active && !online.inRace) {
       // в онлайне машину безопасности ведёт сервер (online.update)
-      const home = sc.update(paused ? 0 : dt, raceLead()?.s ?? null, flags.ending())
+      const home = sc.update(paused ? 0 : dt, raceLead()?.s ?? null, flags.ending(), scCars())
       if (home) {
         flags.scHome()
         hud.notify('Машина безопасности зашла в боксы', false, 4)
       }
     }
     tow?.update(paused ? 0 : dt)
+    if (!online.inRace) updateCrew(paused ? 0 : dt)
     weather.update(paused ? 0 : dt, camera, !inMenu && !paused)
     hud.setWeather(inMenu ? null : weather.label())
     // пошёл дождь или трасса подсохла: подсказка и план пит-стопа на нужные шины
@@ -1552,7 +1644,9 @@ async function main() {
     floodlights.update(car.group)
     const view = input.takeLook()
     if (rig.fresh) post.reset()
-    rig.update(dt, vehicle, paused && !rig.showcase ? null : view)
+    if (replay.active) replay.update(dt)
+    else rig.update(dt, vehicle, paused && !rig.showcase ? null : view)
+    if (race && !paused && !online.inRace) replay.record(dt)
     if (online.inRace) {
       // табло флагов и чёрно-оранжевый флаг — с сервера
       const b = online.banner()
@@ -1578,7 +1672,7 @@ async function main() {
       return p < track.length / 2 ? p : 0
     })(), vehicle.damage, !!driveThrough)
     telemetry.update(vehicle)
-    sound.update(vehicle, lastInput, paused, { bots: rivals, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: online.inRace ? Math.max(0, online.lights()) : start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
+    sound.update(vehicle, lastInput, paused, { carPos: car.group.position, bots: rivals, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: online.inRace ? Math.max(0, online.lights()) : start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
     // зеркала заднего вида: только если их видно (кабина, T-камера) и игра идёт
     mirrors?.update(renderer, scene, !inMenu && (rig.mode === 'onboard' || rig.mode === 'tcam'))
     // из кабины камера — в голове пилота: прячем только голову (шлем, HANS); руки, тело и ноги видно, если посмотреть вниз
@@ -1589,12 +1683,14 @@ async function main() {
     // halo из кабины — по настройке (Камера → Halo из кабины); с остальных камер и в меню — обычный
     car.setHaloView(!inMenu && !rig.showcase && rig.mode === 'onboard' ? settings.get('halo') : 'show')
     car.highlight(inMenu && garageFocus && garageFocus !== 'driver' ? garageFocus : null, now / 1000)
+    // музыка: главное меню, экраны вне гонки и итоги (в повторе — нет)
+    menuAudio.setMusic(!replay.active && (inMenu || !document.getElementById('results').hidden))
     post.render(scene, camera, inMenu || paused)
   }
   requestAnimationFrame(frame)
 
   // для проверок и настройки из консоли браузера
-  window.__game = { THREE, scene, camera, renderer, post, driveInstead, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get pitRequest() { return pitRequest }, online }
+  window.__game = { THREE, scene, camera, renderer, post, driveInstead, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get crew() { return crew }, lane, replay, get pitRequest() { return pitRequest }, online }
 }
 
 main().catch((e) => {

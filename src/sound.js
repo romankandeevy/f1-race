@@ -34,6 +34,14 @@ export const ENGINES = {
   ls: { on: [2500, 3300, 4100, 4900, 5700, 6500], off: [3000, 4700, 6500], bot: [3300, 4900, 6500], min: 2300, max: 6700 },
 }
 const MASTER = 0.55
+// трибуны и гаражи (Рома 31.10: «зрители и звуки паддока»; записи синтезированы — tools/sound/make_ambient.mjs):
+// у каждой трибуны свой источник в пространстве (гул толпы, петля 20 с), у боксов — гул гаражей; трибуны оживают,
+// когда рядом проносится болид, и ликуют на финише и обгонах (sound.cheer)
+const URL_CROWD = '/sounds/amb/crowd.wav'
+const URL_CHEER = '/sounds/amb/cheer.wav'
+const URL_PADDOCK = '/sounds/amb/paddock.wav'
+const CROWD_VOL = 0.55
+const CROWD_NEAR = 160 // м: ближе болид — трибуна громче
 const BOT_VOICES = 4 // столько ближайших соперников слышно полным голосом
 const BOT_FAR = 220 // м — дальше голос выключен
 const C = 343 // м/с, скорость звука (Доплер)
@@ -189,10 +197,35 @@ export function createSound() {
       voices.push({ layers: [], gate, lp, panner })
     }
 
-    n = { load, gain, loop, master, outside, bus, shift, tone, onLayers: [], offLayers: [], idle: null, idleGain, squealF, squealR, road, water, grass, gravel, scrape, scrapeGain, kerbOsc, kerbGain, wind, rain, voices, hitBufs, whiteBuf }
+    // ---- трибуны и гаражи: источники ставит buildAmbience, как только известны места (setAmbience) ----
+    const [crowdBuf, cheerBuf, paddockBuf] = await Promise.all([load(URL_CROWD), load(URL_CHEER), load(URL_PADDOCK)]).catch(() => [null, null, null])
+    const crowdBus = gain(1, outside)
+
+    n = { crowdBuf, cheerBuf, paddockBuf, crowdBus, stands: [], pits: [], load, gain, loop, master, outside, bus, shift, tone, onLayers: [], offLayers: [], idle: null, idleGain, squealF, squealR, road, water, grass, gravel, scrape, scrapeGain, kerbOsc, kerbGain, wind, rain, voices, hitBufs, whiteBuf }
     await buildEngine(engineId)
+    buildAmbience()
     starting = false
     wake()
+  }
+
+  // трибуны и гаражи в пространстве: places = { stands: [{x, y, z}], pits: [{x, y, z}] }
+  let places = null
+  function buildAmbience() {
+    if (!n || !places || !n.crowdBuf) return
+    for (const e of [...n.stands, ...n.pits]) {
+      e.s.stop()
+      e.panner.disconnect()
+    }
+    const emitter = (p, buf, ref, vol) => {
+      const panner = new PannerNode(ctx, { panningModel: 'equalpower', distanceModel: 'inverse', refDistance: ref, rolloffFactor: 1, maxDistance: 2000, positionX: p.x, positionY: (p.y || 0) + 4, positionZ: p.z })
+      panner.connect(n.crowdBus)
+      const g = new GainNode(ctx, { gain: vol })
+      g.connect(panner)
+      const s = n.loop(buf, g, 0.97 + Math.random() * 0.06)
+      return { ...p, panner, g, s, k: 0 }
+    }
+    n.stands = places.stands.map((p) => emitter(p, n.crowdBuf, 30, CROWD_VOL))
+    n.pits = places.pits.map((p) => emitter(p, n.paddockBuf, 10, 0.5))
   }
 
   // петли выбранного мотора: загрузить, плавно заменить старые (старые гаснут и останавливаются)
@@ -398,6 +431,22 @@ export function createSound() {
       if (n) buildEngine(id)
     },
 
+    // места трибун и боксов на трассе (main.js после загрузки трассы)
+    setAmbience(p) {
+      places = p
+      buildAmbience()
+    },
+    // трибуны ликуют: у ближайших к pos (или у всех, если pos нет); k — сила 0…1
+    cheer(pos, k = 1) {
+      if (!n?.cheerBuf || paused || muted || !n.stands.length) return
+      const list = pos ? [...n.stands].sort((a, b) => (a.x - pos.x) ** 2 + (a.z - pos.z) ** 2 - ((b.x - pos.x) ** 2 + (b.z - pos.z) ** 2)).slice(0, 2) : n.stands
+      for (const e of list) {
+        const s = new AudioBufferSourceNode(ctx, { buffer: n.cheerBuf, playbackRate: 0.95 + Math.random() * 0.1 })
+        const g = new GainNode(ctx, { gain: 1.4 * k })
+        s.connect(g).connect(e.panner)
+        s.start(ctx.currentTime + Math.random() * 0.15)
+      }
+    },
     toggleMute() {
       muted = !muted
       wake()
@@ -547,6 +596,14 @@ export function createSound() {
       mem.pitPhase = ph
 
       if (world.camera) updateBots(world.bots, updateListener(world.camera, dt))
+      // трибуны громче, когда рядом болид игрока (как волна по трибуне)
+      if (n.stands.length && world.carPos) {
+        for (const e of n.stands) {
+          const d = Math.hypot(e.x - world.carPos.x, e.z - world.carPos.z)
+          e.k += (smooth(CROWD_NEAR, 25, d) * Math.min(1, speed / 50) - e.k) * Math.min(1, dt * (d < CROWD_NEAR ? 3 : 0.6))
+          set(e.g.gain, CROWD_VOL * (1 + 1.2 * e.k), 0.1)
+        }
+      }
     },
   }
 }

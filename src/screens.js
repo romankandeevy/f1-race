@@ -160,6 +160,8 @@ export function createScreens(ctx) {
       name: 'Звук',
       rows: [
         slider('volume', 'Громкость', 0, 100, 5, () => settings.get('volume'), (v) => settings.set('volume', v), { fmt: (v) => `${v}%`, hint: () => 'Общая громкость мотора и шума гравия. В гонке звук выключает клавиша M.' }),
+        slider('music', 'Музыка в меню', 0, 100, 5, () => settings.get('music'), (v) => settings.set('music', v), { fmt: (v) => (v ? `${v}%` : 'Выкл'), hint: () => 'Музыка в главном меню и на экране итогов. В гонке её нет.' }),
+        slider('uiSound', 'Звуки интерфейса', 0, 100, 5, () => settings.get('uiSound'), (v) => settings.set('uiSound', v), { fmt: (v) => (v ? `${v}%` : 'Выкл'), hint: () => 'Щелчки при переходе по пунктам меню, выборе и шаге назад.' }),
         choice('engineSound', 'Мотор', Object.entries(ENGINE_SOUNDS).map(([v, e]) => ({ v, name: e.name })), () => settings.get('engineSound'), (v) => settings.set('engineSound', v), { hint: () => ENGINE_SOUNDS[settings.get('engineSound')].about + ' Меняется сразу — можно слушать прямо в гонке из паузы.' }),
       ],
     },
