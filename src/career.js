@@ -5,8 +5,9 @@
 // Сборка игрока в сезоне своя (не та, что в свободной игре) и её бюджет растёт: START_BUDGET на старте сезона
 // (стандартная сборка 68 + чуть-чуть) и призовые за каждый этап — тем больше, чем больше очков. Хранится в localStorage.
 // Модуль без Three.js и DOM: только числа (main.js ведёт гонки, screens.js рисует).
-import { makePilots } from './ai.js'
-import { randomBuild, STOCK_BUILD, cleanBuild } from './build.js'
+import { makePilots, levelOf } from './ai.js'
+import { randomBuild, STOCK_BUILD, cleanBuild, buildCost, PARTS } from './build.js'
+import { freshPowerUnit } from './wear.js'
 
 const KEY = 'f1-race.season.v1'
 export const POINTS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1]
@@ -39,6 +40,7 @@ export function newSeason({ rounds = 6, laps = 5, level = 'medium', tracks = ['l
     builds: pilots.map(() => randomBuild(rand)), // сборки соперников (их бюджет — обычный, 100)
     points,
     results: [], // по этапам: { track, order: [id…], pos, pts, prize, dnf }
+    pu: freshPowerUnit(), // силовая установка сезона: износ копится от этапа к этапу (PU_PARTS)
   }
 }
 
@@ -80,6 +82,8 @@ export function loadSeason() {
     const s = JSON.parse(localStorage.getItem(KEY) || 'null')
     if (!s || s.v !== 1 || !Array.isArray(s.calendar)) return null
     s.build = cleanBuild(s.build, s.budget)
+    s.pu = { ...freshPowerUnit(), ...(s.pu ?? {}) }
+    s.level = levelOf(s.level) // «Лёгких» больше нет
     return s
   } catch {
     return null
@@ -92,4 +96,31 @@ export function saveSeason(s) {
   } catch {
     // не сохранилось — сезон живёт до перезагрузки
   }
+}
+
+// Ресурс деталей в сезоне (Рома 31.10): мотор, батарея и коробка изнашиваются от этапа к этапу (в свободной игре — свой износ).
+// Изношенный мотор слабее (после 70%) и может отказать (после 90%) — wear.js. Замена — за деньги сезона: то, что осталось от
+// бюджета после сборки (budget − стоимость сборки); цена — 40% цены детали, не меньше 2. Отказ в гонке — замена сама, сколько хватит.
+export const PU_PARTS = [
+  { id: 'ice', part: 'engine', name: 'Мотор' },
+  { id: 'ers', part: 'ers', name: 'Батарея' },
+  { id: 'gearbox', part: 'gearbox', name: 'Коробка' },
+]
+export const seasonMoney = (s) => s.budget - buildCost(s.build)
+export function replaceCost(s, id) {
+  const pp = PU_PARTS.find((p) => p.id === id)
+  const part = PARTS.find((p) => p.id === pp.part)
+  const opt = part.options.find((o) => o.id === s.build[pp.part]) ?? part.options[0]
+  return Math.max(2, Math.round(opt.cost * 0.4))
+}
+// заменить деталь: forced — отказ (меняют в любом случае, платишь сколько есть); вернёт заплаченное или null — не хватает денег
+export function replacePart(s, id, forced = false) {
+  const cost = replaceCost(s, id)
+  const money = seasonMoney(s)
+  if (!forced && money < cost) return null
+  const paid = Math.max(0, Math.min(cost, money))
+  s.budget -= paid
+  s.pu[id] = 0
+  if (forced || Math.max(s.pu.ice, s.pu.gearbox) < 0.9) s.pu.failed = false
+  return paid
 }

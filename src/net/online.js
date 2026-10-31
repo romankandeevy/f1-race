@@ -23,7 +23,7 @@ const BUILD_MODES = [
 ]
 const START_TYRES = [{ v: 'soft', name: 'Мягкие' }, { v: 'medium', name: 'Средние' }, { v: 'hard', name: 'Жёсткие' }]
 const TOKEN_KEY = 'f1-race.online.token'
-const LEVELS = ['light', 'medium', 'hard']
+const LEVELS = ['medium', 'hard'] // онлайн без «Сложных»: подтягивание знает одного игрока, а в комнате их несколько
 const LAPS = [1, 3, 5, 10]
 const MINUTES = [5, 10, 15, 20] // онлайн-заезд на время: длина сессии
 const OFFSET_DECAY = 10 // 1/с: поправка своей машины гаснет за ~0,1 с

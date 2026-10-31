@@ -30,11 +30,18 @@ import { tyreGrip } from './wear.js'
 const G = 9.81
 
 // passDv — на сколько м/с надо быть быстрее болида впереди, чтобы пойти на обгон
+// Уровни (Рома 31.10: «боты не нравятся»): бывшие средние — теперь «Стандартные», самый простой уровень; бывшие сложные —
+// «Средние»; «Сложные» (pro) — те же, что средние, плюс подтягивание (rubber, bots.js): уехал от них — догоняют, отстал — лидеры
+// чуть сбавляют. Ключи прежние (сохранёнки, сервер, тесты); light в меню больше нет — остался для тестов и замеров.
 export const AI_LEVELS = {
   light: { name: 'Лёгкие', grip: 0.8, brake: 0.7, line: 0.5, look: 1.15, ers: 'balanced', boost: false, defend: false, passDv: 3.2 },
-  medium: { name: 'Средние', grip: 0.91, brake: 0.85, line: 0.85, look: 1.05, ers: 'balanced', boost: true, defend: true, passDv: 2.2 },
-  hard: { name: 'Сложные', grip: 1, brake: 1, line: 1, look: 1, ers: 'hotlap', boost: true, defend: true, passDv: 1.6 },
+  medium: { name: 'Стандартные', grip: 0.91, brake: 0.85, line: 0.85, look: 1.05, ers: 'balanced', boost: true, defend: true, passDv: 2.2 },
+  hard: { name: 'Средние', grip: 1, brake: 1, line: 1, look: 1, ers: 'hotlap', boost: true, defend: true, passDv: 1.6 },
+  pro: { name: 'Сложные', grip: 1, brake: 1, line: 1, look: 1, ers: 'hotlap', boost: true, defend: true, passDv: 1.4, rubber: true },
 }
+// уровни в меню (по возрастанию) и старые сохранённые → нынешние
+export const LEVEL_IDS = ['medium', 'hard', 'pro']
+export const levelOf = (id) => (LEVEL_IDS.includes(id) ? id : 'medium')
 
 const MARGIN = 1.5 // м от белой линии края до центра болида на гоночной линии
 const CAR_W = 2.1 // ширина болида с запасом, м
@@ -249,6 +256,7 @@ export function createAiDriver(line, opts = {}) {
     stuck: 0,
     dist: 0,
     cap: Infinity, // потолок скорости, м/с: машина безопасности, VSC, жёлтый участок, красный флаг (0 — стоять); ставит bots.js
+    rubber: 1, // подтягивание «Сложных» (bots.js): множитель скорости по профилю — болид тоже получает столько же сцепления
     noPass: false, // обгон запрещён (флаги)
     slip: 0,
     lost: opts.idx == null,
@@ -481,7 +489,7 @@ export function createAiDriver(line, opts = {}) {
         if (st.noPass && !isObstacle(b)) return false // под флагами не обгоняем, стоящее объезжаем
         // стоящую или совсем медленную помеху объезжаем всегда; а вот обгонять в куче на разгоне и на малой скорости не начинаем
         if (!isObstacle(b) && (speed < 25 || st.tRun < 6)) return false
-        const vfree = line.speed[at(i0 + Math.round(Math.max(0, b.s) / 2))] * skill * tyreK
+        const vfree = line.speed[at(i0 + Math.round(Math.max(0, b.s) / 2))] * skill * st.rubber * tyreK
         const dv = vfree - b.v
         if (dv < L.passDv) return false
         const tPass = (b.gap + CAR_L + 3) / Math.max(0.6 * dv, 1)
@@ -695,11 +703,11 @@ export function createAiDriver(line, opts = {}) {
       // в потоке идеальной линии нет (чужой воздух, чужие траектории) — чуть меньше предела, чтобы не выносило в поворотах
       // (на прямой не режем: там обгон и не нужно терять в скорости; чем медленнее поворот — тем сильнее)
       const packK = inTraffic ? 1 - (1 - PACK_K) * Math.max(0, Math.min(1, (75 - spd(i0)) / 30)) : 1
-      const now = Math.min(spd(i0) * skill * tyreK * packK, follow, wide, st.cap)
+      const now = Math.min(spd(i0) * skill * st.rubber * tyreK * packK, follow, wide, st.cap)
       let k = i0
       let ahead = 0
       while (ahead < Math.max(8, speed * 0.5)) ahead += line.ds[at(k++)]
-      const later = Math.min(spd(at(k)) * skill * tyreK * packK, follow, st.cap)
+      const later = Math.min(spd(at(k)) * skill * st.rubber * tyreK * packK, follow, st.cap)
       const need = (speed * speed - later * later) / (2 * ahead) // м/с², > 0 — тормозить
       const err = now - speed
       if (speed > now + 0.5 || need > 0.3 * maxDec) {

@@ -7,7 +7,7 @@
 // 62%, прокол или крыло сломано; правило двух составов — не позже предпоследнего круга.
 import { createVehicle, stepVehicle, setGhost } from './vehicle.js'
 import { SETUP_DEFAULT } from './tuning.js'
-import { createRaceLine, createAiDriver, makePilots } from './ai.js'
+import { createRaceLine, createAiDriver, makePilots, AI_LEVELS } from './ai.js'
 import { freshTyres } from './wear.js'
 import { createPitStop, defaultPlan, rainTyreFor } from './pit.js'
 import { retireReason, mechanicalFlag } from './stewards.js'
@@ -29,7 +29,29 @@ const NO_CAR = { spawn: () => ({ group: { visible: true }, snapshot() {}, setCom
 
 // lane — пит-лейн (pit.js) или null; car и scene — картинка (без них боты только едут, для сервера); rand — ГПСЧ (по умолчанию Math.random);
 // builds — у каждого бота своя сборка болида (build.js, в рамках бюджета); без него — у всех стандартная
+// Подтягивание «Сложных» (Рома 31.10: «я легко обгоняю ботов даже на первом круге, и они меня никогда не догонят; если я
+// жёстко обогнал — у меня не должно быть шанса легко выиграть, они должны пытаться догнать; а если я не могу их догнать —
+// чтобы шанс был»). Не по физике: бот, от которого игрок уехал, получает сцепление, мощность и тормоза (и ИИ едет на столько
+// же быстрее по профилю), бот далеко впереди игрока — чуть меньше. Рядом с игроком (−RUBBER_NEAR…+RUBBER_NEAR м) — честно.
+// gap — на сколько метров игрок впереди бота (по прогрессу гонки), отрицательный — бот впереди.
+const RUBBER_NEAR = 25 // м: ближе — без подтягивания, честная борьба
+const RUBBER_UP = 0.07 // до +7% сцепления, мощности и тормозов у отставшего от игрока (круг на ~6% быстрее)
+const RUBBER_UP_AT = 400 // м отставания, на которых прибавка полная
+const RUBBER_DOWN = 0.03 // до −3% у уехавшего вперёд от игрока
+const RUBBER_DOWN_FROM = 80 // м: ближе впереди игрока — не сбавляет (борьба за место)
+const RUBBER_DOWN_AT = 500
+const RUBBER_TAU = 1.5 // с: прибавка меняется плавно
+export function rubberK(gap) {
+  if (gap > RUBBER_NEAR) {
+    const x = Math.min(1, (gap - RUBBER_NEAR) / (RUBBER_UP_AT - RUBBER_NEAR))
+    return 1 + RUBBER_UP * x * (2 - x) // быстро растёт и плавно выходит на полную
+  }
+  if (gap < -RUBBER_DOWN_FROM) return 1 - RUBBER_DOWN * Math.min(1, (-gap - RUBBER_DOWN_FROM) / (RUBBER_DOWN_AT - RUBBER_DOWN_FROM))
+  return 1
+}
+
 export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, lane, rand = Math.random, builds = false }) {
+  let rubberOn = false // уровень с подтягиванием (pro)
   let list = []
   // где на оси трассы начинается пит-лейн
   let entryS = null
@@ -112,6 +134,7 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
     // и своя сборка на весь сезон ({ pilots, builds } по номеру бота), а не новые на каждую гонку
     spawn(level, slots, season = null) {
       api.clear()
+      rubberOn = !!AI_LEVELS[level]?.rubber
       // пилоты вразброс по решётке: имя и цвет — один пилот, номер темпа — новый на каждую гонку
       const pilots = makePilots(BOT_COUNT, rand)
       const order = Array.from({ length: BOT_COUNT }, (_, i) => i)
@@ -134,7 +157,9 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
         scene?.add(c.group)
         const pilot = season ? season.pilots[i] : pilots[slot]
         const d = createAiDriver(createRaceLine(track.axis, level, T, pilot), { T, zone: track.straightZone })
-        return { id: 'bot' + i, name: NAMES[i % NAMES.length], paint: PAINTS[i % PAINTS.length], pilot, build, v, car: c, d, input: d.input, box: slot, stops: 0, planLap, pit: null }
+        // базовые числа для подтягивания: сцепление, мощность, тяга, тормоза (см. rubberK)
+        const T0 = { tireMu: T.tireMu, power: T.power, maxDriveForce: T.maxDriveForce, brakeForce: T.brakeForce }
+        return { id: 'bot' + i, name: NAMES[i % NAMES.length], paint: PAINTS[i % PAINTS.length], pilot, build, v, car: c, d, input: d.input, box: slot, stops: 0, planLap, pit: null, T0, rub: 1 }
       })
     },
 
@@ -191,6 +216,17 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
         }
         const others = pos.filter((_, j) => j !== i && !list[j].gone)
         others.push(...people)
+        // «Сложные»: подтягивание к игроку (race.gapToPlayer — сколько метров игрок впереди этого бота)
+        const want = rubberOn && racing && race?.gapToPlayer ? rubberK(race.gapToPlayer(b.id)) : 1
+        b.rub += (want - b.rub) * Math.min(1, dt / RUBBER_TAU)
+        if (Math.abs(b.rub - 1) > 1e-4 || b.v.T.tireMu !== b.T0.tireMu) {
+          const T = b.v.T
+          T.tireMu = b.T0.tireMu * b.rub
+          T.power = b.T0.power * b.rub
+          T.maxDriveForce = b.T0.maxDriveForce * b.rub
+          T.brakeForce = b.T0.brakeForce * b.rub
+          b.d.state.rubber = Math.sqrt(b.rub) // скорость в повороте растёт как корень из сцепления: иначе ИИ выносит за линию
+        }
         // флаги: потолок скорости и запрет обгона (race.limit — из main.js, там знают флаги и порядок)
         const lim = race?.limit?.(b)
         b.d.state.cap = lim ? lim.cap : Infinity

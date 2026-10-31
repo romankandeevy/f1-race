@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { TUNING } from './tuning.js'
 
 const WHEELS = ['FL', 'FR', 'RL', 'RR']
@@ -177,7 +178,7 @@ function decalInfo(scene, liveryBase) {
     } else if (bm.name === 'paint') bg = { zone: 'primary' }
     else if (bm.name === 'paint_secondary') bg = { zone: 'secondary' }
     else bg = { lum: lumHex('#' + bm.color.getHexString()) * (bm.map ? 0.6 : 1) }
-    out.push({ mat, map: mat.map, canvas: cv, textLum, bg, state: null, tex: {} })
+    out.push({ name: o.name, mat, map: mat.map, canvas: cv, textLum, bg, state: null, tex: {} })
   })
   return out
 }
@@ -344,6 +345,40 @@ export async function loadCar(url, renderer, onProgress) {
     tyreSets = null
   }
 
+  // Пилот (Рома 31.10: «сделай человечка и посади в болид, пусть его тоже кастомить можно», потом «детализированного, и чтобы
+  // руки были у руля — чтобы он реально управлял»): public/models/driver.glb, сделан в Forma («Шлем пилота»). Тело «Пилот»
+  // (шлем, HANS, плечи, ремни) неподвижно; руки — три сегмента («Рука плечо», «Рука предплечье», «Рука кисть»: начало в суставе,
+  // вдоль +Y), их каждый кадр ставит sync — кисти держат ручки руля и поворачиваются вместе с ним. Детали одного материала в
+  // каждой части склеиваются. Перекрашиваются шлем (основа и полоса), комбинезон и перчатки (setDriver).
+  let driverTpl = null
+  try {
+    const dg = await new GLTFLoader().loadAsync('/models/driver.glb')
+    dg.scene.updateMatrixWorld(true)
+    const merged = (root) => {
+      const inv = new THREE.Matrix4().copy(root.matrixWorld).invert()
+      const groups = new Map()
+      root.traverse((o) => {
+        if (!o.isMesh) return
+        const g = o.geometry.clone().applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld))
+        for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal') g.deleteAttribute(k)
+        const name = o.material.name
+        if (!groups.has(name)) groups.set(name, { mat: o.material, geos: [] })
+        groups.get(name).geos.push(g.index ? g.toNonIndexed() : g)
+      })
+      const out = new THREE.Group()
+      for (const [name, { mat, geos }] of groups) {
+        const m = new THREE.Mesh(mergeGeometries(geos), mat)
+        m.name = 'driver_' + name
+        out.add(m)
+      }
+      return out
+    }
+    const part = (name) => dg.scene.getObjectByName(THREE.PropertyBinding.sanitizeNodeName(name)) // пробелы в именах загрузчик меняет на _
+    if (part('Пилот') && part('Рука кисть')) driverTpl = { body: merged(part('Пилот')), upper: merged(part('Рука плечо')), fore: merged(part('Рука предплечье')), hand: merged(part('Рука кисть')) }
+  } catch {
+    driverTpl = null // нет файла — болид без пилота, как раньше
+  }
+
   // Картинки текстур нужны только чтобы один раз отправить их в видеокарту. После этого
   // распакованная копия в обычной памяти (~60 МБ) больше не нужна — отпускаем её.
   const liveryBase = materials.paint_livery?.map ? liveryPixels(materials.paint_livery.map) : null
@@ -359,7 +394,7 @@ export async function loadCar(url, renderer, onProgress) {
 
   // заготовка для копий (боты): геометрия и текстуры общие, копируются только узлы
   const template = scene.clone(true)
-  const car = build(scene, carRoot, materials, sidewalls, sidewallMats, liveryBase, decals, tyreSets, true)
+  const car = build(scene, carRoot, materials, sidewalls, sidewallMats, liveryBase, decals, tyreSets, true, driverTpl)
   // копия болида для бота: свой цвет и свои стоп-сигналы, тени не отбрасывает (дорого)
   car.spawn = (paint) => {
     const copy = template.clone(true)
@@ -380,18 +415,98 @@ export async function loadCar(url, renderer, onProgress) {
     copy.traverse((o) => {
       if (o.isMesh && [].concat(o.material).some((m) => m.name === 'tyre_sidewall_soft')) botSidewalls.push(o)
     })
-    const bot = build(copy, copy.getObjectByName('car_root'), { ...materials, ...own }, botSidewalls, sidewallMats, liveryBase, [], tyreSets, false)
+    const bot = build(copy, copy.getObjectByName('car_root'), { ...materials, ...own }, botSidewalls, sidewallMats, liveryBase, [], tyreSets, false, driverTpl)
     bot.setLivery({ primary: paint, secondary: car.defaults.secondary, accent: car.defaults.accent })
+    // у соперников шлем свой (случайный из палитры), комбинезон в цвет болида
+    const H = ['#f2f2f2', '#15171b', '#ffc400', '#2f7bff', '#e10600', '#22d36b', '#b9bec6', '#f07a12']
+    bot.setDriver({ helmet: H[Math.floor(Math.random() * H.length)], helmet2: paint, suit: paint, gloves: '#15171b' })
     return bot
   }
   return car
 }
 
+// где глаза пилота в driver.glb (середина визора), м; материалы, которые перекрашиваются (свои у каждого болида)
+const DRIVER_EYE = [0, 0.146, 0.08]
+const DRIVER_PAINT = ['helmet_main', 'helmet_stripe', 'driver_suit', 'driver_gloves', 'driver_gloves2']
+// руки (driver.glb): плечевой сустав в осях пилота (левая; правая — зеркально по X), длины плеча и предплечья до запястья,
+// запястье — на grip не доходя до ручки руля
+const ARM = { shoulder: [0.165, -0.085, -0.03], upper: 0.27, fore: 0.25, grip: 0.075 }
+// руль на экране: угол колёс → поворот руля (у F1 ~±90° от упора до упора)
+const WHEEL_TURN = 3.4
+
+// покрытие кузова: undefined — как в модели
+export const FINISHES = {
+  gloss: { name: 'Глянец' },
+  matte: { name: 'Мат', roughness: 0.62, metalness: 0, clearcoat: 0 },
+  metal: { name: 'Металлик', roughness: 0.32, metalness: 0.6, clearcoat: 1, clearcoatRoughness: 0.05 },
+  chrome: { name: 'Хром', roughness: 0.07, metalness: 1, clearcoat: 0 },
+}
+
+// узлы сборки → детали модели (подсветка в гараже)
+const PART_MESHES = {
+  engine: ['sidepods_engine_cover', 'airbox_spine', 'exhaust'],
+  ers: ['sidepods_engine_cover', 'monocoque_nose'],
+  gearbox: ['gearbox_crash_fairing', 'rear_light_housing'],
+  aero: ['front_wing', 'rear_wing', 'drs_flap', 'floor_diffuser'],
+  brakes: ['brake_duct_FL', 'brake_duct_FR', 'brake_duct_RL', 'brake_duct_RR'],
+  cooling: ['sidepod_inlet', 'sidepods_engine_cover'],
+  chassis: ['monocoque_nose', 'headrest', 'halo', 'floor_diffuser'],
+}
+
+// рамка непрозрачных пикселей картинки наклейки
+function alphaBox(cv) {
+  const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data
+  let x0 = cv.width, y0 = cv.height, x1 = 0, y1 = 0
+  for (let y = 0; y < cv.height; y++)
+    for (let x = 0; x < cv.width; x++)
+      if (d[(y * cv.width + x) * 4 + 3] > 100) {
+        if (x < x0) x0 = x
+        if (x > x1) x1 = x
+        if (y < y0) y0 = y
+        if (y > y1) y1 = y
+      }
+  return x1 > x0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : { x: 0, y: 0, w: cv.width, h: cv.height }
+}
+// свой номер в рамке старых цифр: жирный, белый
+function drawNumber(src, box, text) {
+  const cv = document.createElement('canvas')
+  cv.width = src.width
+  cv.height = src.height
+  const c = cv.getContext('2d')
+  let size = box.h * 1.36
+  c.font = `900 ${size}px "Titillium Web", sans-serif`
+  const w = c.measureText(text).width
+  if (w > box.w * 1.15) size *= (box.w * 1.15) / w
+  c.font = `900 ${size}px "Titillium Web", sans-serif`
+  c.fillStyle = '#ffffff'
+  c.textAlign = 'center'
+  c.textBaseline = 'alphabetic'
+  const m = c.measureText(text)
+  const h = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent
+  // в картинке модели цифры лежат вверх ногами (так их кладёт развёртка носа) — рисуем так же
+  c.translate(box.x + box.w / 2, box.y + box.h / 2)
+  c.rotate(Math.PI)
+  c.fillText(text, 0, h / 2 - m.actualBoundingBoxDescent)
+  return cv
+}
+function textureLike(cv, map) {
+  const t = new THREE.CanvasTexture(cv)
+  t.colorSpace = map.colorSpace
+  t.flipY = map.flipY
+  t.wrapS = map.wrapS
+  t.wrapT = map.wrapT
+  t.anisotropy = map.anisotropy
+  t.channel = map.channel
+  return t
+}
+
 // материалы, которые у каждого болида свои: цвет кузова и стоп-сигналы. Свечения раскалённых тормозов нет
 // (Рома 30.10: «убери свечение тормозов вообще, и из кода»): диск и пятно у ступицы больше не светятся
+const tmpQ = new THREE.Quaternion()
+const Z_AXIS = new THREE.Vector3(0, 0, 1)
 const PER_CAR = ['paint', 'paint_livery', 'paint_secondary', 'accent_blue', 'light_rear']
 
-function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liveryBase = null, decals = [], tyreSets = null, shadows = true) {
+function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liveryBase = null, decals = [], tyreSets = null, shadows = true, driverTpl = null) {
   const livery = { primary: '#' + (materials.paint?.color.getHexString() ?? 'c8102e'), secondary: '#' + (materials.paint_secondary?.color.getHexString() ?? 'f2f0ea'), tex: null }
   // у колеса центр вращения на оси: оборачиваем его, чтобы отдельно рулить и крутить
   const wheels = WHEELS.map((k) => {
@@ -487,6 +602,156 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
   // крыла не было, а V-Power и Ray-Ban висели над асфальтом); надписи на закрылке поворачиваются вместе с ним
   if (shadows) attachPartDecals(scene, carRoot, [drs, frontWingNode, rearWingNode])
 
+  // Руль (часть «cockpit»: кнопки, экран, ручки — материалы sw_*; корпус и лепестки сзади — карбон кокпита, их берём по месту:
+  // небольшая карбоновая деталь в коробке руля) — на свою ось, чтобы крутить его вместе с колёсами (Рома 31.10: «крутятся только
+  // кнопки, а сам руль — нет»). Ось — направление наименьшего разброса точек руля (он плоский), к пилоту. Ручки — по краям руля
+  let sw = null
+  {
+    const parts = []
+    const box = new THREE.Box3()
+    const inWheel = (o) => {
+      box.setFromObject(o)
+      const c = box.getCenter(new THREE.Vector3()).applyMatrix4(new THREE.Matrix4().copy(carRoot.matrixWorld).invert())
+      return Math.abs(c.x) < 0.05 && c.y > 0.45 && c.y < 0.66 && c.z > 0.48 && c.z < 0.72 && box.max.x - box.min.x < 0.32
+    }
+    carRoot.updateMatrixWorld(true)
+    carRoot.traverse((o) => {
+      if (!o.isMesh || o.parent?.name !== 'cockpit') return
+      const n = o.material?.name ?? ''
+      if (/^sw_/.test(n) || (/carbon/.test(n) && inWheel(o))) parts.push(o)
+    })
+    if (parts.length) {
+      carRoot.updateMatrixWorld(true)
+      const inv = new THREE.Matrix4().copy(carRoot.matrixWorld).invert()
+      const pts = []
+      const v = new THREE.Vector3()
+      for (const o of parts) {
+        const pos = o.geometry.attributes.position
+        const m = new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld)
+        for (let i = 0; i < pos.count; i += 2) pts.push(v.fromBufferAttribute(pos, i).applyMatrix4(m).clone())
+      }
+      const c = pts.reduce((a, b) => a.add(b), new THREE.Vector3()).multiplyScalar(1 / pts.length)
+      // плоскость руля: X — поперёк болида, «вверх» и ось — из наклона по Y/Z (ковариация в плоскости YZ)
+      let yy = 0, zz = 0, yz = 0
+      for (const q of pts) {
+        yy += (q.y - c.y) ** 2
+        zz += (q.z - c.z) ** 2
+        yz += (q.y - c.y) * (q.z - c.z)
+      }
+      const ang = 0.5 * Math.atan2(2 * yz, yy - zz) // направление наибольшего разброса в YZ — «вверх» по рулю
+      const up = new THREE.Vector3(0, Math.cos(ang), Math.sin(ang))
+      if (up.y < 0) up.negate()
+      const axis = new THREE.Vector3(1, 0, 0).cross(up).normalize() // к пилоту или от него
+      if (axis.z > 0) axis.negate() // к пилоту (он сзади, −Z)
+      let half = 0
+      for (const q of pts) half = Math.max(half, Math.abs(q.x - c.x))
+      const pivot = new THREE.Group()
+      pivot.name = 'steering_wheel'
+      pivot.position.copy(c)
+      pivot.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(up.clone().cross(axis).normalize(), up, axis))
+      carRoot.add(pivot)
+      for (const o of parts) pivot.attach(o)
+      sw = { pivot, base: pivot.quaternion.clone(), axis, grip: half * 0.86 }
+    }
+  }
+
+  // пилот в кокпите: глаза — там, где камера из кабины (cam_onboard, на 7 см ниже — как в camera.js); свои материалы цвета
+  let driver = null
+  const driverMats = {}
+  const arms = []
+  if (driverTpl) {
+    const own = (t) => {
+      const c = t.clone(true)
+      c.traverse((o) => {
+        if (!o.isMesh) return
+        const n = o.material.name
+        if (DRIVER_PAINT.includes(n)) o.material = driverMats[n] ||= o.material.clone()
+        o.castShadow = shadows
+        o.receiveShadow = shadows
+      })
+      return c
+    }
+    driver = new THREE.Group()
+    driver.name = 'driver'
+    driver.add(own(driverTpl.body))
+    const eye = onboard.position
+    driver.position.set(eye.x - DRIVER_EYE[0], eye.y - 0.07 - DRIVER_EYE[1], eye.z - DRIVER_EYE[2])
+    onboard.parent.add(driver)
+    if (sw) {
+      for (const side of [1, -1]) {
+        const a = { side, upper: own(driverTpl.upper), fore: own(driverTpl.fore), hand: own(driverTpl.hand) }
+        // руки — в осях болида (не пилота), чтобы проще считать ручки руля
+        carRoot.add(a.upper, a.fore, a.hand)
+        arms.push(a)
+      }
+    }
+  }
+  // руки к ручкам руля: два сегмента (плечо, предплечье) — локоть наружу и вниз; кисть вдоль руки, обхват — по ручке
+  const ik = { S: new THREE.Vector3(), G: new THREE.Vector3(), W: new THREE.Vector3(), E: new THREE.Vector3(), d: new THREE.Vector3(), pole: new THREE.Vector3(), t: new THREE.Vector3(), x: new THREE.Vector3(), m: new THREE.Matrix4(), Y: new THREE.Vector3(0, 1, 0) }
+  function poseArms() {
+    if (!arms.length) return
+    sw.pivot.updateMatrix()
+    for (const a of arms) {
+      const { S, G, W, E, d, pole, t, x, m, Y } = ik
+      S.set(a.side * ARM.shoulder[0], ARM.shoulder[1], ARM.shoulder[2]).add(driver.position)
+      G.set(-a.side * sw.grip, -0.01, 0).applyMatrix4(sw.pivot.matrix) // ручка руля (X руля смотрит вправо, −X болида)
+      t.set(0, 1, 0).applyQuaternion(sw.pivot.quaternion) // направление ручки (вдоль руля «вверх»)
+      d.subVectors(G, S).normalize()
+      W.copy(G).addScaledVector(d, -ARM.grip) // запястье — чуть не доходя до ручки
+      let dist = W.distanceTo(S)
+      const L1 = ARM.upper
+      const L2 = ARM.fore
+      const k = dist > (L1 + L2) * 0.995 ? dist / ((L1 + L2) * 0.995) : 1 // не достаёт — руки чуть длиннее, без разрыва
+      const l1 = L1 * k
+      const l2 = L2 * k
+      dist = Math.max(Math.abs(l1 - l2) + 1e-3, Math.min(dist, l1 + l2 - 1e-4))
+      d.subVectors(W, S).normalize()
+      const along = (l1 * l1 - l2 * l2 + dist * dist) / (2 * dist)
+      const h = Math.sqrt(Math.max(0, l1 * l1 - along * along))
+      pole.set(a.side, -0.7, -0.2).addScaledVector(d, -pole.set(a.side, -0.7, -0.2).dot(d)).normalize()
+      E.copy(S).addScaledVector(d, along).addScaledVector(pole, h)
+      a.upper.position.copy(S)
+      a.upper.quaternion.setFromUnitVectors(Y, x.subVectors(E, S).normalize())
+      a.upper.scale.set(1, k, 1)
+      a.fore.position.copy(E)
+      a.fore.quaternion.setFromUnitVectors(Y, x.subVectors(W, E).normalize())
+      a.fore.scale.set(1, k, 1)
+      // кисть: Y — от запястья к ручке, X — вдоль ручки (большой палец сверху), Z — третья
+      const hy = x.subVectors(G, W).normalize()
+      const hx = t.clone().multiplyScalar(a.side).addScaledVector(hy, -t.dot(hy) * a.side).normalize()
+      const hz = new THREE.Vector3().crossVectors(hx, hy)
+      m.makeBasis(hx, hy, hz)
+      a.hand.position.copy(W)
+      a.hand.quaternion.setFromRotationMatrix(m)
+    }
+  }
+  poseArms()
+
+  // подсветка узла сборки в гараже (Рома: «камера к детали»): поверх деталей узла — полупрозрачная копия, мерцает
+  const hlMat = new THREE.MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 })
+  const hlCache = {}
+  let hlOn = null
+  const hlMeshes = (id) => {
+    if (hlCache[id]) return hlCache[id]
+    const list = []
+    for (const name of PART_MESHES[id] ?? []) {
+      const node = carRoot.getObjectByName(name)
+      if (!node) continue
+      const own = node.isMesh ? [node] : node.children.filter((c) => c.isMesh)
+      for (const m of own) {
+        const o = new THREE.Mesh(m.geometry, hlMat)
+        o.visible = false
+        o.renderOrder = 5
+        m.add(o)
+        list.push(o)
+      }
+    }
+    return (hlCache[id] = list)
+  }
+
+  // покрытие кузова (глянец, мат, металлик, хром): меняем шероховатость, металл и лак у краски болида
+  const finishBase = new Map()
+
   const prev = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() }
   const cur = { pos: new THREE.Vector3(), quat: new THREE.Quaternion() }
   let first = true
@@ -533,6 +798,65 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
         lm.needsUpdate = true
       }
       decalContrast(decals, primary || livery.primary, secondary || livery.secondary)
+    },
+
+    driver,
+
+    // пилот: helmet — основа шлема, helmet2 — полоса, suit — комбинезон, gloves — перчатки (любой можно не указывать)
+    setDriver({ helmet, helmet2, suit, gloves }) {
+      if (helmet) driverMats.helmet_main?.color.set(helmet)
+      if (helmet2) driverMats.helmet_stripe?.color.set(helmet2)
+      if (suit) driverMats.driver_suit?.color.set(suit)
+      if (gloves) driverMats.driver_gloves?.color.set(gloves)
+      if (suit) driverMats.driver_gloves2?.color.set(suit) // манжеты и накладки перчаток — в цвет комбинезона
+    },
+
+    setFinish(id) {
+      const f = FINISHES[id] ?? FINISHES.gloss
+      for (const n of ['paint', 'paint_livery', 'paint_secondary']) {
+        const m = materials[n]
+        if (!m) continue
+        if (!finishBase.has(m)) finishBase.set(m, { roughness: m.roughness, metalness: m.metalness, clearcoat: m.clearcoat, clearcoatRoughness: m.clearcoatRoughness })
+        const b = finishBase.get(m)
+        m.roughness = f.roughness ?? b.roughness
+        m.metalness = f.metalness ?? b.metalness
+        if (m.isMeshPhysicalMaterial) {
+          m.clearcoat = f.clearcoat ?? b.clearcoat
+          m.clearcoatRoughness = f.clearcoatRoughness ?? b.clearcoatRoughness
+        }
+      }
+    },
+
+    // номер на носу и по бокам (были «16»): рисуем свой поверх места старых цифр, тем же белым — контраст сделает decalContrast
+    setNumber(n) {
+      const list = decals.filter((d) => /number/.test(d.name))
+      if (!list.length) return
+      const text = String(n)
+      for (const d of list) {
+        d.orig ||= { canvas: d.canvas, map: d.map, box: alphaBox(d.canvas) }
+        if (text === '16') {
+          d.canvas = d.orig.canvas
+          d.map = d.orig.map
+        } else {
+          d.canvas = drawNumber(d.orig.canvas, d.orig.box, text)
+          d.map = textureLike(d.canvas, d.orig.map)
+        }
+        d.tex = {}
+        d.state = 'x' // заставить decalContrast поставить картинку заново
+        d.mat.map = d.map
+        d.mat.needsUpdate = true
+      }
+      decalContrast(list, livery.primary, livery.secondary)
+    },
+
+    // подсветить детали узла сборки (engine, aero…) или снять (null); t — время, для мерцания
+    highlight(id, t = 0) {
+      if (hlOn !== id) {
+        if (hlOn) for (const o of hlMeshes(hlOn)) o.visible = false
+        hlOn = id
+        if (id) for (const o of hlMeshes(id)) o.visible = true
+      }
+      if (id) hlMat.opacity = 0.12 + 0.12 * (0.5 + 0.5 * Math.sin(t * 4))
     },
 
     // цвета из самой модели: ими красим соперников, чтобы они не наследовали ливрею игрока
@@ -643,6 +967,13 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
         w.lastPhys = phys
         w.spin = ((w.spin || 0) + step) % (Math.PI * 2)
         w.node.rotation.x = w.spin
+      }
+
+      // руль крутится с колёсами, руки — за ним
+      if (sw) {
+        const steer = (v.wheels[0].steer + v.wheels[1].steer) / 2
+        sw.pivot.quaternion.copy(sw.base).multiply(tmpQ.setFromAxisAngle(Z_AXIS, THREE.MathUtils.clamp(steer * WHEEL_TURN, -1.7, 1.7)))
+        poseArms()
       }
 
       drs.rotation.x = TUNING.aeroOpenRad * v.aero

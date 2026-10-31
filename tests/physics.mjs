@@ -1785,6 +1785,13 @@ function hitWall(kmhIn, wallDeg) {
   check('бот в дождь на дождевых: медленнее и в пределах асфальта', `сухо ${dryLap.lap.toFixed(1)} с, дождь ${wetLap.lap.toFixed(1)} с, запас до края в дождь ${(-wetLap.over).toFixed(2)} м`, wetLap.lap > dryLap.lap * 1.05 && wetLap.lap < dryLap.lap * 1.35 && wetLap.over < 0.3)
 }
 
+// «Сложные» боты: подтягивание к игроку (bots.js rubberK) — рядом честно, отставшим прибавка, уехавшим вперёд чуть меньше
+{
+  const { rubberK } = await import('../src/bots.js')
+  const k = (g) => rubberK(g)
+  check('подтягивание «Сложных»: рядом честно, отставшим до +7%, лидерам до −3%', `0 м ${k(0)}, +20 м ${k(20)}, +150 м ${k(150).toFixed(3)}, +400 м ${k(400).toFixed(3)}, −60 м ${k(-60)}, −500 м ${k(-500).toFixed(3)}`, k(0) === 1 && k(20) === 1 && k(-60) === 1 && k(150) > 1.03 && Math.abs(k(400) - 1.07) < 1e-9 && k(2000) <= 1.07 + 1e-9 && Math.abs(k(-500) - 0.97) < 1e-9 && k(-3000) >= 0.97 - 1e-9)
+}
+
 const failed = results.filter((r) => !r.ok)
 console.log(failed.length ? `\nНе прошло: ${failed.length} из ${results.length}` : `\nВсё прошло: ${results.length} проверок`)
 process.exit(failed.length ? 1 : 0)

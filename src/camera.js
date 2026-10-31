@@ -7,6 +7,7 @@ const AXIS_X = new THREE.Vector3(1, 0, 0)
 const tmpQ = new THREE.Quaternion()
 const tmpQ2 = new THREE.Quaternion()
 const tmpV = new THREE.Vector3()
+const tmpV2 = new THREE.Vector3()
 const velDir = new THREE.Vector3()
 const side = new THREE.Vector3()
 const look = new THREE.Vector3()
@@ -48,6 +49,18 @@ const MODES = [
 // Камеры сзади и на болиде. Все передают, что происходит с болидом:
 // перегрузки (камеру слегка уводит и наклоняет), занос (камера смотрит туда, куда болид летит),
 // неровности (лёгкая тряска на гравии, траве и когда днище чиркает по асфальту).
+// гараж: куда смотреть на деталь — at (точка в осях болида: +Z нос, +X левый борт), angle (0 — спереди, π/2 — слева), lift, dist
+export const GARAGE_FOCUS = {
+  engine: { at: [0, 0.65, -0.7], angle: 2.35, lift: 0.45, dist: 3.6 },
+  ers: { at: [0, 0.45, 0], angle: 1.57, lift: 0.35, dist: 3.4 },
+  gearbox: { at: [0, 0.45, -2], angle: 2.75, lift: 0.3, dist: 3 },
+  aero: { at: [0, 0.45, 0.4], angle: 0.75, lift: 0.5, dist: 6.4 },
+  brakes: { at: [0.75, 0.33, 1.7], angle: 1.05, lift: 0.15, dist: 2.1 },
+  cooling: { at: [0.5, 0.5, -0.2], angle: 1.25, lift: 0.25, dist: 2.7 },
+  chassis: { at: [0, 0.45, 0.4], angle: 1.57, lift: 0.75, dist: 5.4 },
+  driver: { at: [0, 0.8, 0.1], angle: 0.55, lift: 0.25, dist: 1.9 },
+}
+
 export class CameraRig {
   constructor(camera, car) {
     this.camera = camera
@@ -78,6 +91,9 @@ export class CameraRig {
     this.showLift = 0.05
     this.showHold = 0
     this.showDist = 8.4
+    this.focus = null // гараж: деталь крупно (GARAGE_FOCUS), null — обычный облёт
+    this.lookLocal = new THREE.Vector3(0, 0.5, 0) // куда смотрит витрина, в осях болида (плавно)
+    this.distNow = 8.4
     // точки крепления на болиде — пустые узлы рядом с cam_onboard, камера берёт их мировое положение
     this.mounts = {}
     const parent = car.onboard.parent
@@ -140,6 +156,15 @@ export class CameraRig {
       this.mouse.x = this.mouse.y = 0
       this.zoom = 1
     }
+  }
+
+  // гараж: показать деталь крупно (id из GARAGE_FOCUS) или вернуть облёт (null)
+  setFocus(id) {
+    const f = id ? GARAGE_FOCUS[id] ?? null : null
+    if (f === this.focus) return
+    this.focus = f
+    this.showHold = 0
+    if (f) this.zoom = 1
   }
 
   // тряска: шум из синусов разной частоты — плавный, без «телепортов» камеры
@@ -316,14 +341,34 @@ export class CameraRig {
   // Витрина: камера кружит вокруг стоящего болида и чуть покачивается по высоте; мышь облетает вручную, колесо — ближе и дальше.
   // Болид сдвигаем вправо смещением кадра: слева стоит панель меню.
   updateShowcase(dt, car) {
-    if (this.showHold <= 0) this.showAngle += dt * 0.12
+    const f = this.focus
+    const k = 1 - Math.exp(-dt * 3)
+    if (f) {
+      // к детали: угол — в осях болида (0 — спереди, π/2 — с левого борта), пока не крутят мышью
+      tmpV.set(0, 0, 1).applyQuaternion(car.quaternion)
+      const yaw = Math.atan2(tmpV.x, tmpV.z)
+      if (this.showHold <= 0) {
+        let d = yaw + f.angle - this.showAngle
+        d = Math.atan2(Math.sin(d), Math.cos(d))
+        this.showAngle += d * k
+        this.showLift += (f.lift - this.showLift) * k
+      }
+      this.lookLocal.lerp(tmpV2.set(...f.at), k)
+      this.distNow += (f.dist - this.distNow) * k
+    } else {
+      if (this.showHold <= 0) this.showAngle += dt * 0.12
+      this.lookLocal.lerp(tmpV2.set(0, 0.5, 0), k)
+      this.distNow += (this.showDist - this.distNow) * k
+    }
     const a = this.showAngle
     const lift = this.showLift
-    const dist = this.showDist * this.zoom
+    const dist = this.distNow * this.zoom
     const horiz = Math.cos(Math.max(0, lift))
-    this.camera.position.set(car.position.x + Math.sin(a) * dist * horiz, car.position.y + 1.25 + Math.sin(lift) * dist + Math.sin(this.t * 0.35) * 0.06, car.position.z + Math.cos(a) * dist * horiz)
+    // точка взгляда — в осях болида; камера кружит вокруг неё
+    look.copy(this.lookLocal).applyQuaternion(car.quaternion).add(car.position)
+    if (!f) look.y = car.position.y + this.lookLocal.y
+    this.camera.position.set(look.x + Math.sin(a) * dist * horiz, look.y + 0.75 + Math.sin(lift) * dist - (f ? 0.75 : 0) + Math.sin(this.t * 0.35) * 0.06, look.z + Math.cos(a) * dist * horiz)
     this.camera.position.y = Math.max(this.camera.position.y, 0.35)
-    look.set(car.position.x, car.position.y + 0.5, car.position.z)
     this.camera.lookAt(look)
     this.setFov(34)
     const w = innerWidth

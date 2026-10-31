@@ -132,6 +132,22 @@ export function buildStats(build) {
   }
 }
 
+// Прогноз круга (Рома 31.10, гараж: «что даёт деталь на конкретной трассе»). Замер: круг сложного бота с каждой деталью
+// по отдельности (остальное — стандарт), плоская земля по оси трассы, без износа и нагрева (скрипт — как tools/track/lap.mjs
+// с buildTuning). Разница складывается: проверено на трёх полных сборках — ошибка до 0,15 с. base — круг стандартного болида.
+export const LAP_DELTA = {
+  lumen: { base: 68.95, parts: { engine: { durable: 0.104, boost: -0.421, quali: -0.667 }, ers: { light: -0.075, big: 0.079, punch: 0.017 }, gearbox: { short: -0.421, long: 0.433, seamless: -0.337 }, aero: { low: 0.896, high: -0.917, efficient: -1.467 }, brakes: { strong: -0.129, cool: 0.05 }, cooling: { tight: -0.075, big: 0.058 }, chassis: { light: -0.033, strong: 0.062 } } },
+  marina: { base: 116.22, parts: { engine: { durable: 0.025, boost: -0.696, quali: -1.146 }, ers: { light: -0.167, big: 0.254, punch: 0.046 }, gearbox: { short: -1.204, long: 0.975, seamless: -0.683 }, aero: { low: 0.662, high: -0.75, efficient: -1.287 }, brakes: { strong: -0.117, cool: 0.079 }, cooling: { tight: -0.046, big: 0.075 }, chassis: { light: -0.083, strong: 0.258 } } },
+}
+// круг с этой сборкой на трассе: { time, delta } (секунды, delta — к стандартному болиду); нет замера — null
+export function lapForecast(build, track) {
+  const t = LAP_DELTA[track]
+  if (!t) return null
+  let delta = 0
+  for (const p of PARTS) delta += t.parts[p.id]?.[optionOf(p, build?.[p.id]).id] ?? 0
+  return { time: t.base + delta, delta }
+}
+
 // случайная сборка в рамках бюджета (боты): каждый узел по очереди, дорогие — реже; не влезла — стандарт
 export function randomBuild(rand = Math.random) {
   for (let tries = 0; tries < 20; tries++) {

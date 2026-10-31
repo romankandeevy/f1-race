@@ -8,7 +8,7 @@ import { loadCircuit } from './circuit.js'
 import { loadCar, PAINTS } from './car.js'
 import { createVehicle, stepVehicle, collectImpacts, setGhost, applyTuning } from './vehicle.js'
 import { loadBuild, saveBuild, buildTuning, STOCK_BUILD, BUDGET } from './build.js'
-import { newSeason, loadSeason, saveSeason, applyResult, nextRound } from './career.js'
+import { newSeason, loadSeason, saveSeason, applyResult, nextRound, replacePart } from './career.js'
 import { CameraRig } from './camera.js'
 import { createHud, createTelemetry } from './hud.js'
 import { scanCar } from './carScan.js'
@@ -25,7 +25,7 @@ import { createStart } from './start.js'
 import { createPauseMenu } from './menu.js'
 import { createBots, BOT_COUNT, NAMES as BOT_NAMES, PAINTS as BOT_PAINTS } from './bots.js'
 import { createRace } from './race.js'
-import { AI_LEVELS } from './ai.js'
+import { AI_LEVELS, levelOf } from './ai.js'
 import { wheelsOut, createLimits } from './limits.js'
 import { COMPOUNDS, COMPOUND_ORDER, freshTyres, freshDamage, freshPowerUnit, freshBrakes, setFuel, fuelForRace, FUEL_PER_KM } from './wear.js'
 import { createPitLane, pitEntryHit, createPitStop, defaultPlan, pitLimiter, rainTyreFor } from './pit.js'
@@ -76,8 +76,8 @@ async function main() {
   // Marina Bay, вторая версия (повороты ≥ 22 м): tools/track/lap.mjs (плоская земля) 116,2 / 120,9 / 130,5 с × поправка
   // на настоящую трассу (горб улиц, высоты) 1,04 / 1,035 / 1,025 — её дал замер в игре на первой версии
   const TRACKS = {
-    lumen: { url: '/models/track.glb', name: 'LUMEN RING', kind: 'Загородная', km: '3,7 км', quali: { light: 80.6, medium: 72.8, hard: 68.9 }, about: 'Широкие быстрые повороты, за поребриками гравий и трава — ошибки прощает. Круг около 1:10.' },
-    marina: { url: '/models/marina.glb', name: 'MARINA BAY', kind: 'Городская · Сингапур', km: '4,9 км', quali: { light: 133.8, medium: 125.1, hard: 120.8 }, about: '19 медленных поворотов, стены вплотную — ошибка стоит удара. Сложная, для опытных. Круг около 2:00.' },
+    lumen: { url: '/models/track.glb', name: 'LUMEN RING', kind: 'Загородная', km: '3,7 км', quali: { light: 80.6, medium: 72.8, hard: 68.9, pro: 68.9 }, about: 'Широкие быстрые повороты, за поребриками гравий и трава — ошибки прощает. Круг около 1:10.' },
+    marina: { url: '/models/marina.glb', name: 'MARINA BAY', kind: 'Городская · Сингапур', km: '4,9 км', quali: { light: 133.8, medium: 125.1, hard: 120.8, pro: 120.8 }, about: '19 медленных поворотов, стены вплотную — ошибка стоит удара. Сложная, для опытных. Круг около 2:00.' },
   }
   const TRACK_KEY = 'f1-race.track'
   const trackParam = new URLSearchParams(location.search).get('track')
@@ -119,6 +119,8 @@ async function main() {
   let seasonRound = -1 // номер этапа, который сейчас едем (очки — один раз за этап)
   let seasonNote = null // строка про очки и призовые на экране итогов
   let buildMode = 'free'
+  let garageFocus = null // что гараж показывает крупно (узел сборки, 'driver') — подсветка в кадре
+  let testReturn = null // обкатка из гаража: куда вернуться (стек экранов)
   const useBuild = (b) => applyTuning(vehicle, buildTuning(b, TUNING.setup))
   useBuild(build)
   const rig = new CameraRig(camera, car)
@@ -154,7 +156,12 @@ async function main() {
   } catch {
     startCompound = 'medium'
   }
+  let freePU = null // в гонке чемпионата vehicle.pu — силовая установка сезона, своя (свободной игры) лежит здесь
   const savePU = () => {
+    if (freePU) {
+      if (season) saveSeason(season) // season.pu — тот же объект, что vehicle.pu
+      return
+    }
     try {
       localStorage.setItem(PU_KEY, JSON.stringify(vehicle.pu))
     } catch {
@@ -213,7 +220,7 @@ async function main() {
     vehicle.body.setEnabled(true)
   }
   const idOf = (v) => (v === vehicle ? 'player' : bots?.list.find((b) => b.v === v)?.id)
-  const nameOf = (id) => (id === 'player' ? 'ТЫ' : race?.car(id)?.name ?? id)
+  const nameOf = (id) => (id === 'player' ? playerName() : race?.car(id)?.name ?? id)
   const lapsLeft = () => (race ? Math.max(0, race.state.laps - race.car('player').lap) : raceLaps)
   const events = new RAPIER.EventQueue(true) // удары по кузовам → повреждения
   const telemetry = createTelemetry()
@@ -232,7 +239,15 @@ async function main() {
 
   // ливрея: команда и два цвета — выбор в гараже (teams.js), помним между заходами
   let livery = loadLivery()
-  car.setLivery(livery)
+  // всё, что видно: цвета и покрытие кузова, пилот, номер (номер — когда загрузится шрифт)
+  const applyLook = (l) => {
+    car.setLivery(l)
+    car.setFinish(l.finish)
+    car.setDriver(l)
+    document.fonts.load('900 100px "Titillium Web"').then(() => car.setNumber(livery.number), () => car.setNumber(livery.number))
+  }
+  applyLook(livery)
+  const playerName = () => livery.tag || 'ТЫ' // три буквы из гаража (вкладка «Пилот»)
   let paintIndex = Math.max(0, PAINTS.findIndex((c) => c.toLowerCase() === livery.primary.toLowerCase()))
   let muted = false
   // P по ходу гонки листает цвет кузова; остальная ливрея не меняется
@@ -244,10 +259,10 @@ async function main() {
 
   // соперники: выкл — заезд на время; light / medium / hard — гонка с ботами (выбор помним)
   const BOTS_KEY = 'f1-race.bots'
-  const BOT_LEVELS = ['off', 'light', 'medium', 'hard']
   let botLevel = 'medium'
   try {
-    botLevel = BOT_LEVELS.includes(localStorage.getItem(BOTS_KEY)) ? localStorage.getItem(BOTS_KEY) : 'medium'
+    const saved = localStorage.getItem(BOTS_KEY)
+    botLevel = saved === 'off' ? 'off' : levelOf(saved) // «Лёгких» больше нет — были они, станут «Стандартные»
   } catch {
     botLevel = 'medium'
   }
@@ -354,7 +369,7 @@ async function main() {
     },
     previewLivery: (l) => {
       livery = l
-      car.setLivery(l)
+      applyLook(l)
       saveLivery(l)
     },
     // сборка болида в гараже: сразу в физику (кроме онлайн-гонки — там сборку задаёт комната)
@@ -385,7 +400,22 @@ async function main() {
         saveSeason(null)
       },
       play: () => playSeasonRound(),
-      who: (id) => (id === 'player' ? { name: 'ТЫ', paint: livery.primary } : { name: BOT_NAMES[Number(id.slice(3)) % BOT_NAMES.length], paint: BOT_PAINTS[Number(id.slice(3)) % BOT_PAINTS.length] }),
+      // заменить мотор, батарею или коробку сезона за деньги сезона (career.js replacePart)
+      replace(id) {
+        if (season && replacePart(season, id) != null) saveSeason(season)
+      },
+      who: (id) => (id === 'player' ? { name: playerName(), paint: livery.primary } : { name: BOT_NAMES[Number(id.slice(3)) % BOT_NAMES.length], paint: BOT_PAINTS[Number(id.slice(3)) % BOT_PAINTS.length] }),
+    },
+    // гараж: камера к узлу сборки или к пилоту (camera.js GARAGE_FOCUS), узел подсвечивается
+    focus: (id) => {
+      garageFocus = id
+      rig.setFocus(id)
+    },
+    // обкатка из гаража: заезд на время с этой сборкой; выход в меню — обратно в гараж (saved — стек экранов)
+    testDrive: (saved) => {
+      testReturn = saved
+      ui.hide()
+      startSession({ mode: 'time', level: 'medium', laps: 5, slot: BOT_COUNT, compound: startCompound, weather: 'dry', time: 'day', build: buildMode === 'career' && season ? season.build : build })
     },
     previewCompound: (c) => {
       if (inMenu) vehicle.compound = c
@@ -516,6 +546,11 @@ async function main() {
     if (online.inRace) online.quit() // из онлайн-гонки — выйти из комнаты (болид доедет на автопилоте)
     inMenu = true
     seasonRace = false
+    if (freePU) {
+      if (season) saveSeason(season)
+      vehicle.pu = freePU
+      freePU = null
+    }
     useBuild(build) // после онлайна с одинаковыми болидами — снова своя сборка
     weather.set('dry')
     quali = null
@@ -558,6 +593,10 @@ async function main() {
     car.snapshot(vehicle.body)
     car.sync(1, vehicle, idle)
     ui.open('main')
+    if (testReturn) {
+      ui.restore(testReturn) // обкатка кончилась — снова в гараж, на ту же вкладку
+      testReturn = null
+    }
   }
 
   // начало гонки или заезда с экрана «Гонка»
@@ -595,7 +634,12 @@ async function main() {
     seasonRace = !!(o.career && season)
     seasonRound = seasonRace ? season.round : -1
     seasonNote = null
-    useBuild(seasonRace ? season.build : build)
+    useBuild(o.build ?? (seasonRace ? season.build : build))
+    // силовая установка сезона: износ копится от этапа к этапу отдельно от свободной игры
+    if (seasonRace && !freePU) {
+      freePU = vehicle.pu
+      vehicle.pu = season.pu
+    }
     document.body.classList.remove('menu-mode')
     botLevel = o.mode === 'race' && canRace ? o.level : 'off'
     startCompound = o.compound
@@ -635,7 +679,7 @@ async function main() {
   // решётка по квалификации: время игрока и времена ботов (темп пилота от уровня + разброс), места по времени
   function qualiGrid() {
     const base = QUALI_BASE[botLevel]
-    const rows = [{ id: 'player', name: 'ТЫ', paint: livery.primary, player: true, time: qualiTime ?? Infinity }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, time: base / b.pilot.pace + (Math.random() * 0.6 - 0.2) }))]
+    const rows = [{ id: 'player', name: playerName(), paint: livery.primary, player: true, time: qualiTime ?? Infinity }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, time: base / b.pilot.pace + (Math.random() * 0.6 - 0.2) }))]
     rows.sort((a, b) => a.time - b.time)
     rows.forEach((r, i) => {
       if (!r.player) bots.regrid(r.id, track.grid[i])
@@ -688,7 +732,14 @@ async function main() {
     weather.set(weatherMode)
     vehicle.wet = weather.state.wet
     rainNeed = rainTyreFor(weather.state.wet)
-    if (vehicle.pu.failed) {
+    if (vehicle.pu.failed && freePU && season) {
+      // чемпионат: отказавшую деталь меняют сами — за сколько хватит денег сезона
+      const id = season.pu.ice >= season.pu.gearbox ? 'ice' : 'gearbox'
+      const paid = replacePart(season, id, true)
+      vehicle.pu = season.pu
+      saveSeason(season)
+      hud.notify(`${id === 'ice' ? 'Мотор' : 'Коробка'} отказал${id === 'ice' ? '' : 'а'} — замена за ${paid} из бюджета сезона`, false, 5)
+    } else if (vehicle.pu.failed) {
       vehicle.pu = freshPowerUnit()
       savePU()
       hud.notify('Старый мотор отказал — поставили новый', false, 4)
@@ -724,7 +775,7 @@ async function main() {
       s = track.grid[slot]
       race = createRace(
         track.length,
-        [{ id: 'player', name: 'ТЫ', player: true, paint: livery.primary, compound: startCompound }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, compound: b.v.compound }))],
+        [{ id: 'player', name: playerName(), player: true, paint: livery.primary, compound: startCompound }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, compound: b.v.compound }))],
         raceLaps,
       )
       // дождь со старта: соперники на дождевых шинах, пит-стоп — по погоде, а не по плану
@@ -1081,7 +1132,8 @@ async function main() {
     // боты решают раз в кадр (60 Гц хватает), а едут на каждом шаге физики
     if (bots?.list.length && acc >= STEP) {
       const p = vehicle.body.translation()
-      const ctx = race && { laps: race.state.laps, lapOf: (id) => race.car(id).lap, onPit: (id, c) => race.pitStop(id, c), onRetire: (id, why) => race.retire(id, why), limit: (b) => botLimit(b), hold: () => flags?.mode === 'red' }
+      // gapToPlayer — подтягивание «Сложных» (bots.js rubberK): сколько метров игрок впереди бота; игрок финишировал или сошёл — 0
+      const ctx = race && { gapToPlayer: (id) => (race.state.playerDone || retired ? 0 : race.car('player').progress - race.car(id).progress), laps: race.state.laps, lapOf: (id) => race.car(id).lap, onPit: (id, c) => race.pitStop(id, c), onRetire: (id, why) => race.retire(id, why), limit: (b) => botLimit(b), hold: () => flags?.mode === 'red' }
       bots.think(dt, { x: p.x, z: p.z, speed: vehicle.state.fwdSpeed }, start?.waiting ? start.hold : null, !start?.waiting, ctx)
     }
     // въехал в пит-лейн — дальше ведёт игра
@@ -1523,6 +1575,9 @@ async function main() {
     sound.update(vehicle, lastInput, paused, { bots: rivals, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: online.inRace ? Math.max(0, online.lights()) : start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
     // зеркала заднего вида: только если их видно (кабина, T-камера) и игра идёт
     mirrors?.update(renderer, scene, !inMenu && (rig.mode === 'onboard' || rig.mode === 'tcam'))
+    // из кабины камера — в голове пилота: шлем и плечи прячем, руки на руле видно
+    if (car.driver) car.driver.visible = inMenu || rig.showcase || rig.mode !== 'onboard'
+    car.highlight(inMenu && garageFocus && garageFocus !== 'driver' ? garageFocus : null, now / 1000)
     post.render(scene, camera, inMenu || paused)
   }
   requestAnimationFrame(frame)

@@ -5,14 +5,14 @@
 // Клавиши: ↑ ↓ — пункт, ← → — значение, Enter — выбрать, Esc — назад, Q E — вкладки настроек. Мышь работает везде.
 // Модуль ничего не знает про физику: всё, что делает игру, приходит из main.js через ctx (см. createScreens).
 import { settings, QUALITY, DEFAULTS, ENGINE_SOUNDS } from './settings.js'
-import { TEAMS, BODY_SWATCHES, ZONE_SWATCHES, teamById } from './teams.js'
+import { TEAMS, BODY_SWATCHES, ZONE_SWATCHES, ACCENT_SWATCHES, HELMET_SWATCHES, SUIT_SWATCHES, GLOVE_SWATCHES, FINISH_IDS, teamById, cleanTag, cleanNumber, loadMyLiveries, saveMyLiveries, LIVERY_NAME_MAX } from './teams.js'
 import { KEYS } from './menu.js'
 import { COMPOUNDS, COMPOUND_ORDER } from './wear.js'
-import { AI_LEVELS } from './ai.js'
+import { AI_LEVELS, LEVEL_IDS, levelOf } from './ai.js'
 import { formatTime } from './laps.js'
 import { WEATHERS, WEATHER_ORDER } from './weather.js'
-import { PARTS, BUDGET, STOCK_BUILD, buildCost, buildStats } from './build.js'
-import { ROUNDS, SEASON_LAPS, POINTS, isOver, nextRound, standings } from './career.js'
+import { PARTS, BUDGET, STOCK_BUILD, buildCost, buildStats, lapForecast } from './build.js'
+import { ROUNDS, SEASON_LAPS, POINTS, isOver, nextRound, standings, PU_PARTS, replaceCost, seasonMoney } from './career.js'
 
 const SESSION_KEY = 'f1-race.session.v1'
 const LAP_OPTIONS = [1, 3, 5, 10, 15, 20]
@@ -22,6 +22,11 @@ const SLOTS = [
   { v: 5, name: 'Шестое' },
   { v: 11, name: 'Последнее' },
 ]
+const LEVEL_HINT = {
+  medium: 'Самые простые соперники: едут уверенно, но не на пределе, закрываются на прямой, когда атакуешь.',
+  hard: 'Едут по гоночной линии на пределе сцепления, закрываются и тратят батарею на обгоны.',
+  pro: 'Как средние, но не отпускают: уедешь — догоняют (отставшие от тебя получают прибавку), отстанешь — лидеры чуть сбавляют, чтобы шанс был. Гонка до финиша, а не на время.',
+}
 const MODE_NAME = { race: 'Гонка', time: 'Заезд на время' }
 const FLOW = ['track', 'race', 'weather', 'start'] // экраны-шаги настройки заезда
 const CAMERA_NAMES = { chase: 'Сзади', onboard: 'Из кабины', tcam: 'T-камера', nose: 'Нос болида' }
@@ -34,6 +39,7 @@ const FPS_OPTIONS = [
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
 const pct = (x) => `${Math.round(x * 100)}%`
+const typing = (e) => e.target instanceof HTMLInputElement && e.target.type === 'text'
 
 // Настройка заезда — по шагам, как в F1 25, Gran Turismo 7, Forza (Рома 30.10: «слишком много настроек на одном экране»):
 // гонка — Трасса → Гонка (соперники, круги, старт) → Условия (погода; потом — время суток) → Болид (шины на старт и настройка
@@ -55,7 +61,7 @@ export function createScreens(ctx) {
   let stack = []
   let sel = {} // выбранный пункт по экрану
   let tab = 0 // вкладка настроек
-  let garageTab = 0 // вкладка гаража: 0 — ливрея, 1 — сборка
+  let garageTab = 'livery' // вкладка гаража: livery | pilot | build
   let session = { mode: ctx.canRace ? 'race' : 'time', level: 'medium', laps: 5, compound: 'medium', slot: 11, weather: 'dry', time: 'day', ...ctx.session }
   try {
     Object.assign(session, JSON.parse(localStorage.getItem(SESSION_KEY) || '{}'))
@@ -63,6 +69,7 @@ export function createScreens(ctx) {
     // нет хранилища — значения по умолчанию
   }
   if (!ctx.canRace) session.mode = 'time'
+  session.level = levelOf(session.level) // «Лёгких» больше нет
   const saveSession = () => {
     try {
       localStorage.setItem(SESSION_KEY, JSON.stringify(session))
@@ -103,8 +110,8 @@ export function createScreens(ctx) {
   ]
 
   const raceRows = () => [
-    choice('level', 'Соперники', ['light', 'medium', 'hard'].map((v) => ({ v, name: AI_LEVELS[v].name })), () => session.level, (v) => (session.level = v), {
-      hint: () => ({ light: 'Едут спокойно и далеко от предела: хороши, чтобы выучить трассу и пит-стопы.', medium: 'Едут уверенно, закрываются на прямой, когда атакуешь.', hard: 'Едут по гоночной линии на пределе сцепления, закрываются и тратят батарею на обгоны.' })[session.level],
+    choice('level', 'Соперники', LEVEL_IDS.map((v) => ({ v, name: AI_LEVELS[v].name })), () => session.level, (v) => (session.level = v), {
+      hint: () => LEVEL_HINT[session.level],
     }),
     choice('laps', 'Круги', LAP_OPTIONS.map((v) => ({ v, name: String(v) })), () => session.laps, (v) => (session.laps = v), {
       hint: () => (session.laps < 5 ? 'Короткая гонка: менять шины не обязательно (правило двух составов — с 5 кругов, как в спринте F1 его тоже нет).' : session.laps >= 10 ? 'Длинная гонка: шины и мотор изнашиваются, без пит-стопов не обойтись.' : 'Классическая дистанция: один-два пит-стопа.'),
@@ -216,8 +223,6 @@ export function createScreens(ctx) {
       <span class="sc-tag">${esc(kicker)}</span>
       <h1 class="sc-title">${title}</h1>
     </header>`
-  const hintBar = (items) => `<footer class="sc-foot">${items.map(([k, t]) => `<span><kbd>${k}</kbd>${t}</span>`).join('')}</footer>`
-
   function renderMain() {
     const items = mainItems()
     const i = Math.min(sel.main ?? 0, items.length - 1)
@@ -231,12 +236,11 @@ export function createScreens(ctx) {
         </header>
         <nav class="sc-nav">${items.map((it, k) => `<button class="sc-item${k === i ? ' on' : ''}" data-i="${k}"><span>${it.label}</span></button>`).join('')}</nav>
         <p class="sc-about">${items[i].about}</p>
-        ${hintBar([['↑ ↓', 'выбрать'], ['Enter', 'открыть'], ['Мышь', 'крутить болид']])}
       </section>`
   }
 
   // универсальный экран со строками-параметрами
-  function renderRows(id, title, kicker, rows, extra = '', foot = []) {
+  function renderRows(id, title, kicker, rows, extra = '') {
     const vis = rows.filter((r) => !r.hidden?.())
     const i = Math.min(sel[id] ?? 0, vis.length - 1)
     sel[id] = i
@@ -268,7 +272,6 @@ export function createScreens(ctx) {
         ${extra}
         <div class="sc-rows">${html}</div>
         <p class="sc-about">${row?.hint?.() ?? ''}</p>
-        ${hintBar(foot.length ? foot : [['↑ ↓', 'пункт'], ['← →', 'значение'], ['Esc', 'назад']])}
       </section>`
   }
 
@@ -281,22 +284,21 @@ export function createScreens(ctx) {
       .join('')}</nav>`
   }
   const flowTitle = () => (session.mode === 'race' ? 'Гонка' : 'Заезд<br>на время')
-  const flowFoot = (enter) => [['↑ ↓', 'пункт'], ['← →', 'значение'], ['Enter', enter], ['Esc', 'назад']]
 
   function renderTrack() {
-    return renderRows('track', flowTitle(), 'Перед стартом', trackRows(), stepsBar('track'), flowFoot('далее'))
+    return renderRows('track', flowTitle(), 'Перед стартом', trackRows(), stepsBar('track'))
   }
   function renderRaceFormat() {
-    return renderRows('race', flowTitle(), 'Перед стартом', raceRows(), stepsBar('race'), flowFoot('далее'))
+    return renderRows('race', flowTitle(), 'Перед стартом', raceRows(), stepsBar('race'))
   }
   function renderWeather() {
-    return renderRows('weather', flowTitle(), 'Перед стартом', weatherRows(), stepsBar('weather'), flowFoot('далее'))
+    return renderRows('weather', flowTitle(), 'Перед стартом', weatherRows(), stepsBar('weather'))
   }
   function renderStart() {
     const bits = [trackOf(ctx.trackId)?.name ?? ctx.trackLabel, MODE_NAME[session.mode]]
     if (session.mode === 'race') bits.push(`${session.laps} кр.`, AI_LEVELS[session.level].name.toLowerCase(), SLOTS.find((s) => s.v === session.slot)?.name.toLowerCase() ?? '')
     bits.push(WEATHERS[session.weather].name.toLowerCase(), `шины: ${COMPOUNDS[session.compound].name.toLowerCase()}`)
-    const html = renderRows('start', flowTitle(), 'Перед стартом', startRows(), stepsBar('start'), flowFoot(session.mode === 'race' ? 'на старт' : 'выехать'))
+    const html = renderRows('start', flowTitle(), 'Перед стартом', startRows(), stepsBar('start'))
     return html + `<aside class="sc-plaque"><div class="sc-plaque-t">Твой заезд</div><p>${bits.join(' · ')}</p></aside>`
   }
 
@@ -310,9 +312,8 @@ export function createScreens(ctx) {
         ${brand('Настройки', 'Параметры')}
         ${bar}
         ${keysGrid()}
-        ${hintBar([['Q E', 'вкладка'], ['Esc', 'назад']])}
       </section>`
-    return renderRows('settings' + tab, 'Настройки', 'Параметры', tabs[tab].rows, bar, [['Q E', 'вкладка'], ['↑ ↓', 'пункт'], ['← →', 'значение'], ['Esc', 'назад']])
+    return renderRows('settings' + tab, 'Настройки', 'Параметры', tabs[tab].rows, bar)
   }
 
   // «Играть»: три карточки режимов в ряд (← → или ↑ ↓ — выбор, Enter — дальше)
@@ -326,23 +327,27 @@ export function createScreens(ctx) {
         <div class="sc-modes">${items
           .map((it, k) => `<button class="sc-mode${k === i ? ' on' : ''}" data-i="${k}"><span class="sc-mode-k">${esc(it.kick)}</span><b>${esc(it.label)}</b><span class="sc-mode-t">${esc(it.about)}</span><span class="sc-mode-go">Выбрать</span></button>`)
           .join('')}</div>
-        ${hintBar([['← →', 'режим'], ['Enter', 'дальше'], ['Esc', 'назад']])}
       </section>`
   }
 
-  // гараж: две вкладки (Q E) — «Ливрея» (команды, свои цвета, силовая установка) и «Сборка» (Рома 30.10: «строить болид, что у
-  // него под капотом»): детали build.js с компромиссами в рамках бюджета; дороже бюджета — кнопка недоступна
-  const GARAGE_TABS = ['Ливрея', 'Сборка']
+  // гараж: три вкладки (Q E) — «Ливрея» (команды, цвета и покрытие кузова, мои ливреи, силовая установка), «Пилот» (шлем,
+  // комбинезон, перчатки, номер, три буквы — Рома 31.10) и «Сборка» (Рома 30.10: «строить болид, что у него под капотом»):
+  // детали build.js с компромиссами в рамках бюджета; дороже бюджета — кнопка недоступна. Выбранный узел камера показывает
+  // крупно и подсвечивает (ctx.focus), на вкладке «Пилот» — пилота
+  const GARAGE_TABS = [['livery', 'Ливрея'], ['pilot', 'Пилот'], ['build', 'Сборка']]
+  const tabsOf = () => GARAGE_TABS.filter(([id]) => id !== 'build' || ctx.build)
   const budgetOf = () => ctx.build?.budget?.() ?? BUDGET // в чемпионате — бюджет сезона
+  const seasonGarage = () => ctx.build?.mode?.() === 'career' && ctx.season?.get()
   const buildRows = () => {
     const b = ctx.build.get()
     const BUDGET = budgetOf()
     // хватит ли бюджета, если в узле part поставить деталь v
     const fits = (part, v) => buildCost({ ...b, [part.id]: v }) <= BUDGET
-    return [
+    const rows = [
       ...PARTS.map((part) => ({
         type: 'choice',
         id: part.id,
+        focus: part.id,
         label: part.name,
         options: part.options.map((o) => ({ v: o.id, name: o.name, cost: o.cost, off: !fits(part, o.id) })),
         get: () => ctx.build.get()[part.id],
@@ -354,17 +359,69 @@ export function createScreens(ctx) {
       })),
       { type: 'action', id: 'stock', label: 'Вернуть стандартную сборку', run: () => ctx.build.set({ ...STOCK_BUILD }), hint: () => 'Все узлы — стандарт: ровно тот болид, что был до сборок.' },
     ]
+    // чемпионат: ресурс мотора, батареи и коробки — копится от этапа к этапу, замена за деньги сезона
+    const s = seasonGarage()
+    if (s)
+      rows.push({
+        type: 'pu',
+        id: 'pu',
+        focus: 'engine',
+        label: 'Ресурс',
+        hint: () =>
+          `Мотор, батарея и коробка сезона изнашиваются от этапа к этапу; после 70% мотор слабее, после 90% может отказать прямо в гонке (тогда его меняют сами — за сколько хватит денег). Нажми деталь — заменить на новую за свободные деньги сезона (сейчас ${seasonMoney(s)}: бюджет минус стоимость сборки).`,
+      })
+    rows.push({
+      type: 'action',
+      id: 'test',
+      label: 'Обкатка: выехать на трассу',
+      cta: true,
+      run: () => ctx.testDrive?.([...stack]),
+      hint: () => `Заезд на время на ${esc(trackOf(ctx.trackId)?.name ?? 'этой трассе')} с этой сборкой — попробовать болид без настройки заезда. Esc → «В главное меню» вернёт сюда, в гараж.${s ? ' Очки и износ сезона обкатка не трогает.' : ''}`,
+    })
+    return rows
   }
-  const garageRows = () => {
-    if (garageTab === 1 && ctx.build) return buildRows()
+  // «Мои ливреи»: сохранённые раскраски болида и пилота под своим названием
+  let mine = loadMyLiveries()
+  let mineSaving = false // открыто поле названия
+  let mineDel = -1 // «×» нажат один раз — второй нажатие удаляет
+  const sameLivery = (a, b) => ['primary', 'secondary', 'accent', 'finish', 'helmet', 'helmet2', 'suit', 'gloves', 'number', 'tag'].every((k) => String(a[k]).toLowerCase() === String(b[k]).toLowerCase())
+  function saveMine(name) {
+    name = String(name ?? '').trim().slice(0, LIVERY_NAME_MAX)
+    if (!name) return
+    const entry = { name, livery: { ...ctx.info().livery } }
+    const at = mine.findIndex((m) => m.name.toLowerCase() === name.toLowerCase())
+    if (at >= 0) mine[at] = entry // то же название — поверх
+    else mine.push(entry)
+    saveMyLiveries(mine)
+    mineSaving = false
+  }
+  const FINISH_ABOUT = { gloss: 'Глянец: лак как у настоящих болидов.', matte: 'Мат: краска без блеска — как у Red Bull и Mercedes последних лет.', metal: 'Металлик: краска с металлической искрой под лаком.', chrome: 'Хром: зеркальный металл в цвет кузова — как McLaren 2000-х.' }
+  const FINISH_NAME = { gloss: 'Глянец', matte: 'Мат', metal: 'Металлик', chrome: 'Хром' }
+  const liveryRows = () => {
     const l = ctx.info().livery
     return [
-      ...TEAMS.map((t) => ({ type: 'team', id: t.id, team: t })),
+      { type: 'teams', id: 'team', label: 'Команда' }, // восемь команд — сеткой 2×4 в одной строке (Рома 31.10: «вместись», списком не влезало)
       { type: 'swatch', id: 'body', label: 'Кузов', swatches: BODY_SWATCHES, key: 'primary', value: l.primary },
       { type: 'swatch', id: 'zone', label: 'Зона у кокпита', swatches: ZONE_SWATCHES, key: 'secondary', value: l.secondary },
+      { type: 'swatch', id: 'accent', label: 'Акцент', swatches: ACCENT_SWATCHES, key: 'accent', value: l.accent },
+      choice('finish', 'Покрытие', FINISH_IDS.map((v) => ({ v, name: FINISH_NAME[v] })), () => l.finish, (v) => applyLivery({ finish: v })),
+      { type: 'mine', id: 'mine', label: 'Мои ливреи' },
       { type: 'action', id: 'pu', label: 'Новая силовая установка', run: () => ctx.newPowerUnit() },
     ]
   }
+  const pilotRows = () => {
+    const l = ctx.info().livery
+    return [
+      { type: 'swatch', id: 'helmet', label: 'Шлем', swatches: HELMET_SWATCHES, key: 'helmet', value: l.helmet },
+      { type: 'swatch', id: 'helmet2', label: 'Полоса шлема', swatches: HELMET_SWATCHES, key: 'helmet2', value: l.helmet2 },
+      { type: 'swatch', id: 'suit', label: 'Комбинезон', swatches: SUIT_SWATCHES, key: 'suit', value: l.suit },
+      { type: 'swatch', id: 'gloves', label: 'Перчатки', swatches: GLOVE_SWATCHES, key: 'gloves', value: l.gloves },
+      { type: 'text', id: 'number', label: 'Номер', key: 'number', max: 2, value: String(l.number), placeholder: '16' },
+      { type: 'text', id: 'tag', label: 'Три буквы', key: 'tag', max: 3, value: l.tag, placeholder: 'ТЫ' },
+      { type: 'action', id: 'match', label: 'Цвета пилота — как у болида', run: () => applyLivery({ helmet2: l.primary, suit: l.primary, helmet: l.secondary }) },
+    ]
+  }
+  const garageRows = () => (garageTab === 'build' && ctx.build ? buildRows() : garageTab === 'pilot' ? pilotRows() : liveryRows())
   // карточка болида: цифры сборки и разница со стандартом (зелёная — лучше, красная — хуже)
   function buildCard() {
     const b = ctx.build.get()
@@ -397,8 +454,22 @@ export function createScreens(ctx) {
           ${row('Тормоза', rel(st.brakes), delta(st.brakes, 1))}
           ${row('Надёжность', `${st.reliability}%`, delta(st.reliability, 100, 1, 'п.', 1))}
         </div>
+        ${forecast(b)}
         <p>${left > 0 ? `Осталось ${left} — можно поставить деталь получше.` : 'Бюджет потрачен весь.'} ${seasonMode ? 'Сборка сезона — только для гонок чемпионата; бюджет растёт с призовыми за этапы.' : 'Своя сборка — в одиночной игре и в онлайн-комнатах «Свои сборки». У ботов — свои.'}</p>
       </aside>`
+  }
+  // прогноз круга по замеру (build.js lapForecast): быстрый пилот, без износа — для сравнения сборок между собой
+  const lapText = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0').replace('.', ',')}`
+  function forecast(b) {
+    const rows = (ctx.tracks ?? [])
+      .map((t) => {
+        const f = lapForecast(b, t.id)
+        if (!f) return ''
+        const d = Math.round(f.delta * 10) / 10
+        return `<span>${esc(t.name)}</span><b>${lapText(f.time)}</b><em class="${d < 0 ? 'up' : d > 0 ? 'down' : ''}">${d ? `${d > 0 ? '+' : '−'}${Math.abs(d).toFixed(1).replace('.', ',')} с` : ''}</em>`
+      })
+      .join('')
+    return rows ? `<div class="sc-stats sc-lap"><span class="sc-lap-t">Круг (оценка)</span>${rows}</div>` : ''
   }
   function renderGarage() {
     const info = ctx.info()
@@ -406,56 +477,84 @@ export function createScreens(ctx) {
     const rows = garageRows()
     const i = Math.min(sel.garage ?? 0, rows.length - 1)
     sel.garage = i
-    const tabsBar = `<nav class="sc-tabs">${GARAGE_TABS.map((t, k) => `<button data-gtab="${k}" class="${k === garageTab ? 'on' : ''}">${t}</button>`).join('')}</nav>`
-    if (garageTab === 1 && ctx.build) {
+    const tabsBar = `<nav class="sc-tabs">${tabsOf().map(([id, t]) => `<button data-gtab="${id}" class="${id === garageTab ? 'on' : ''}">${t}</button>`).join('')}</nav>`
+    const seg = (r, k) => {
+      const cur = r.get()
+      return `<span class="sc-ctl sc-seg">${r.options
+        .map((o, n) => `<button data-i="${k}" data-o="${n}" class="${o.v === cur ? 'on' : ''}${o.off ? ' off' : ''}" ${o.off && o.v !== cur ? 'disabled title="Не хватает бюджета"' : ''}>${esc(o.name)}${o.cost != null ? `<small>${o.cost}</small>` : ''}</button>`)
+        .join('')}</span>`
+    }
+    const rowHtml = (r, k) => {
+      const on = k === i ? ' on' : ''
+      if (r.type === 'teams')
+        return `<div class="sc-row sc-teams${on}" data-i="${k}">${TEAMS.map((t) => `<button class="sc-tcard${l.team === t.id ? ' cur' : ''}" data-team="${t.id}" data-i="${k}" title="${esc(t.about)}"><i style="--a:${t.primary};--b:${t.secondary}"></i><span>${esc(t.name)}</span></button>`).join('')}</div>`
+      if (r.type === 'team') return `<button class="sc-team${on}${l.team === r.id ? ' cur' : ''}" data-i="${k}"><i style="--a:${r.team.primary};--b:${r.team.secondary}"></i><span>${esc(r.team.name)}</span></button>`
+      if (r.type === 'swatch') {
+        const custom = !r.swatches.some((c) => c.toLowerCase() === r.value.toLowerCase())
+        return `<div class="sc-row sc-sw${on}" data-i="${k}"><span class="sc-label">${r.label}</span><span class="sc-ctl">${r.swatches
+          .map((c) => `<button data-i="${k}" data-c="${c}" class="sc-chip${c.toLowerCase() === r.value.toLowerCase() ? ' on' : ''}" style="--c:${c}" title="${c}"></button>`)
+          .join('')}<label class="sc-chip pick${custom ? ' on' : ''}" style="--c:${r.value}" title="Свой цвет"><input type="color" tabindex="-1" value="${r.value}" data-pick="${k}"></label></span></div>`
+      }
+      if (r.type === 'pu') {
+        const s = seasonGarage()
+        const money = seasonMoney(s)
+        return `<div class="sc-row${on} sc-part" data-i="${k}"><span class="sc-label">${r.label}</span><span class="sc-ctl sc-seg">${PU_PARTS.map((pp) => {
+          const cost = replaceCost(s, pp.id)
+          const off = money < cost || s.pu[pp.id] < 0.005
+          return `<button data-i="${k}" data-pu="${pp.id}" class="${off ? 'off' : ''}" ${off ? 'disabled' : ''} title="Заменить за ${cost}">${pp.name} ${pct(s.pu[pp.id])}<small>⟳ ${cost}</small></button>`
+        }).join('')}</span></div>`
+      }
+      if (r.type === 'choice' && garageTab === 'build') return `<div class="sc-row${on} sc-part" data-i="${k}"><span class="sc-label">${r.label}</span>${seg(r, k)}</div>`
+      if (r.type === 'choice') return `<div class="sc-row${on}" data-i="${k}"><span class="sc-label">${r.label}</span>${seg(r, k)}</div>`
+      if (r.type === 'text') return `<div class="sc-row${on}" data-i="${k}"><span class="sc-label">${r.label}</span><span class="sc-ctl"><input class="sc-text" type="text" data-text="${k}" maxlength="${r.max}" value="${esc(r.value)}" placeholder="${esc(r.placeholder)}" spellcheck="false" autocomplete="off"></span></div>`
+      if (r.type === 'mine') {
+        const chips = mine
+          .map((m, n) => `<button class="sc-mchip${sameLivery(m.livery, l) ? ' on' : ''}" data-mine="${n}" title="Поставить"><i style="--a:${m.livery.primary};--b:${m.livery.secondary}"></i>${esc(m.name)}<span data-del="${n}" title="Удалить">${mineDel === n ? 'точно?' : '×'}</span></button>`)
+          .join('')
+        const add = mineSaving
+          ? `<input class="sc-text sc-mine-name" type="text" maxlength="${LIVERY_NAME_MAX}" placeholder="Название" spellcheck="false" autocomplete="off"><button class="sc-mchip add" data-mine-save>Сохранить</button>`
+          : `<button class="sc-mchip add" data-mine-add>+ Сохранить эту</button>`
+        return `<div class="sc-row sc-mine${on}" data-i="${k}"><span class="sc-label">${r.label}</span><span class="sc-ctl">${chips}${add}</span></div>`
+      }
+      return `<button class="sc-row${on}${r.cta ? ' cta' : ''}${r.off ? ' off' : ''}" data-i="${k}" ${r.off ? 'disabled' : ''}><span class="sc-label">${r.label}</span>${r.note ? `<em class="sc-note">${r.note}</em>` : ''}</button>`
+    }
+    const html = rows.map(rowHtml).join('')
+    if (garageTab === 'build' && ctx.build) {
       const BUDGET = budgetOf()
       const left = BUDGET - buildCost(ctx.build.get())
-      const html = rows
-        .map((r, k) => {
-          const cls = `sc-row${k === i ? ' on' : ''}`
-          if (r.type === 'action') return `<button class="${cls}" data-i="${k}"><span class="sc-label">${r.label}</span></button>`
-          const cur = r.get()
-          return `<div class="${cls} sc-part" data-i="${k}"><span class="sc-label">${r.label}</span><span class="sc-ctl sc-seg">${r.options
-            .map((o, n) => `<button data-i="${k}" data-o="${n}" class="${o.v === cur ? 'on' : ''}${o.off ? ' off' : ''}" ${o.off && o.v !== cur ? 'disabled title="Не хватает бюджета"' : ''}>${esc(o.name)}<small>${o.cost}</small></button>`)
-            .join('')}</span></div>`
-        })
-        .join('')
       return `
       <section class="sc-col garage">
-        ${brand(ctx.build.mode?.() === 'career' ? 'Гараж сезона' : 'Гараж', `Бюджет: осталось ${left} из ${BUDGET}`)}
+        ${brand(seasonGarage() ? 'Гараж сезона' : 'Гараж', `Бюджет: осталось ${left} из ${BUDGET}`)}
         ${tabsBar}
         <div class="sc-rows">${html}</div>
         <p class="sc-about">${rows[i]?.hint?.() ?? ''}</p>
-        ${hintBar([['Q E', 'вкладка'], ['↑ ↓', 'узел'], ['← →', 'деталь'], ['Esc', 'назад']])}
       </section>
       ${buildCard()}`
     }
-    const html = rows
-      .map((r, k) => {
-        const on = k === i ? ' on' : ''
-        if (r.type === 'team') return `<button class="sc-team${on}${l.team === r.id ? ' cur' : ''}" data-i="${k}"><i style="--a:${r.team.primary};--b:${r.team.secondary}"></i><span>${esc(r.team.name)}</span></button>`
-        if (r.type === 'swatch') {
-          const custom = !r.swatches.some((c) => c.toLowerCase() === r.value.toLowerCase())
-          return `<div class="sc-row sc-sw${on}" data-i="${k}"><span class="sc-label">${r.label}</span><span class="sc-ctl">${r.swatches
-            .map((c) => `<button data-i="${k}" data-c="${c}" class="sc-chip${c.toLowerCase() === r.value.toLowerCase() ? ' on' : ''}" style="--c:${c}" title="${c}"></button>`)
-            .join('')}<label class="sc-chip pick${custom ? ' on' : ''}" style="--c:${r.value}" title="Свой цвет"><input type="color" tabindex="-1" value="${r.value}" data-pick="${k}"></label></span></div>`
-        }
-        return `<button class="sc-row${on}" data-i="${k}"><span class="sc-label">${r.label}</span></button>`
-      })
-      .join('')
+    if (garageTab === 'pilot')
+      return `
+      <section class="sc-col garage">
+        ${brand('Гараж', 'Пилот')}
+        ${tabsBar}
+        <div class="sc-rows">${html}</div>
+      </section>
+      <aside class="sc-plaque wide">
+        <div class="sc-plaque-t">${esc(l.tag || 'ТЫ')} · №${l.number}</div>
+        <p>Три буквы — в таблице гонки, квалификации и чемпионата (пусто — «ТЫ»). Номер — на носу и бортах болида. Шлем, комбинезон и перчатки видно в кокпите и с камеры сзади; из кабины видно свои руки на руле.</p>
+      </aside>`
     const team = teamById(l.team)
     const pu = info.pu
     const bar = (x) => `<i class="sc-bar"><b style="width:${Math.round(Math.min(1, x) * 100)}%"></b></i>`
+    const about = rows[i]?.id === 'finish' ? FINISH_ABOUT[l.finish] : rows[i]?.id === 'mine' ? 'Сохрани текущую раскраску болида и пилота под своим названием — потом ставится одним нажатием. То же название — сохранится поверх; «×» дважды — удалить.' : team ? esc(team.about) : 'Свои цвета кузова, зоны у кокпита и акцента. Выбери любой из готовых или нажми на радугу и подбери точный.'
     return `
       <section class="sc-col garage">
         ${brand('Гараж', 'Твой болид')}
-        ${ctx.build ? tabsBar : ''}
+        ${tabsBar}
         <div class="sc-rows">${html}</div>
-        ${hintBar([...(ctx.build ? [['Q E', 'вкладка']] : []), ['↑ ↓', 'пункт'], ['← →', 'цвет'], ['Enter', 'выбрать'], ['Esc', 'назад'], ['Мышь', 'крутить болид']])}
       </section>
       <aside class="sc-plaque wide">
         <div class="sc-plaque-t">${team ? esc(team.name) : 'Своя ливрея'}</div>
-        <p>${team ? esc(team.about) : 'Свои цвета кузова и зоны у кокпита. Выбери любой из готовых или нажми на радугу и подбери точный.'}</p>
+        <p>${about}</p>
         <div class="sc-pu"><div class="sc-pu-t">Силовая установка</div>
           <span>Мотор</span>${bar(pu.ice)}<em>${pct(pu.ice)}</em>
           <span>ERS</span>${bar(pu.ers)}<em>${pct(pu.ers)}</em>
@@ -473,7 +572,7 @@ export function createScreens(ctx) {
       return [
         choice('rounds', 'Этапов', ROUNDS.map((v) => ({ v, name: String(v) })), () => seasonSetup.rounds, (v) => (seasonSetup.rounds = v), { hint: () => `Трассы по очереди: ${(ctx.tracks ?? []).map((t) => t.name).join(', ') || 'одна'}. Marina Bay — ночью, как Сингапур.` }),
         choice('laps', 'Кругов в гонке', SEASON_LAPS.map((v) => ({ v, name: String(v) })), () => seasonSetup.laps, (v) => (seasonSetup.laps = v), { hint: () => 'От 5 кругов действует правило двух составов шин — нужен пит-стоп.' }),
-        choice('level', 'Соперники', ['light', 'medium', 'hard'].map((v) => ({ v, name: AI_LEVELS[v].name })), () => seasonSetup.level, (v) => (seasonSetup.level = v), { hint: () => 'Одни и те же одиннадцать пилотов на весь сезон: у каждого свой темп и своя сборка болида.' }),
+        choice('level', 'Соперники', LEVEL_IDS.map((v) => ({ v, name: AI_LEVELS[v].name })), () => seasonSetup.level, (v) => (seasonSetup.level = v), { hint: () => `${LEVEL_HINT[seasonSetup.level]} Одни и те же одиннадцать пилотов на весь сезон: у каждого свой темп и своя сборка болида.` }),
         action('start', 'Начать сезон', () => ctx.season.start({ ...seasonSetup }), { cta: true, hint: () => `Очки как в F1: ${POINTS.join('-')}. Бюджет сборки на старте — 76 (стандартный болид стоит 68), за каждый этап — призовые.` }),
       ]
     if (isOver(s)) return [action('new', 'Новый сезон', () => ctx.season.reset(), { cta: true, hint: () => 'Сезон окончен. Новый — с новым календарём, соперниками и стартовым бюджетом.' })]
@@ -481,7 +580,10 @@ export function createScreens(ctx) {
     const tname = ctx.tracks?.find((t) => t.id === r.track)?.name ?? r.track
     return [
       action('go', `На старт · этап ${s.round + 1}`, () => ctx.season.play(), { cta: true, hint: () => `${tname}${r.night ? ', ночью' : ''} · ${s.laps} кр. · сначала квалификация, потом гонка. Из гонки можно выйти — этап останется непроеханным.` }),
-      action('garage', 'Гараж сезона', () => push('garage', () => ctx.build.mode('career')), { hint: () => `Сборка болида для чемпионата: бюджет ${s.budget}. Растёт с призовыми.` }),
+      action('garage', 'Гараж сезона', () => push('garage', () => {
+        ctx.build.mode('career')
+        garageTab = 'build'
+      }), { hint: () => `Сборка болида для чемпионата: бюджет ${s.budget}. Растёт с призовыми.` }),
       action('reset', resetArmed ? 'Точно бросить? Нажми ещё раз' : 'Бросить сезон', () => {
         if (resetArmed) ctx.season.reset()
         resetArmed = !resetArmed
@@ -491,7 +593,7 @@ export function createScreens(ctx) {
   function renderCareer() {
     const s = ctx.season.get()
     const kicker = !s ? 'Новый сезон' : isOver(s) ? 'Сезон окончен' : `Этап ${s.round + 1} из ${s.rounds} · бюджет ${s.budget}`
-    const html = renderRows('career', 'Чемпионат', kicker, careerRows(), '', [['↑ ↓', 'пункт'], ['← →', 'значение'], ['Enter', 'выбрать'], ['Esc', 'назад']])
+    const html = renderRows('career', 'Чемпионат', kicker, careerRows())
     if (!s) return html
     const table = standings(s)
     const tn = (id) => ctx.tracks?.find((t) => t.id === id)?.name ?? id
@@ -540,7 +642,6 @@ export function createScreens(ctx) {
           ${card('Сходов', c.dnf)}
         </div>
         <p class="sc-about">Лучший круг и секторы запоминаются отдельно для каждой трассы и сравниваются с ними во время заезда: зелёный — быстрее своего лучшего, жёлтый — медленнее.</p>
-        ${hintBar([['Esc', 'назад']])}
       </section>`
   }
 
@@ -567,9 +668,17 @@ export function createScreens(ctx) {
     if (!name) return
     root.innerHTML = `<div class="sc-shade"></div>${SCREENS[name].render()}`
     root.dataset.screen = name
+    focusNow()
     root.dataset.wide = name === 'play' || (name === 'settings' && settingsTabs()[tab]?.keys) ? '1' : ''
   }
+  // камера витрины к выбранному узлу сборки (или к пилоту); вне гаража — обычный облёт
+  function focusNow() {
+    let id = null
+    if (current() === 'garage') id = garageTab === 'pilot' ? 'driver' : garageTab === 'build' ? (garageRows()[sel.garage ?? 0]?.focus ?? null) : null
+    ctx.focus?.(id)
+  }
   function hide() {
+    ctx.focus?.(null)
     stack = []
     root.hidden = true
     ctx.showcase(false)
@@ -614,6 +723,12 @@ export function createScreens(ctx) {
       render()
     },
     hide,
+    // вернуть экраны как были (после обкатки из гаража)
+    restore(saved) {
+      if (!saved?.length) return
+      stack = saved.slice(0, -1)
+      push(saved[saved.length - 1])
+    },
     // убрать экраны на время (гараж настройки болида поверх), не теряя, где мы были; потом вернуть
     suspend() {
       root.hidden = true
@@ -683,6 +798,18 @@ export function createScreens(ctx) {
     const row = rows?.[i]
     if (!row) return
     sel[selKey()] = i
+    if (row.type === 'text') {
+      render()
+      root.querySelector(`[data-text="${i}"]`)?.focus()
+      return
+    }
+    if (row.type === 'mine') {
+      mineSaving = true
+      render()
+      root.querySelector('.sc-mine-name')?.focus()
+      return
+    }
+    if (row.type === 'action' && row.off) return
     if (row.type === 'action') row.run?.()
     else if (row.cards) {
       // Enter на карточках — как «Далее»
@@ -723,8 +850,53 @@ export function createScreens(ctx) {
     }
     const gtab = t.closest('[data-gtab]')
     if (gtab) {
-      garageTab = Number(gtab.dataset.gtab)
+      garageTab = gtab.dataset.gtab
       sel.garage = 0
+      render()
+      return
+    }
+    if (t.closest('input.sc-text')) return
+    const puBtn = t.closest('[data-pu]')
+    if (puBtn) {
+      sel[selKey()] = Number(puBtn.dataset.i)
+      ctx.season.replace(puBtn.dataset.pu)
+      render()
+      return
+    }
+    const tcard = t.closest('[data-team]')
+    if (tcard) {
+      const team = teamById(tcard.dataset.team)
+      sel[selKey()] = Number(tcard.dataset.i)
+      applyLivery({ team: team.id, primary: team.primary, secondary: team.secondary, accent: team.accent })
+      return
+    }
+    const del = t.closest('[data-del]')
+    if (del) {
+      const n = Number(del.dataset.del)
+      if (mineDel === n) {
+        mine.splice(n, 1)
+        saveMyLiveries(mine)
+        mineDel = -1
+      } else mineDel = n
+      render()
+      return
+    }
+    const mchip = t.closest('[data-mine]')
+    if (mchip) {
+      const m = mine[Number(mchip.dataset.mine)]
+      mineDel = -1
+      if (m) ctx.previewLivery({ ...m.livery })
+      render()
+      return
+    }
+    if (t.closest('[data-mine-add]')) {
+      mineSaving = true
+      render()
+      root.querySelector('.sc-mine-name')?.focus()
+      return
+    }
+    if (t.closest('[data-mine-save]')) {
+      saveMine(root.querySelector('.sc-mine-name')?.value)
       render()
       return
     }
@@ -750,6 +922,7 @@ export function createScreens(ctx) {
       sel[key] = i
       // перерисовка при наведении заменила бы элемент под курсором: меняем подсветку на месте
       for (const el of root.querySelectorAll('.sc-item, .sc-row, .sc-team, .sc-mode')) el.classList.toggle('on', el === item)
+      if (current() === 'garage') focusNow()
       const about = root.querySelector('.sc-about')
       if (about) {
         if (current() === 'main') about.innerHTML = mainItems()[i].about
@@ -771,12 +944,43 @@ export function createScreens(ctx) {
       r.parentElement.style.setProperty('--c', r.value)
     }
   })
+  root.addEventListener('input', (e) => {
+    const r = e.target
+    if (r.dataset.text === undefined) return
+    const row = rowsOf()[Number(r.dataset.text)]
+    const l = ctx.info().livery
+    if (row.key === 'number') {
+      const digits = r.value.replace(/\D/g, '').slice(0, 2)
+      if (digits !== r.value) r.value = digits
+      if (digits && Number(digits) >= 1) ctx.previewLivery({ ...l, number: cleanNumber(digits) })
+    } else {
+      const tag = cleanTag(r.value)
+      if (tag !== r.value) r.value = tag
+      ctx.previewLivery({ ...l, tag })
+    }
+    const t = root.querySelector('.sc-plaque-t')
+    const now = ctx.info().livery
+    if (t) t.textContent = `${now.tag || 'ТЫ'} · №${now.number}`
+  })
+  root.addEventListener('keydown', (e) => {
+    if (!typing(e)) return
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+      if (e.target.classList.contains('sc-mine-name')) saveMine(e.target.value)
+      e.target.blur()
+      render()
+    } else if (e.code === 'Escape') {
+      mineSaving = false
+      e.target.blur()
+      render()
+    }
+    e.stopPropagation()
+  })
   root.addEventListener('change', (e) => {
     if (e.target.dataset.pick !== undefined) render()
   })
 
   addEventListener('keydown', (e) => {
-    if (root.hidden || e.repeat && !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code)) return
+    if (root.hidden || typing(e) || (e.repeat && !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code))) return
     const name = current()
     const list = name === 'main' || name === 'play'
     const rows = name === 'main' ? mainItems() : name === 'play' ? playItems() : rowsOf()
@@ -788,7 +992,19 @@ export function createScreens(ctx) {
       const row = rows[sel[key] ?? 0]
       const dir = e.code === 'ArrowLeft' ? -1 : 1
       if (row.type === 'choice' || row.type === 'slider') change(row, dir)
-      else if (row.type === 'swatch') {
+      else if (row.type === 'teams') {
+        const cur = TEAMS.findIndex((t) => t.id === ctx.info().livery.team)
+        const team = TEAMS[(cur + dir + TEAMS.length) % TEAMS.length]
+        applyLivery({ team: team.id, primary: team.primary, secondary: team.secondary, accent: team.accent })
+        return
+      } else if (row.type === 'text' && row.key === 'number') {
+        const l = ctx.info().livery
+        ctx.previewLivery({ ...l, number: ((l.number - 1 + dir + 99) % 99) + 1 })
+      } else if (row.type === 'mine' && mine.length) {
+        const l = ctx.info().livery
+        const cur = mine.findIndex((m) => sameLivery(m.livery, l))
+        ctx.previewLivery({ ...mine[(cur + dir + mine.length) % mine.length].livery })
+      } else if (row.type === 'swatch') {
         const cur = row.swatches.findIndex((c) => c.toLowerCase() === row.value.toLowerCase())
         applyLivery({ [row.key]: row.swatches[(cur + dir + row.swatches.length) % row.swatches.length] })
         return
@@ -805,8 +1021,9 @@ export function createScreens(ctx) {
       return
     } else if (name === 'settings' && (e.code === 'KeyQ' || e.code === 'KeyE')) {
       tab = (tab + (e.code === 'KeyE' ? 1 : -1) + settingsTabs().length) % settingsTabs().length
-    } else if (name === 'garage' && ctx.build && (e.code === 'KeyQ' || e.code === 'KeyE')) {
-      garageTab = 1 - garageTab
+    } else if (name === 'garage' && (e.code === 'KeyQ' || e.code === 'KeyE')) {
+      const tabs = tabsOf().map(([id]) => id)
+      garageTab = tabs[(tabs.indexOf(garageTab) + (e.code === 'KeyE' ? 1 : -1) + tabs.length) % tabs.length]
       sel.garage = 0
     } else return
     e.preventDefault()
