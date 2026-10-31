@@ -18,6 +18,13 @@ const TRACK_PARTS = ['Покрытие (коллизия)', 'Разметка (�
 const GLOW = 2
 const POOL = 12 // одновременно светящих фонарей (у Марины они парами через ~30 м: ±90 м вокруг болида)
 const SHADOWS = 3 // из них с тенями (ближайшие)
+// Тени фонарей (Рома 31.10: «вижу лесенки на трассе, вижу, как всё прорисовывается»): раньше пул каждый кадр раздавался заново
+// по расстоянию — фонарь прыгал между слотами с тенью и без, тени на асфальте мигали; карта 1024 на весь конус 115° до 160 м —
+// крупные ступеньки. Теперь фонарь держит свой слот, пока светит; тень переходит к другому, только если тот заметно ближе
+// (SHADOW_SWAP); тень считается в середине конуса (SHADOW_FOCUS) и до SHADOW_FAR м, карта — по качеству (setShadowSize), края мягче
+const SHADOW_SWAP = 0.8 // новый фонарь забирает тень, если он ближе 0,8 расстояния до самого дальнего из «теневых»
+const SHADOW_FOCUS = 0.55
+const SHADOW_FAR = 70
 const INTENSITY = 900 // кд: поверх ровной базы — светлее под фонарём, но без резких пятен
 const RANGE = 160 // м: дальше свет фонаря не считаем
 const ANGLE = 1.0 // рад, половина конуса: пятна соседних фонарей перекрываются, между ними нет тёмных полос
@@ -148,8 +155,10 @@ export function createFloodlights(scene, track, renderer = null) {
     if (i < SHADOWS) {
       l.castShadow = true
       l.shadow.mapSize.set(1024, 1024)
-      l.shadow.camera.near = 1
-      l.shadow.camera.far = RANGE
+      l.shadow.camera.near = 2
+      l.shadow.camera.far = SHADOW_FAR
+      l.shadow.focus = SHADOW_FOCUS
+      l.shadow.radius = 2
       l.shadow.bias = -0.0004
       l.shadow.normalBias = 0.04
     }
@@ -163,6 +172,8 @@ export function createFloodlights(scene, track, renderer = null) {
   const fwd = new THREE.Vector3()
   const order = lamps.map((_, i) => i)
   const dist = new Float32Array(lamps.length)
+  const slotLamp = new Int32Array(POOL).fill(-1) // какой фонарь в каком слоте пула (держится, пока фонарь в пуле)
+  const wanted = new Uint8Array(lamps.length)
   let night = 0
 
   // материалы болидов → их собственное окружение днём ({ map, k }); ночью на них окружение «стадиона»
@@ -200,6 +211,16 @@ export function createFloodlights(scene, track, renderer = null) {
         })
       applyCars()
     },
+    // размер карты теней фонарей (качество графики)
+    setShadowSize(n) {
+      for (let i = 0; i < SHADOWS; i++) {
+        const sh = pool[i].shadow
+        if (sh.mapSize.x === n) continue
+        sh.mapSize.set(n, n)
+        sh.map?.dispose()
+        sh.map = null
+      }
+    },
     // раз в кадр: ближайшие к болиду фонари (центр — впереди по ходу) светят, у края пула гаснут плавно
     update(car) {
       if (!lights.visible) return
@@ -208,10 +229,34 @@ export function createFloodlights(scene, track, renderer = null) {
       for (let i = 0; i < lamps.length; i++) dist[i] = lamps[i].p.distanceToSquared(ahead)
       order.sort((a, b) => dist[a] - dist[b])
       const edge = Math.sqrt(dist[order[Math.min(POOL, order.length - 1)]])
+      // слоты: фонарь, который остался в пуле, остаётся в своём слоте; ушедшие освобождают место новым
+      wanted.fill(0)
+      const n = Math.min(POOL, order.length)
+      for (let r = 0; r < n; r++) wanted[order[r]] = 1
+      for (let i = 0; i < POOL; i++) if (slotLamp[i] >= 0 && !wanted[slotLamp[i]]) slotLamp[i] = -1
+      for (let r = 0; r < n; r++) {
+        const k = order[r]
+        if (slotLamp.includes(k)) continue
+        // ближние (r < SHADOWS) — сначала в свободный слот с тенью, остальные — сначала в слот без тени
+        let free = -1
+        for (let i = r < SHADOWS ? 0 : SHADOWS; i < POOL && free < 0; i++) if (slotLamp[i] < 0) free = i
+        for (let i = 0; i < POOL && free < 0; i++) if (slotLamp[i] < 0) free = i
+        slotLamp[free] = k
+      }
+      // тень — ближайшим, но с запасом: самый дальний из «теневых» отдаёт её, только если есть заметно ближе (не мигает)
+      let far = -1
+      for (let i = 0; i < SHADOWS; i++) if (far < 0 || slotLamp[i] < 0 || (slotLamp[far] >= 0 && dist[slotLamp[i]] > dist[slotLamp[far]])) far = i
+      let near = -1
+      for (let i = SHADOWS; i < POOL; i++) if (slotLamp[i] >= 0 && (near < 0 || dist[slotLamp[i]] < dist[slotLamp[near]])) near = i
+      if (far >= 0 && near >= 0 && (slotLamp[far] < 0 || dist[slotLamp[near]] < dist[slotLamp[far]] * SHADOW_SWAP * SHADOW_SWAP)) {
+        const t = slotLamp[far]
+        slotLamp[far] = slotLamp[near]
+        slotLamp[near] = t
+      }
       for (let i = 0; i < POOL; i++) {
         const l = pool[i]
-        const k = order[i]
-        if (k === undefined) {
+        const k = slotLamp[i]
+        if (k < 0) {
           l.intensity = 0
           continue
         }

@@ -374,7 +374,8 @@ export async function loadCar(url, renderer, onProgress) {
       return out
     }
     const part = (name) => dg.scene.getObjectByName(THREE.PropertyBinding.sanitizeNodeName(name)) // пробелы в именах загрузчик меняет на _
-    if (part('Пилот') && part('Рука кисть')) driverTpl = { body: merged(part('Пилот')), upper: merged(part('Рука плечо')), fore: merged(part('Рука предплечье')), hand: merged(part('Рука кисть')) }
+    // «Пилот» — голова (шлем, HANS, шея: из кабины прячется), «Пилот тело» — торс, ремни, ноги (Рома 31.10: «полноценного, с ногами»)
+    if (part('Пилот') && part('Рука кисть')) driverTpl = { head: merged(part('Пилот')), body: part('Пилот тело') ? merged(part('Пилот тело')) : null, upper: merged(part('Рука плечо')), fore: merged(part('Рука предплечье')), hand: merged(part('Рука кисть')) }
   } catch {
     driverTpl = null // нет файла — болид без пилота, как раньше
   }
@@ -427,12 +428,18 @@ export async function loadCar(url, renderer, onProgress) {
 
 // где глаза пилота в driver.glb (середина визора), м; материалы, которые перекрашиваются (свои у каждого болида)
 const DRIVER_EYE = [0, 0.146, 0.08]
-const DRIVER_PAINT = ['helmet_main', 'helmet_stripe', 'driver_suit', 'driver_gloves', 'driver_gloves2']
+const DRIVER_PAINT = ['helmet_main', 'helmet_stripe', 'driver_suit', 'driver_gloves']
+// накладка на тыльной стороне и раструб перчатки — всегда тёмные (Рома 31.10 «что с рукой?»: в цвет перчаток/комбинезона кисть
+// сливалась в один брусок, пальцев не видно)
+const GLOVE_TRIM = '#26282d'
 // руки (driver.glb): плечевой сустав в осях пилота (левая; правая — зеркально по X), длины плеча и предплечья до запястья,
 // запястье — на grip не доходя до ручки руля
 const ARM = { shoulder: [0.165, -0.085, -0.03], upper: 0.27, fore: 0.25, grip: 0.075 }
 // руль на экране: угол колёс → поворот руля (у F1 ~±90° от упора до упора)
 const WHEEL_TURN = 3.4
+
+// halo из кабины в режиме «Прозрачный»: доля непрозрачности
+const HALO_FADE = 0.22
 
 // покрытие кузова: undefined — как в модели
 export const FINISHES = {
@@ -657,6 +664,7 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
 
   // пилот в кокпите: глаза — там, где камера из кабины (cam_onboard, на 7 см ниже — как в camera.js); свои материалы цвета
   let driver = null
+  let driverHead = null // шлем, HANS, шея — из кабины прячется
   const driverMats = {}
   const arms = []
   if (driverTpl) {
@@ -671,16 +679,24 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
       })
       return c
     }
+    driverTpl.hand.traverse((o) => o.isMesh && o.material.name === 'driver_gloves2' && o.material.color.set(GLOVE_TRIM))
+    driverTpl.fore.traverse((o) => o.isMesh && o.material.name === 'driver_gloves2' && o.material.color.set(GLOVE_TRIM))
     driver = new THREE.Group()
     driver.name = 'driver'
-    driver.add(own(driverTpl.body))
+    driverHead = own(driverTpl.head)
+    driver.add(driverHead)
+    if (driverTpl.body) driver.add(own(driverTpl.body))
+    // ремни пустого кокпита из модели болида — у пилота свои (шеститочечные), иначе пересекаются с ним
+    if (driverTpl.body) carRoot.getObjectByName('cockpit')?.traverse((o) => o.isMesh && /^belt_/.test(o.material?.name ?? '') && (o.visible = false))
     const eye = onboard.position
     driver.position.set(eye.x - DRIVER_EYE[0], eye.y - 0.07 - DRIVER_EYE[1], eye.z - DRIVER_EYE[2])
     onboard.parent.add(driver)
-    if (sw) {
+    // руки — только у болида игрока (кисть ~22 тыс. треугольников; у ботов снаружи их почти не видно)
+    if (sw && shadows) {
       for (const side of [1, -1]) {
         const a = { side, upper: own(driverTpl.upper), fore: own(driverTpl.fore), hand: own(driverTpl.hand) }
         // руки — в осях болида (не пилота), чтобы проще считать ручки руля
+        a.hand.matrixAutoUpdate = false // кисть ставим матрицей: у левой она зеркальная
         carRoot.add(a.upper, a.fore, a.hand)
         arms.push(a)
       }
@@ -716,13 +732,15 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
       a.fore.position.copy(E)
       a.fore.quaternion.setFromUnitVectors(Y, x.subVectors(W, E).normalize())
       a.fore.scale.set(1, k, 1)
-      // кисть: Y — от запястья к ручке, X — вдоль ручки (большой палец сверху), Z — третья
+      // кисть: Y — от запястья к ручке, X — вдоль ручки, большой палец сверху; тыльная сторона (−Z модели) — наружу и к пилоту,
+      // пальцы обхватывают ручку снаружи. Кисть в модели — правая; левая — её зеркало (Рома 31.10: «рука вывернута, вижу ладонь,
+      // а должен видеть верх руки» — раньше левую просто поворачивали, и одна из рук держала руль ладонью наружу, крючком)
       const hy = x.subVectors(G, W).normalize()
-      const hx = t.clone().multiplyScalar(a.side).addScaledVector(hy, -t.dot(hy) * a.side).normalize()
+      const hx = t.clone().addScaledVector(hy, -t.dot(hy)).normalize()
       const hz = new THREE.Vector3().crossVectors(hx, hy)
-      m.makeBasis(hx, hy, hz)
-      a.hand.position.copy(W)
-      a.hand.quaternion.setFromRotationMatrix(m)
+      if (a.side > 0) hz.negate() // левая: зеркало (определитель −1 — three.js сам развернёт грани)
+      m.makeBasis(hx, hy, hz).setPosition(W)
+      a.hand.matrix.copy(m)
     }
   }
   poseArms()
@@ -748,6 +766,9 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
     }
     return (hlCache[id] = list)
   }
+
+  let haloMode = 'show'
+  let haloParts = null // детали дуги halo со своими материалами (setHaloView)
 
   // покрытие кузова (глянец, мат, металлик, хром): меняем шероховатость, металл и лак у краски болида
   const finishBase = new Map()
@@ -801,6 +822,9 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
     },
 
     driver,
+    get driverHead() {
+      return driverHead
+    },
 
     // пилот: helmet — основа шлема, helmet2 — полоса, suit — комбинезон, gloves — перчатки (любой можно не указывать)
     setDriver({ helmet, helmet2, suit, gloves }) {
@@ -808,7 +832,6 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
       if (helmet2) driverMats.helmet_stripe?.color.set(helmet2)
       if (suit) driverMats.driver_suit?.color.set(suit)
       if (gloves) driverMats.driver_gloves?.color.set(gloves)
-      if (suit) driverMats.driver_gloves2?.color.set(suit) // манжеты и накладки перчаток — в цвет комбинезона
     },
 
     setFinish(id) {
@@ -847,6 +870,30 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
         d.mat.needsUpdate = true
       }
       decalContrast(list, livery.primary, livery.secondary)
+    },
+
+    // halo из кабины (Рома 31.10: «палка перед глазами, я не вижу поворота»): show — как есть, fade — полупрозрачный, hide — нет.
+    // Материалы дуги и её наклеек у болида игрока — свои копии (у ботов дуга обычная). Вызывать можно каждый кадр
+    setHaloView(mode) {
+      if (mode === haloMode) return
+      haloMode = mode
+      if (!haloParts) {
+        haloParts = []
+        const take = (o) => {
+          if (!o.isMesh) return
+          o.material = o.material.clone()
+          haloParts.push({ o, opacity: o.material.opacity, transparent: o.material.transparent }) // глубину пишет: размытие в движении её не смазывает
+        }
+        carRoot.getObjectByName('halo')?.traverse(take)
+        scene.getObjectByName('decals')?.traverse((o) => /halo/.test(o.name) && take(o))
+      }
+      for (const p of haloParts) {
+        const m = p.o.material
+        p.o.visible = mode !== 'hide'
+        m.transparent = mode === 'fade' ? true : p.transparent
+        m.opacity = mode === 'fade' ? p.opacity * HALO_FADE : p.opacity
+        m.needsUpdate = true
+      }
     },
 
     // подсветить детали узла сборки (engine, aero…) или снять (null); t — время, для мерцания
@@ -890,7 +937,7 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
         if (box.isEmpty()) continue
         const size = box.getSize(new THREE.Vector3())
         const ctr = box.getCenter(new THREE.Vector3())
-        const rt = new THREE.WebGLRenderTarget(200, 90)
+        const rt = new THREE.WebGLRenderTarget(400, 180, { samples: 2 }) // вдвое чётче, со сглаживанием (было 200×90 — «пиксели»)
         // экран чуть ближе к пилоту, чем стекло. Отражение получается само: камера смотрит назад, и левое сзади (+X) у неё
         // справа на картинке — а пилот видит правую часть текстуры (+X экрана) слева от себя, как в настоящем зеркале
         const geo = new THREE.PlaneGeometry(size.x * 0.96, size.y * 0.9)

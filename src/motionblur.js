@@ -6,10 +6,10 @@
 // болид игрока едет вместе с камерой, поэтому ближнее (до NEAR0…NEAR1 м от камеры) не смазывается совсем, и выборки с
 // ближнего не попадают в смаз дальнего (иначе болид «тёк» бы на фон). Длина смаза — как у кинокамеры с затвором 180°
 // (половина пути за кадр, `SHUTTER`), не длиннее MAX_BLUR экрана. Камеру перенесли (R, смена вида, новый старт) — кадр без смаза.
-// Выключено — рисуем как раньше, прямо на экран, без лишней работы. Тон и цвет (ACES, sRGB) — в этом же проходе.
+// Выключено — рисуем как раньше, прямо на экран, без лишней работы. Тон (ACES) — при рисовании сцены, sRGB — в этом проходе.
 import * as THREE from 'three'
 
-const SAMPLES = 6
+const SAMPLES = 12 // выборок вдоль смаза; каждая точка начинает со своего сдвига (шум) — без «ступенек» на скорости
 const NEAR0 = 7 // м: ближе — не смазываем (болид в кадре, кабина)
 const NEAR1 = 16 // м: дальше — смаз полностью
 const MAX_BLUR = 0.035 // доля экрана: потолок длины смаза
@@ -49,8 +49,11 @@ void main() {
   if (len > 0.0006) {
     if (len > ${MAX_BLUR}) vel *= ${MAX_BLUR} / len;
     float n = 1.0;
+    // сдвиг выборок для каждой точки свой (interleaved gradient noise): вместо ровных копий кадра — мелкое зерно, глаз его
+    // не видит (Рома 31.10: «на ходу всё пиксельное» — 6 ровных копий на скорости давали ступеньки)
+    float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
     for (int i = 0; i < ${SAMPLES}; i++) {
-      vec2 uv = vUv + vel * (float(i) / ${(SAMPLES - 1).toFixed(1)} - 0.5);
+      vec2 uv = vUv + vel * ((float(i) + jit) / ${SAMPLES.toFixed(1)} - 0.5);
       // выборка с ближнего (болид) в смаз дальнего не идёт
       float wgt = farK(texture2D(tDepth, uv).x);
       sum += texture2D(tColor, uv) * wgt;
@@ -59,13 +62,18 @@ void main() {
     sum /= n;
   }
   gl_FragColor = sum;
-  #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`
 
 export function createMotionBlur(renderer) {
   const size = new THREE.Vector2()
   const target = new THREE.WebGLRenderTarget(1, 1, { samples: 4, type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(1, 1) })
+  // Тон (ACES) — прямо при рисовании сцены, как на экране, ДО сглаживания (Рома 31.10: «лесенки на трассе»). three.js тонирует
+  // только при рисовании на экран (или в XR-цель); в свою картинку кадр шёл в «сырой» яркости, и MSAA усреднял край яркой
+  // белой линии (ночью она ещё светится, яркость ≫ 1) с асфальтом уже там: точка, на четверть закрытая линией, после тона
+  // становилась почти белой — перехода нет, ступеньки. Пометка XR-цели включает тон для этой картинки; цвет в ней линейный.
+  target.isXRRenderTarget = true
+  target.texture.colorSpace = THREE.LinearSRGBColorSpace
   const mat = new THREE.ShaderMaterial({
     vertexShader: vert,
     fragmentShader: frag,
@@ -80,6 +88,7 @@ export function createMotionBlur(renderer) {
     },
     depthTest: false,
     depthWrite: false,
+    toneMapped: false, // тон уже в картинке (см. выше); здесь — только перевод в sRGB
   })
   const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat)
   quad.frustumCulled = false

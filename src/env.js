@@ -93,14 +93,15 @@ export function createEnvironment(renderer, scene) {
   const sun = new THREE.DirectionalLight(SUN_DAY.clone(), 2.6)
   sun.castShadow = true
   sun.shadow.mapSize.set(1024, 1024) // на квадрат 28×28 м этого хватает: 2,7 см на точку
-  const s = 14
+  let s = 14
   Object.assign(sun.shadow.camera, { left: -s, right: s, top: s, bottom: -s, near: 1, far: 140 })
   sun.shadow.bias = -0.0004
   sun.shadow.normalBias = 0.04
+  sun.shadow.radius = 1.5 // края теней чуть мягче — без ступенек
   scene.add(sun, sun.target)
 
   // оси карты теней (как у камеры солнца: смотрит вдоль −SUN_DIR, верх — мировой Y) и размер её точки
-  const TEXEL = (2 * s) / sun.shadow.mapSize.x
+  let TEXEL = (2 * s) / sun.shadow.mapSize.x
   const SHADOW_X = new THREE.Vector3(0, 1, 0).cross(SUN_DIR).normalize()
   const SHADOW_Y = SUN_DIR.clone().cross(SHADOW_X)
 
@@ -144,6 +145,19 @@ export function createEnvironment(renderer, scene) {
     },
     // Рома 30.10: «картинка дрожит» — тень ехала за болидом плавно, и карта теней каждый кадр сдвигалась на доли своей
     // точки: края теней (болид, деревья, ограждения) мерцали и ползли. Теперь центр карты шагает ровно по её сетке (2,7 см).
+    // размер карты теней (качество графики): 1024 — 2,7 см на точку, 2048 — 1,4, 4096 — 0,7 (у кокпита перед глазами
+    // при 1024 были видны «пиксели» теней)
+    // На хорошем качестве и квадрат теней больше: тени деревьев, трибун и стен «дорисовывались» в 14 м от болида
+    setShadowSize(n) {
+      if (sun.shadow.mapSize.x === n) return
+      sun.shadow.mapSize.set(n, n)
+      sun.shadow.map?.dispose()
+      sun.shadow.map = null
+      s = n >= 4096 ? 32 : n >= 2048 ? 22 : 14 // полстороны квадрата теней, м: точка тени 1,6 / 2,1 / 2,7 см
+      Object.assign(sun.shadow.camera, { left: -s, right: s, top: s, bottom: -s })
+      sun.shadow.camera.updateProjectionMatrix()
+      TEXEL = (2 * s) / n
+    },
     follow(pos) {
       const a = Math.round(pos.dot(SHADOW_X) / TEXEL) * TEXEL
       const b = Math.round(pos.dot(SHADOW_Y) / TEXEL) * TEXEL

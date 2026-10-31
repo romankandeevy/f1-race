@@ -35,6 +35,7 @@ const PITCH_MAX = 1.45 // рад: сверху вниз на болид
 const PITCH_MIN = -0.12 // рад: чуть ниже обычного, но не под землю
 const HEAD_YAW_MAX = 1.75 // голова на болиде вертится на ±100°: назад из кабины, с носа и с T-камеры смотреть нельзя (Рома 29.10)
 const HEAD_PITCH_MAX = 1.0
+const ONBOARD_NEAR = 0.035 // м: ближняя граница камеры из кабины
 
 // Камеры (клавиша C по кругу; ТВ-камеру и вертолёт Рома 29.10 попросил убрать). mount — камера на болиде в точке модели (x, y, z) и повороте по курсу; fov — поле зрения.
 // Точки в осях модели: нос смотрит в +Z, высота над землёй как у машины. T-камера — над воздухозаборником, нос — над носовым
@@ -238,6 +239,13 @@ export class CameraRig {
     const speedKmh = st.speedKmh
     this.t += dt
     this.updateView(dt, view)
+    // из кабины подголовник и борта кокпита — в паре сантиметров от глаз: с обычной ближней границей (10 см) при повороте
+    // головы их срезало плоскостью (Рома 31.10: «камера не должна заезжать в текстуру»)
+    const near = !this.showcase && this.mode === 'onboard' ? ONBOARD_NEAR : 0.1
+    if (this.camera.near !== near) {
+      this.camera.near = near
+      this.camera.updateProjectionMatrix()
+    }
     if (this.showcase) {
       this.updateShowcase(dt, car)
       return

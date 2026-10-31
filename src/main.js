@@ -42,10 +42,12 @@ import { createMotionBlur, BLUR_LEVELS } from './motionblur.js'
 
 const STEP = 1 / 240 // шины жёсткие: на 240 Гц их силы считаются без дрожи
 
-// Экономия энергии: ретина ×2 со сглаживанием — это ~16 млн точек за кадр, ×1,5 почти не видно глазом,
-// а точек на 44% меньше. На экранах 120 Гц браузер зовёт кадр вдвое чаще — по умолчанию рисуем не чаще 60 раз в секунду.
+// Разрешение по качеству (settings.js QUALITY.ratio): ретина ×2 со сглаживанием — это ~16 млн точек за кадр.
+// На экранах 120 Гц браузер зовёт кадр вдвое чаще — по умолчанию рисуем не чаще 60 раз в секунду.
 // Качество и лимит кадров игрок меняет в настройках (settings.js).
-const pixelRatioFor = (q) => Math.min(devicePixelRatio, QUALITY[q].ratio)
+// раньше разрешение не поднималось выше экрана: на обычном мониторе «Максимум» был ×1 — лесенка на краях; теперь рисуем
+// больше экрана (×1,5 / ×2) и браузер ужимает картинку — сглаживание; на ретине ×2 — как было
+const pixelRatioFor = (q) => QUALITY[q].ratio
 const CAREER_KEY = 'f1-race.career.v1'
 const WRONG_WAY_RESET = 3 // с
 
@@ -65,6 +67,7 @@ async function main() {
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 3500)
   const env = createEnvironment(renderer, scene)
+  env.setShadowSize(QUALITY[settings.get('quality')].shadow)
 
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
   world.timestep = STEP
@@ -126,6 +129,7 @@ async function main() {
   const rig = new CameraRig(camera, car)
   const hud = createHud(track)
   hud.setCarScan(scanCar(renderer, car.group)) // схема болида на табло — из той же модели, пока колёса и крылья на месте
+  const headrest = car.group.getObjectByName('headrest') // подголовник: из кабины не виден (см. кадр)
   const mirrors = car.initMirrors() // зеркала заднего вида — после схемы: экраны и камеры зеркал на схеме не нужны
   const particles = createParticles(scene)
   const marks = createTrackMarks(scene) // обломки и следы торможения
@@ -847,6 +851,8 @@ async function main() {
     if (k === 'quality') {
       renderer.setPixelRatio(pixelRatioFor(v))
       renderer.setSize(innerWidth, innerHeight)
+      env.setShadowSize(QUALITY[v].shadow)
+      floodlights.setShadowSize(Math.min(2048, QUALITY[v].shadow))
       if (renderer.shadowMap.enabled !== QUALITY[v].shadows) {
         renderer.shadowMap.enabled = QUALITY[v].shadows
         scene.traverse((o) => {
@@ -1575,8 +1581,13 @@ async function main() {
     sound.update(vehicle, lastInput, paused, { bots: rivals, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: online.inRace ? Math.max(0, online.lights()) : start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
     // зеркала заднего вида: только если их видно (кабина, T-камера) и игра идёт
     mirrors?.update(renderer, scene, !inMenu && (rig.mode === 'onboard' || rig.mode === 'tcam'))
-    // из кабины камера — в голове пилота: шлем и плечи прячем, руки на руле видно
-    if (car.driver) car.driver.visible = inMenu || rig.showcase || rig.mode !== 'onboard'
+    // из кабины камера — в голове пилота: прячем только голову (шлем, HANS); руки, тело и ноги видно, если посмотреть вниз
+    const fromHead = !inMenu && !rig.showcase && rig.mode === 'onboard'
+    if (car.driverHead) car.driverHead.visible = !fromHead
+    // подголовник обступает шлем: из глаз пилота его внутренняя сторона закрывала четверть кадра плоским белым пятном
+    if (headrest) headrest.visible = !fromHead
+    // halo из кабины — по настройке (Камера → Halo из кабины); с остальных камер и в меню — обычный
+    car.setHaloView(!inMenu && !rig.showcase && rig.mode === 'onboard' ? settings.get('halo') : 'show')
     car.highlight(inMenu && garageFocus && garageFocus !== 'driver' ? garageFocus : null, now / 1000)
     post.render(scene, camera, inMenu || paused)
   }
