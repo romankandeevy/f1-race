@@ -7,7 +7,8 @@
 // 62%, прокол или крыло сломано; правило двух составов — не позже предпоследнего круга.
 import { createVehicle, stepVehicle, setGhost } from './vehicle.js'
 import { SETUP_DEFAULT } from './tuning.js'
-import { createRaceLine, createAiDriver, makePilots, AI_LEVELS } from './ai.js'
+import { createRaceLine, createAiDriver, AI_LEVELS } from './ai.js'
+import { rosterPilots } from './drivers.js'
 import { freshTyres } from './wear.js'
 import { createPitStop, defaultPlan, rainTyreFor } from './pit.js'
 import { retireReason, mechanicalFlag } from './stewards.js'
@@ -135,8 +136,8 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
     spawn(level, slots, season = null) {
       api.clear()
       rubberOn = !!AI_LEVELS[level]?.rubber
-      // пилоты вразброс по решётке: имя и цвет — один пилот, номер темпа — новый на каждую гонку
-      const pilots = makePilots(BOT_COUNT, rand)
+      // пилоты постоянные (drivers.js): имя, характер и рейтинг закреплены за ботом; на решётке — вразброс
+      const pilots = rosterPilots(rand)
       const order = Array.from({ length: BOT_COUNT }, (_, i) => i)
       for (let k = order.length - 1; k > 0; k--) {
         const r = Math.floor(rand() * (k + 1))
@@ -155,11 +156,12 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
         const planLap = v.compound === 'soft' ? 2 + Math.round(rand()) : 3
         const c = car.spawn(PAINTS[i % PAINTS.length])
         scene?.add(c.group)
-        const pilot = season ? season.pilots[i] : pilots[slot]
+        const pilot = pilots[i]
+        v.tyreWearK = pilot.tyreK // хранитель шин / квалификатор
         const d = createAiDriver(createRaceLine(track.axis, level, T, pilot), { T, zone: track.straightZone })
         // базовые числа для подтягивания: сцепление, мощность, тяга, тормоза (см. rubberK)
         const T0 = { tireMu: T.tireMu, power: T.power, maxDriveForce: T.maxDriveForce, brakeForce: T.brakeForce }
-        return { id: 'bot' + i, name: NAMES[i % NAMES.length], paint: PAINTS[i % PAINTS.length], pilot, build, v, car: c, d, input: d.input, box: slot, stops: 0, planLap, pit: null, T0, rub: 1 }
+        return { id: 'bot' + i, name: pilot.code || NAMES[i % NAMES.length], paint: PAINTS[i % PAINTS.length], pilot, build, v, car: c, d, input: d.input, box: slot, stops: 0, planLap, pit: null, T0, rub: 1 }
       })
     },
 
@@ -219,9 +221,11 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
         // «Сложные»: подтягивание к игроку (race.gapToPlayer — сколько метров игрок впереди этого бота)
         const want = rubberOn && racing && race?.gapToPlayer ? rubberK(race.gapToPlayer(b.id)) : 1
         b.rub += (want - b.rub) * Math.min(1, dt / RUBBER_TAU)
-        if (Math.abs(b.rub - 1) > 1e-4 || b.v.T.tireMu !== b.T0.tireMu) {
+        // дождевик: по мокрой держит лучше остальных
+        const wetK = 1 + ((b.pilot.wetK ?? 1) - 1) * Math.min(1, (b.v.wet || 0) * 2)
+        if (Math.abs(b.rub - 1) > 1e-4 || b.v.T.tireMu !== b.T0.tireMu * wetK) {
           const T = b.v.T
-          T.tireMu = b.T0.tireMu * b.rub
+          T.tireMu = b.T0.tireMu * b.rub * wetK
           T.power = b.T0.power * b.rub
           T.maxDriveForce = b.T0.maxDriveForce * b.rub
           T.brakeForce = b.T0.brakeForce * b.rub

@@ -491,7 +491,7 @@ export function createAiDriver(line, opts = {}) {
         if (!isObstacle(b) && (speed < 25 || st.tRun < 6)) return false
         const vfree = line.speed[at(i0 + Math.round(Math.max(0, b.s) / 2))] * skill * st.rubber * tyreK
         const dv = vfree - b.v
-        if (dv < L.passDv) return false
+        if (dv < L.passDv + (pilot.passBias ?? 0)) return false
         const tPass = (b.gap + CAR_L + 3) / Math.max(0.6 * dv, 1)
         const need = (Math.max(speed, b.v) + 0.3 * dv) * tPass
         return brakePoint() > need + 15 + 25 * (1 - aggression)

@@ -8,7 +8,7 @@ import { loadCircuit } from './circuit.js'
 import { loadCar, PAINTS } from './car.js'
 import { createVehicle, stepVehicle, collectImpacts, setGhost, applyTuning } from './vehicle.js'
 import { loadBuild, saveBuild, buildTuning, STOCK_BUILD, BUDGET } from './build.js'
-import { newSeason, loadSeason, saveSeason, applyResult, nextRound, replacePart } from './career.js'
+import { newSeason, loadSeason, saveSeason, applyResult, nextRound, replacePart, applySprint, sprintPending, sprintLaps } from './career.js'
 import { CameraRig } from './camera.js'
 import { createHud, createTelemetry } from './hud.js'
 import { scanCar } from './carScan.js'
@@ -40,6 +40,12 @@ import { createSafetyCar } from './safetycar.js'
 import { createCrew } from './crew.js'
 import { createReplay } from './replay.js'
 import { createMenuAudio } from './menuaudio.js'
+import { createRainDrops } from './raindrops.js'
+import { createRacingLine } from './racingline.js'
+import { createTutorial } from './tutorial.js'
+import { createLapView } from './lapview.js'
+import { createRaceLine } from './ai.js'
+import { rateRace } from './drivers.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { loadLivery, saveLivery } from './teams.js'
 import { createMotionBlur, BLUR_LEVELS } from './motionblur.js'
@@ -85,6 +91,8 @@ async function main() {
   const TRACKS = {
     lumen: { url: '/models/track.glb', name: 'LUMEN RING', kind: 'Загородная', km: '3,7 км', quali: { light: 80.6, medium: 72.8, hard: 68.9, pro: 68.9 }, about: 'Широкие быстрые повороты, за поребриками гравий и трава — ошибки прощает. Круг около 1:10.' },
     marina: { url: '/models/marina.glb', name: 'MARINA BAY', kind: 'Городская · Сингапур', km: '4,9 км', quali: { light: 133.8, medium: 125.1, hard: 120.8, pro: 120.8 }, about: '19 медленных поворотов, стены вплотную — ошибка стоит удара. Сложная, для опытных. Круг около 2:00.' },
+    // Спа (31.10, Forma «Спа-Франкоршам», tools/track/spa): lap.mjs 131,5 / 122,8 / 119,9 с × 1,035 (в игре на Марине круг на 3–4% дольше)
+    spa: { url: '/models/spa.glb', name: 'SPA-FRANCORCHAMPS', kind: 'Загородная · Бельгия', km: '7,0 км', quali: { light: 136.1, medium: 127.1, hard: 124.1, pro: 124.1 }, about: 'Длинная и быстрая, в лесу Арденн: подъём Eau Rouge, прямая Кеммель, Пуон, Бланшимон. Перепад высот 24 м. Круг около 2:05.' },
   }
   const TRACK_KEY = 'f1-race.track'
   const trackParam = new URLSearchParams(location.search).get('track')
@@ -125,6 +133,7 @@ async function main() {
   let seasonRace = false
   let seasonRound = -1 // номер этапа, который сейчас едем (очки — один раз за этап)
   let seasonNote = null // строка про очки и призовые на экране итогов
+  let sprintRace = false // сейчас спринт этапа (а не основная гонка)
   let buildMode = 'free'
   let garageFocus = null // что гараж показывает крупно (узел сборки, 'driver') — подсветка в кадре
   let testReturn = null // обкатка из гаража: куда вернуться (стек экранов)
@@ -143,6 +152,7 @@ async function main() {
   // круги считаем только на настоящей трассе (у тестовой нет оси); лучший круг — свой для каждой длины трассы.
   // laps2: с 28.10 считаются границы трассы — старые рекорды со срезками не берём
   const laps = track.axis?.length ? createLaps(track, `f1-race.laps2.${Math.round(track.length)}`) : null
+  const lapView = laps ? createLapView(track) : null // телеметрия круга против лучшего (Y)
   const ghost = laps ? createGhost(scene, car, `f1-race.laps2.${Math.round(track.length)}.ghost`) : null // призрак лучшего круга
   // огни старта: на портале трассы и на табло; у Marina Bay портала пока нет — только табло
   const start = track.lamps?.length || track.grid?.length ? createStart(track.lamps || []) : null
@@ -235,6 +245,15 @@ async function main() {
   const setupScreen = createSetupScreen()
   const sound = createSound()
   const menuAudio = createMenuAudio() // музыка меню и звуки интерфейса
+  const rainDrops = createRainDrops() // капли на экране в дождь
+  // обучение (tutorial.js): «Играть → Обучение» или предложение при первом запуске
+  const tutorial = createTutorial({ onExit: () => enterMenu() })
+  function startTutorial() {
+    tutorial.hideOffer()
+    ui.hide()
+    startSession({ mode: 'time', compound: 'medium', weather: 'dry', time: 'day', abs: true })
+    tutorial.start()
+  }
 
   // ABS: включает сам игрок (B), выбор помним между заходами
   const ABS_KEY = 'f1-race.abs'
@@ -314,6 +333,8 @@ async function main() {
     }
     sound.setAmbience({ stands: stands.slice(0, 12), pits })
   }
+  // гоночная линия и тормозные таблички (racingline.js): линия — как у ботов уровня «Средние»
+  const racingLine = !useTest && track.axis?.length ? createRacingLine(scene, track, createRaceLine(track.axis, 'hard', TUNING)) : null
   // повтор гонки (replay.js): запись идёт всю гонку, смотреть — кнопкой «Повтор» на итогах
   const replay = createReplay({ camera, axis: track.axis, length: track.length })
   // механики на пит-стопе (crew.js): модель грузится в фоне, без неё пит-стоп как раньше
@@ -476,6 +497,8 @@ async function main() {
     },
     previewTime: (t) => setNight(t === 'night' ? 1 : 0),
     startSession: (o) => startSession(o),
+    startTutorial: () => startTutorial(),
+    showLapView: lapView ? () => lapView.show() : null,
     openOnline: () => {
       ui.hide()
       rig.setShowcase(true, 0.2)
@@ -669,23 +692,32 @@ async function main() {
       return
     }
     ui.hide()
-    startSession({ mode: 'race', level: season.level, laps: season.laps, slot: -1, compound: startCompound, weather: 'dry', time: r.night ? 'night' : 'day', career: true })
+    const sprint = sprintPending(season)
+    startSession({ mode: 'race', level: season.level, laps: sprint ? sprintLaps(season.laps) : season.laps, slot: -1, compound: startCompound, weather: 'dry', time: r.night ? 'night' : 'day', career: true, sprint })
   }
 
   // этап чемпионата доехан (финиш, сход, дисквалификация): очки и призовые — один раз за этап
   function seasonAward() {
     if (!seasonRace || !season || !race || season.round !== seasonRound) return
     const n = season.round + 1
+    if (sprintRace) {
+      if (!sprintPending(season)) return
+      const r = applySprint(season, race.state.order)
+      saveSeason(season)
+      seasonNote = `Спринт этапа ${n}: ${r.dnf ? 'без очков' : `${r.pos}-е место, +${r.pts} очк.`}${r.prize ? ` · призовые +${r.prize}` : ''} — дальше квалификация и гонка`
+      return
+    }
     const r = applyResult(season, race.state.order)
     saveSeason(season)
     seasonNote = `Этап ${n} из ${season.rounds}: ${r.dnf ? 'без очков' : `${r.pos}-е место, +${r.pts} очк.`} · призовые +${r.prize} — бюджет сборки ${r.budget}`
   }
   // кнопки итогов: в чемпионате — «К чемпионату» вместо «Ещё раз» (этап засчитан)
-  const resultsOpts = () => (seasonRace ? { note: seasonNote, actions: [['season', 'К чемпионату'], ['replay', 'Повтор'], ['menu', 'В главное меню']] } : { actions: [['again', 'Ещё раз'], ['replay', 'Повтор'], ['menu', 'В главное меню']] })
+  const resultsOpts = () => (seasonRace ? { note: seasonNote, actions: [sprintRace ? ['mainrace', 'К гонке этапа'] : ['season', 'К чемпионату'], ['replay', 'Повтор'], ['menu', 'В главное меню']] } : { actions: [['again', 'Ещё раз'], ['replay', 'Повтор'], ['menu', 'В главное меню']] })
 
   function startSession(o) {
     inMenu = false
     seasonRace = !!(o.career && season)
+    sprintRace = seasonRace && !!o.sprint
     seasonRound = seasonRace ? season.round : -1
     seasonNote = null
     useBuild(o.build ?? (seasonRace ? season.build : build))
@@ -733,7 +765,7 @@ async function main() {
   // решётка по квалификации: время игрока и времена ботов (темп пилота от уровня + разброс), места по времени
   function qualiGrid() {
     const base = QUALI_BASE[botLevel]
-    const rows = [{ id: 'player', name: playerName(), paint: livery.primary, player: true, time: qualiTime ?? Infinity }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, time: base / b.pilot.pace + (Math.random() * 0.6 - 0.2) }))]
+    const rows = [{ id: 'player', name: playerName(), paint: livery.primary, player: true, time: qualiTime ?? Infinity }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, time: base / (b.pilot.pace * (b.pilot.qualiK ?? 1)) + (Math.random() * 0.6 - 0.2) }))]
     rows.sort((a, b) => a.time - b.time)
     rows.forEach((r, i) => {
       if (!r.player) bots.regrid(r.id, track.grid[i])
@@ -866,7 +898,7 @@ async function main() {
     }
     setFuel(vehicle, tank)
     for (const b of bots?.list ?? []) setFuel(b.v, tank)
-    hud.setMode(race ? `Гонка · ${AI_LEVELS[botLevel].name.toLowerCase()} соперники` : quali ? `Квалификация · круг 1 из ${QUALI_LAPS}` : 'Заезд на время')
+    hud.setMode(race ? `${sprintRace ? 'Спринт' : 'Гонка'} · ${AI_LEVELS[botLevel].name.toLowerCase()} соперники` : quali ? `${sprintRace ? 'Спринт-квалификация' : 'Квалификация'} · круг 1 из ${QUALI_LAPS}` : 'Заезд на время')
     vehicle.body.setTranslation({ x: s.x, y: (s.y || 0) + 0.05, z: s.z }, true)
     vehicle.body.setRotation({ x: 0, y: Math.sin(s.yaw / 2), z: 0, w: Math.cos(s.yaw / 2) }, true)
     vehicle.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
@@ -923,6 +955,7 @@ async function main() {
     else if (k === 'mouse') rig.mouseK = v / 100
     else if (k === 'invertY') rig.invertY = v
     else if (k === 'shake') rig.shakeK = v / 100
+    else if (k === 'feel') rig.feelK = v / 100
     else if (k === 'fov') rig.fovK = v / 100
     else if (k === 'hud') document.documentElement.style.setProperty('--hud', v / 100)
     else if (k === 'units') hud.setUnits(v)
@@ -942,6 +975,7 @@ async function main() {
       if (!replay.enter(() => race && hud.showResults(race.state, resultsOpts()))) hud.showResults(race.state, resultsOpts())
     } else if (act === 'again') gridStart()
     else if (act === 'race') goRace()
+    else if (act === 'mainrace') playSeasonRound()
     else if (act === 'season') {
       enterMenu()
       ui.openCareer()
@@ -953,6 +987,8 @@ async function main() {
   document.getElementById('loader').classList.add('done')
   // после загрузки — главное меню; гонка начинается по кнопке «Гонка» или «Заезд на время»
   enterMenu()
+  // первый запуск: предложить обучение
+  if (tutorial.offerNeeded && !useTest) tutorial.offer(startTutorial)
   // сменили трассу в настройке заезда — после перезагрузки сразу на следующий шаг
   try {
     if (sessionStorage.getItem('f1-race.reopen') === 'flow') ui.openFlow()
@@ -975,6 +1011,13 @@ async function main() {
 
   let acc = 0
   let last = performance.now()
+  // рейтинг пилотов-соперников после гонки (drivers.js): один раз за гонку, онлайн — нет
+  let rated = null
+  function rateBots() {
+    if (!race || online.inRace || rated === race || !bots?.list.length) return
+    rated = race
+    rateRace(race.state.order.map((c) => c.id), new Set(race.state.cars.filter((c) => c.dnf || c.dsq).map((c) => c.id)))
+  }
   let cheerPos = -1 // место игрока на прошлом кадре — для ликования трибун на обгоне
   let cheerAt = 0
   let lastInput = input.read()
@@ -1114,6 +1157,7 @@ async function main() {
     resultsAt = performance.now() + 2500
     if (race) {
       career.races++
+      rateBots()
       career.dnf++
       saveCareer()
     }
@@ -1135,11 +1179,21 @@ async function main() {
         replay.key(code)
         continue
       }
+      // телеметрия круга: Y — открыть и закрыть, Esc — закрыть
+      if (lapView?.open) {
+        if (code === 'KeyY' || code === 'Escape') lapView.close()
+        continue
+      }
+      if (code === 'KeyY' && lapView && !inMenu && !ui.isOpen() && !menu.isOpen() && !online.inRace) {
+        lapView.show()
+        continue
+      }
       // в главном меню и экранах свои клавиши (стрелки, Enter, Q, E): игровые не трогаем, кроме Esc
       if ((inMenu || ui.isOpen()) && code !== 'Escape') continue
       // в гараже и меню свои клавиши (стрелки, Enter, Q, E) — игровые не трогаем
       if ((setupScreen.isOpen() || menu.isOpen()) && code !== 'KeyG' && code !== 'Escape') continue
       if (code === 'KeyC') {
+        tutorial.event('cam')
         hud.notify('Камера: ' + rig.next(), false, 1.6)
         post.reset() // другой вид — без смаза на первом кадре
       }
@@ -1209,7 +1263,7 @@ async function main() {
     // пока открыты гараж или меню — гонка на паузе
     // онлайн-гонку на паузу не поставить (едут все): с открытым меню своя машина просто без газа и руля
     const menuOpen = setupScreen.isOpen() || menu.isOpen() || ui.isOpen()
-    const paused = !online.active && (menuOpen || inMenu || qualiShown || replay.active)
+    const paused = !online.active && (menuOpen || inMenu || qualiShown || replay.active || !!lapView?.open)
     if (paused) acc = 0
     else acc += dt
     let simDt = 0
@@ -1520,6 +1574,7 @@ async function main() {
       const q = vehicle.body.rotation()
       const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.x * q.x))
       laps.update(simDt, p.x, p.z, yaw, vehicle.state.fwdSpeed)
+      lapView?.record(laps, vehicle.state.speedKmh, lastInput)
       ghost?.update(simDt, laps.state, vehicle.body, !race && settings.get('ghost'))
       // квалификация: засчитанные круги, строка режима, конец после QUALI_LAPS кругов
       if (quali) {
@@ -1528,7 +1583,7 @@ async function main() {
           quali.seen = laps.state.completed
           quali.times.push(laps.state.lastLap)
         }
-        const text = `Квалификация · круг ${Math.min(Math.max(laps.state.lap, 1), QUALI_LAPS)} из ${QUALI_LAPS}` + (quali.times.length ? ` · лучший ${formatTime(Math.min(...quali.times))}` : '')
+        const text = `${sprintRace ? 'Спринт-квалификация' : 'Квалификация'} · круг ${Math.min(Math.max(laps.state.lap, 1), QUALI_LAPS)} из ${QUALI_LAPS}` + (quali.times.length ? ` · лучший ${formatTime(Math.min(...quali.times))}` : '')
         if (text !== quali.text) hud.setMode((quali.text = text))
         if (laps.state.lap > QUALI_LAPS) finishQuali()
       }
@@ -1580,6 +1635,7 @@ async function main() {
         const me = race.state.cars.find((c) => c.player)
         const pos = race.state.order.indexOf(me) + 1
         career.races++
+        rateBots()
         if (me.dnf || me.dsq) career.dnf++
         else {
           if (pos === 1) career.wins++
@@ -1612,6 +1668,13 @@ async function main() {
     tow?.update(paused ? 0 : dt)
     if (!online.inRace) updateCrew(paused ? 0 : dt)
     weather.update(paused ? 0 : dt, camera, !inMenu && !paused)
+    // капли на «стекле»: дождь и брызги от болида впереди по мокрой трассе (ближе 40 м)
+    {
+      const wet = weather.state.wet
+      const gap = race && wet > 0.3 && !inMenu ? physGap(laps.state.s, 'player') : 1000
+      const spray = gap < 40 ? wet * (1 - Math.max(0, gap - 8) / 32) * Math.min(1, vehicle.state.speedKmh / 120) : 0
+      rainDrops.update(dt, inMenu ? 0 : weather.state.rain, inMenu ? 0 : vehicle.state.speedKmh, replay.active ? 'chase' : rig.mode, spray, paused)
+    }
     hud.setWeather(inMenu ? null : weather.label())
     // пошёл дождь или трасса подсохла: подсказка и план пит-стопа на нужные шины
     if (!inMenu) {
@@ -1683,6 +1746,10 @@ async function main() {
     // halo из кабины — по настройке (Камера → Halo из кабины); с остальных камер и в меню — обычный
     car.setHaloView(!inMenu && !rig.showcase && rig.mode === 'onboard' ? settings.get('halo') : 'show')
     car.highlight(inMenu && garageFocus && garageFocus !== 'driver' ? garageFocus : null, now / 1000)
+    // гоночная линия: в заезде по настройке, в обучении — вся
+    racingLine?.update(laps?.state.idx ?? 0, Math.max(0, vehicle.state.fwdSpeed), inMenu || replay.active ? 'off' : tutorial.active ? 'full' : settings.get('line'))
+    if (!inMenu && !paused) tutorial.update(dt, { speedKmh: vehicle.state.speedKmh, input: lastInput, s: laps?.state.s ?? 0, length: track.length, aero: vehicle.aero, pitPhase: pitCtl?.state.phase })
+    if (inMenu && tutorial.active) tutorial.stop()
     // музыка: главное меню, экраны вне гонки и итоги (в повторе — нет)
     menuAudio.setMusic(!replay.active && (inMenu || !document.getElementById('results').hidden))
     post.render(scene, camera, inMenu || paused)
@@ -1690,7 +1757,7 @@ async function main() {
   requestAnimationFrame(frame)
 
   // для проверок и настройки из консоли браузера
-  window.__game = { THREE, scene, camera, renderer, post, driveInstead, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get crew() { return crew }, lane, replay, get pitRequest() { return pitRequest }, online }
+  window.__game = { THREE, scene, camera, renderer, post, driveInstead, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get crew() { return crew }, lane, replay, racingLine, tutorial, lapView, get pitRequest() { return pitRequest }, online }
 }
 
 main().catch((e) => {

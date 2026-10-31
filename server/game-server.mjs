@@ -39,6 +39,7 @@ await RAPIER.init()
 const TRACKS = {
   marina: loadTrack(path.join(here, '../public/models/marina.glb')),
   lumen: loadTrack(path.join(here, '../public/models/track.glb')),
+  spa: loadTrack(path.join(here, '../public/models/spa.glb')),
 }
 
 const r2 = (x) => Math.round(x * 100) / 100

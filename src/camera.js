@@ -19,6 +19,20 @@ const ROLL_MAX = 0.021 // не больше ~1,2°
 const SWAY_PER_G = 0.05 // м увода камеры наружу на 1 g
 const SWAY_MAX = 0.25
 const SLIDE_LOOK = 0.2 // в заносе камера смотрит на 20% туда, куда болид летит
+// Ощущение в кабине (Рома 31.10, пункт 13): голову пилота клонит перегрузкой — в повороте наружу (горизонт наклоняется),
+// на торможении кивает вперёд, на разгоне откидывает назад; на поребриках — частая дрожь, на большой скорости — мелкая
+// вибрация. Голова — пружина с затуханием (чуть отстаёт и мягко докачивается). Сила — «Настройки → Камера → Голова пилота»
+// (feelK; 0 — как раньше). Только камеры на болиде: из кабины в полную силу, T-камера и нос — вдвое слабее (они на кузове)
+const HEAD_ROLL_PER_G = 0.018 // рад на 1 g бокового (≈1°)
+const HEAD_ROLL_MAX = 0.07
+const HEAD_NOD_PER_G = 0.014 // рад на 1 g продольного
+const HEAD_NOD_MAX = 0.06
+const HEAD_SHIFT_PER_G = 0.022 // м сдвига головы наружу / вперёд на 1 g
+const HEAD_W = 9 // рад/с — собственная частота пружины головы
+const HEAD_ZETA = 0.55 // затухание: немного докачивается
+const KERB_SHAKE = 0.007 // м дрожи на поребрике (все колёса)
+const KERB_HZ = 26
+const SPEED_SHAKE = 0.0016 // м вибрации на 340 км/ч
 
 // Обзор (Рома 29.10: «зажать мышку и поворачивать камеру во все стороны», «стрелки — камера вбок и назад»).
 // Мышь: у камеры сзади она облетает болид кругом и поднимается над ним, у камер на болиде — поворачивает голову.
@@ -82,6 +96,8 @@ export class CameraRig {
     this.mouseK = 1
     this.invertY = false
     this.shakeK = 1
+    this.feelK = 1 // ощущение в кабине: голова пилота и дрожь
+    this.head = { roll: 0, vr: 0, nod: 0, vn: 0, x: 0, vx: 0, z: 0, vz: 0, kerb: 0 }
     this.fovK = 1
     this.fovBase = 60
     this.shakeAmt = 0
@@ -276,11 +292,29 @@ export class CameraRig {
       this.camera.quaternion.copy(tmpQ.multiply(FLIP))
       // голову пилота клонит перегрузкой: в повороте наружу, при торможении вперёд
       const lean = def.lean ? 0.012 : 0.006
-      tmpV.set(-this.g.lat * lean, -(def.drop || 0), this.g.long * -lean).applyQuaternion(car.quaternion)
+      // голова — пружина: цель от перегрузок, движение с отставанием и лёгким докачиванием
+      const fk = this.feelK * (def.lean ? 1 : 0.5)
+      const H = this.head
+      const spring = (key, vkey, target) => {
+        const a = HEAD_W * HEAD_W * (target - H[key]) - 2 * HEAD_ZETA * HEAD_W * H[vkey]
+        H[vkey] += a * Math.min(dt, 0.05)
+        H[key] += H[vkey] * Math.min(dt, 0.05)
+      }
+      spring('roll', 'vr', THREE.MathUtils.clamp(st.gLat * HEAD_ROLL_PER_G, -HEAD_ROLL_MAX, HEAD_ROLL_MAX) * fk)
+      spring('nod', 'vn', THREE.MathUtils.clamp(st.gLong * HEAD_NOD_PER_G, -HEAD_NOD_MAX, HEAD_NOD_MAX) * fk)
+      spring('x', 'vx', -st.gLat * HEAD_SHIFT_PER_G * fk)
+      spring('z', 'vz', -st.gLong * HEAD_SHIFT_PER_G * fk)
+      // поребрик: сколько колёс на нём; дрожь частая, сильнее со скоростью
+      const onKerb = st.surfaces.filter((s) => s === 'kerb').length / 4
+      H.kerb += (onKerb * Math.min(1, speedKmh / 120) - H.kerb) * (1 - Math.exp(-dt * 20))
+      const buzz = Math.sin(this.t * KERB_HZ * Math.PI * 2) * 0.6 + Math.sin(this.t * KERB_HZ * 1.37 * Math.PI * 2) * 0.4
+      const vib = (H.kerb * KERB_SHAKE * buzz + Math.max(0, speedKmh - 180) / 160 * SPEED_SHAKE * this.noise(11)) * this.feelK * (def.lean ? 1 : 0.6)
+      tmpV.set(-this.g.lat * lean + H.x, -(def.drop || 0) + vib, this.g.long * -lean + H.z).applyQuaternion(car.quaternion)
       this.camera.position.add(tmpV)
       const sh = this.shakeAmt
       this.camera.position.y += this.noise(1) * sh * 0.6
-      this.camera.rotateZ(THREE.MathUtils.clamp(this.g.lat * ROLL_PER_G, -ROLL_MAX, ROLL_MAX) + this.noise(7) * sh * 0.15)
+      this.camera.rotateZ(THREE.MathUtils.clamp(this.g.lat * ROLL_PER_G, -ROLL_MAX, ROLL_MAX) + H.roll + this.noise(7) * sh * 0.15 + vib * 1.5)
+      this.camera.rotateX(H.nod)
       this.turnHead(headYaw, headPitch)
       this.setFov(def.fov)
       return

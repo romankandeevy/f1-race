@@ -71,7 +71,7 @@ export function updateTyres(v, dt) {
       const bent = 1 + 1.2 * suspDamageAt(v.damage, w.front, w.side)
       // дождевые на подсыхающей трассе «горят»: протектор для воды, на сухом он рвётся
       const dry = c.rain ? 1 + c.rain * (1 - (v.wet || 0)) : 1
-      t.wear = Math.min(1, t.wear + dt * WEAR_RATE * c.wear * hot * bent * dry * ((w.contact ? WEAR_BASE * Math.min(1, speed / 40) : 0) + work / WORK_REF))
+      t.wear = Math.min(1, t.wear + dt * WEAR_RATE * c.wear * (v.tyreWearK ?? 1) * hot * bent * dry * ((w.contact ? WEAR_BASE * Math.min(1, speed / 40) : 0) + work / WORK_REF))
       if (t.wear >= 1) {
         t.puncture = true // стёрта до корда — лопнула
         popped = i

@@ -10,6 +10,8 @@ import { KEYS } from './menu.js'
 import { COMPOUNDS, COMPOUND_ORDER } from './wear.js'
 import { AI_LEVELS, LEVEL_IDS, levelOf } from './ai.js'
 import { formatTime } from './laps.js'
+import { driverTable } from './drivers.js'
+import { PAINTS as BOT_PAINTS } from './bots.js'
 import { WEATHERS, WEATHER_ORDER } from './weather.js'
 import { PARTS, BUDGET, STOCK_BUILD, buildCost, buildStats, lapForecast } from './build.js'
 import { ROUNDS, SEASON_LAPS, POINTS, isOver, nextRound, standings, PU_PARTS, replaceCost, seasonMoney } from './career.js'
@@ -168,6 +170,7 @@ export function createScreens(ctx) {
     {
       name: 'Помощники',
       rows: [
+        choice('line', 'Гоночная линия', [{ v: 'off', name: 'Выкл' }, { v: 'brake', name: 'Торможения' }, { v: 'full', name: 'Вся' }], () => settings.get('line'), (v) => settings.set('line', v), { hint: () => 'Цветная линия на асфальте, как в играх F1: зелёная — газ, жёлтая — сбрось, красная — тормози. «Торможения» — только жёлтые и красные участки.' }),
         toggle('abs', 'ABS', () => !!ctx.abs?.get(), (v) => ctx.abs?.set(v), { hint: () => 'Не даёт заблокировать колёса на торможении: тормозить можно в пол. В гонке включается и выключается клавишей B.' }),
       ],
     },
@@ -184,6 +187,7 @@ export function createScreens(ctx) {
         choice('camera', 'Камера на старте', Object.entries(CAMERA_NAMES).map(([v, name]) => ({ v, name })), () => settings.get('camera'), (v) => settings.set('camera', v), { hint: () => 'С какого вида начинаешь гонку. В гонке C переключает камеры по кругу.' }),
         slider('fov', 'Поле зрения', 80, 120, 5, () => settings.get('fov'), (v) => settings.set('fov', v), { fmt: (v) => `${v}%`, hint: () => 'Шире — больше скорости на экране, но края картинки растягиваются.' }),
         choice('halo', 'Halo из кабины', [{ v: 'fade', name: 'Прозрачный' }, { v: 'show', name: 'Обычный' }, { v: 'hide', name: 'Скрыть' }], () => settings.get('halo'), (v) => settings.set('halo', v), { hint: () => 'Защитная дуга над кокпитом. Пилот смотрит двумя глазами, и стойка перед лицом для него почти исчезает; камера — один глаз, и стойка закрывает поворот. Поэтому из кабины она по умолчанию полупрозрачная, как в играх F1; можно убрать совсем или оставить как есть.' }),
+        slider('feel', 'Голова пилота', 0, 150, 10, () => settings.get('feel'), (v) => settings.set('feel', v), { fmt: (v) => (v ? `${v}%` : 'Выкл'), hint: () => 'Из кабины голову клонит перегрузкой: в повороте наружу, на торможении вперёд; на поребриках трясёт, на скорости — мелкая вибрация. 0% — камера неподвижна в кабине.' }),
         slider('shake', 'Тряска камеры', 0, 150, 10, () => settings.get('shake'), (v) => settings.set('shake', v), { fmt: (v) => `${v}%`, hint: () => 'Гравий, днище по асфальту, удары. 0% — камера не трясётся совсем.' }),
       ],
     },
@@ -218,6 +222,7 @@ export function createScreens(ctx) {
       ctx.canRace && ctx.season && { id: 'season', kick: 'Сезон', label: 'Чемпионат', about: 'Серия гонок с квалификацией и очками F1. Призовые за этапы — бюджет на детали болида.', go: () => push('career') },
       ctx.canRace && { id: 'race', kick: 'С ботами', label: 'Гонка', about: 'Двенадцать болидов, огни старта, пит-стопы, флаги и машина безопасности.', go: () => openFlowFor('race') },
       ctx.openOnline && { id: 'online', kick: 'С друзьями', label: 'Онлайн', about: 'Комната по коду, до 12 игроков: заезд на время с призраками или гонка.', go: () => ctx.openOnline() },
+      ctx.startTutorial && { id: 'tutorial', kick: 'Новичку', label: 'Обучение', about: 'Газ, тормоз, гоночная линия, режимы обгона и прямой, камеры, пит-стоп — по шагу на трассе.', go: () => ctx.startTutorial() },
     ].filter(Boolean)
 
   // ---------- вёрстка экранов ----------
@@ -582,7 +587,7 @@ export function createScreens(ctx) {
     const r = nextRound(s)
     const tname = ctx.tracks?.find((t) => t.id === r.track)?.name ?? r.track
     return [
-      action('go', `На старт · этап ${s.round + 1}`, () => ctx.season.play(), { cta: true, hint: () => `${tname}${r.night ? ', ночью' : ''} · ${s.laps} кр. · сначала квалификация, потом гонка. Из гонки можно выйти — этап останется непроеханным.` }),
+      action('go', `На старт · этап ${s.round + 1}${r.sprint ? (s.sprints?.[s.round] ? ' · гонка' : ' · спринт') : ''}`, () => ctx.season.play(), { cta: true, hint: () => r.sprint ? `${tname}${r.night ? ', ночью' : ''} · спринт-уикенд: ${s.sprints?.[s.round] ? `спринт проехан (+${s.sprints[s.round].pts} очк.), теперь квалификация и гонка на ${s.laps} кр.` : `сначала спринт-квалификация и спринт на ${Math.max(1, Math.round(s.laps / 3))} кр. (очки 8-7-6-5-4-3-2-1), потом квалификация и гонка на ${s.laps} кр.`}` : `${tname}${r.night ? ', ночью' : ''} · ${s.laps} кр. · сначала квалификация, потом гонка. Из гонки можно выйти — этап останется непроеханным.` }),
       action('garage', 'Гараж сезона', () => push('garage', () => {
         ctx.build.mode('career')
         garageTab = 'build'
@@ -604,7 +609,7 @@ export function createScreens(ctx) {
       .map((c, i) => {
         const res = s.results[i]
         const mark = res ? (res.dnf ? 'сход' : `${res.pos}-й`) : i === s.round ? 'дальше' : ''
-        return `<span class="${i < s.round ? 'done' : i === s.round ? 'next' : ''}">${i + 1}. ${esc(tn(c.track))}${c.night ? ' ☾' : ''}${mark ? ` · ${mark}` : ''}</span>`
+        return `<span class="${i < s.round ? 'done' : i === s.round ? 'next' : ''}">${i + 1}. ${esc(tn(c.track))}${c.night ? ' ☾' : ''}${c.sprint ? ' · спринт' : ''}${mark ? ` · ${mark}` : ''}</span>`
       })
       .join('')
     const champ = isOver(s) ? ctx.season.who(table[0].id) : null
@@ -644,7 +649,10 @@ export function createScreens(ctx) {
           ${card('Подиумов', c.podiums)}
           ${card('Сходов', c.dnf)}
         </div>
-        <p class="sc-about">Лучший круг и секторы запоминаются отдельно для каждой трассы и сравниваются с ними во время заезда: зелёный — быстрее своего лучшего, жёлтый — медленнее.</p>
+        ${ctx.showLapView ? `<button class="sc-lapview" data-lapview>Телеметрия круга · последний против лучшего (Y)</button>` : ''}
+        <h3 class="sc-sub">Пилоты-соперники</h3>
+        <ol class="sc-drivers">${driverTable().map((d) => `<li style="--c:${BOT_PAINTS[d.i % BOT_PAINTS.length]}"><i></i><b>${d.code}</b><span>${d.name} · №${d.number}</span><em title="${d.traitAbout}">${d.traitName}</em><span class="r">${d.rating.toFixed(1)}</span><span class="w">${d.wins ? `${d.wins} поб.` : ''}</span></li>`).join('')}</ol>
+        <p class="sc-about">Рейтинг — темп пилота: после гонки растёт, если он финишировал выше ожидаемого, и падает, если ниже.</p>
       </section>`
   }
 
@@ -825,6 +833,10 @@ export function createScreens(ctx) {
 
   // ---------- события ----------
   root.addEventListener('click', (e) => {
+    if (e.target.closest?.('[data-lapview]')) {
+      ctx.showLapView?.()
+      return
+    }
     const t = e.target
     if (t.closest('input[type=range]') || t.closest('input[type=color]') || t.closest('label.pick')) return
     const chip = t.closest('[data-c]')

@@ -11,6 +11,12 @@ import { freshPowerUnit } from './wear.js'
 
 const KEY = 'f1-race.season.v1'
 export const POINTS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1]
+// Спринт-уикенд (Рома 31.10: «как в формуле»): на части этапов — сначала спринт-квалификация и спринт на треть
+// дистанции (очки 8-7-6-5-4-3-2-1, как в F1 с 2022), потом обычные квалификация и гонка. В F1 спринтов 6 из 24 —
+// примерно каждый четвёртый этап; у нас: 4 этапа — один спринт, 6 — два, 8 — два (не на первом этапе)
+export const SPRINT_POINTS = [8, 7, 6, 5, 4, 3, 2, 1]
+const SPRINT_ROUNDS = { 4: [2], 6: [2, 4], 8: [2, 5] }
+export const sprintLaps = (laps) => Math.max(1, Math.round(laps / 3))
 export const START_BUDGET = 76
 export const ROUNDS = [4, 6, 8]
 export const SEASON_LAPS = [3, 5, 10]
@@ -22,7 +28,7 @@ export function newSeason({ rounds = 6, laps = 5, level = 'medium', tracks = ['l
   const first = Math.floor(rand() * tracks.length)
   const calendar = Array.from({ length: rounds }, (_, i) => {
     const track = tracks[(first + i) % tracks.length]
-    return { track, night: track === 'marina' }
+    return { track, night: track === 'marina', sprint: (SPRINT_ROUNDS[rounds] ?? [2]).includes(i) }
   })
   const pilots = makePilots(botCount, rand)
   const points = { player: 0 }
@@ -67,6 +73,26 @@ export function applyResult(s, order) {
   s.round++
   return { ...mine, prize, budget: s.budget }
 }
+
+// итог спринта: очки за первые восемь мест, этап не сдвигается (дальше — квалификация и гонка этого же этапа)
+export function applySprint(s, order) {
+  let place = 0
+  let mine = { pos: null, pts: 0, dnf: true }
+  for (const c of order) {
+    const out = c.dnf || c.dsq
+    const pts = out ? 0 : SPRINT_POINTS[place] ?? 0
+    if (!out) place++
+    s.points[c.id] = (s.points[c.id] ?? 0) + pts
+    if (c.id === 'player') mine = { pos: out ? null : place, pts, dnf: out }
+  }
+  const prize = Math.round(mine.pts / 2)
+  s.budget += prize
+  s.sprints = s.sprints ?? {}
+  s.sprints[s.round] = { order: order.map((c) => c.id), pos: mine.pos, pts: mine.pts }
+  return { ...mine, prize, budget: s.budget }
+}
+// спринт этого этапа ещё впереди
+export const sprintPending = (s) => !!s && !!nextRound(s)?.sprint && !s.sprints?.[s.round]
 
 // таблица: [{ id, points, wins }] по очкам (при равенстве — по победам)
 export function standings(s) {
