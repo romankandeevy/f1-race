@@ -12,6 +12,7 @@ import { AI_LEVELS } from './ai.js'
 import { formatTime } from './laps.js'
 import { WEATHERS, WEATHER_ORDER } from './weather.js'
 import { PARTS, BUDGET, STOCK_BUILD, buildCost, buildStats } from './build.js'
+import { ROUNDS, SEASON_LAPS, POINTS, isOver, nextRound, standings } from './career.js'
 
 const SESSION_KEY = 'f1-race.session.v1'
 const LAP_OPTIONS = [1, 3, 5, 10, 15, 20]
@@ -144,6 +145,7 @@ export function createScreens(ctx) {
       name: 'Графика',
       rows: [
         choice('quality', 'Качество', Object.entries(QUALITY).map(([v, q]) => ({ v, name: q.name })), () => settings.get('quality'), (v) => settings.set('quality', v), { hint: () => QUALITY[settings.get('quality')].about }),
+        choice('blur', 'Размытие в движении', [{ v: 'off', name: 'Выкл' }, { v: 'soft', name: 'Слабое' }, { v: 'normal', name: 'Обычное' }], () => settings.get('blur'), (v) => settings.set('blur', v), { hint: () => 'На скорости окружение чуть смазывается по движению, как в гоночных играх и на ТВ: на 60 кадрах трасса не прыгает ступеньками. Свой болид не смазывается.' }),
         choice('fps', 'Лимит кадров', FPS_OPTIONS, () => settings.get('fps'), (v) => settings.set('fps', v), { hint: () => 'Больше кадров — плавнее, но видеокарта работает сильнее. 60 хватает почти всегда; на экранах 120 Гц без лимита нагрузка вдвое выше.' }),
       ],
     },
@@ -193,7 +195,7 @@ export function createScreens(ctx) {
   // Рома 30.10: на главном только пять пунктов; режимы — карточками в «Играть», «Управление» — вкладка «Настроек»
   const mainItems = () => [
     { id: 'play', label: 'Играть', about: 'Заезд на время, гонка с ботами или онлайн с друзьями.', go: () => push('play') },
-    { id: 'garage', label: 'Гараж', about: 'Ливрея и сборка болида: мотор, батарея, коробка, аэропакет, тормоза, охлаждение, шасси — в рамках бюджета.', go: () => push('garage') },
+    { id: 'garage', label: 'Гараж', about: 'Ливрея и сборка болида: мотор, батарея, коробка, аэропакет, тормоза, охлаждение, шасси — в рамках бюджета.', go: () => push('garage', () => ctx.build?.mode('free')) },
     { id: 'setup', label: 'Настройка болида', about: 'Крылья, подвеска, тормоза, шины: готовые настройки и свои.', go: () => ctx.openSetup() },
     { id: 'records', label: 'Рекорды', about: 'Лучший круг, лучшие секторы и твоя статистика гонок.', go: () => push('records') },
     { id: 'settings', label: 'Настройки', about: 'Графика, звук, мышь, камеры, интерфейс и клавиши управления. Всё действует сразу.', go: () => push('settings') },
@@ -203,6 +205,7 @@ export function createScreens(ctx) {
   const playItems = () =>
     [
       { id: 'time', kick: 'Один', label: 'Заезд на время', about: 'Один на трассе: лучший круг, секторы, призрак своего рекорда.', go: () => openFlowFor('time') },
+      ctx.canRace && ctx.season && { id: 'season', kick: 'Сезон', label: 'Чемпионат', about: 'Серия гонок с квалификацией и очками F1. Призовые за этапы — бюджет на детали болида.', go: () => push('career') },
       ctx.canRace && { id: 'race', kick: 'С ботами', label: 'Гонка', about: 'Двенадцать болидов, огни старта, пит-стопы, флаги и машина безопасности.', go: () => openFlowFor('race') },
       ctx.openOnline && { id: 'online', kick: 'С друзьями', label: 'Онлайн', about: 'Комната по коду, до 12 игроков: заезд на время с призраками или гонка.', go: () => ctx.openOnline() },
     ].filter(Boolean)
@@ -330,8 +333,10 @@ export function createScreens(ctx) {
   // гараж: две вкладки (Q E) — «Ливрея» (команды, свои цвета, силовая установка) и «Сборка» (Рома 30.10: «строить болид, что у
   // него под капотом»): детали build.js с компромиссами в рамках бюджета; дороже бюджета — кнопка недоступна
   const GARAGE_TABS = ['Ливрея', 'Сборка']
+  const budgetOf = () => ctx.build?.budget?.() ?? BUDGET // в чемпионате — бюджет сезона
   const buildRows = () => {
     const b = ctx.build.get()
+    const BUDGET = budgetOf()
     // хватит ли бюджета, если в узле part поставить деталь v
     const fits = (part, v) => buildCost({ ...b, [part.id]: v }) <= BUDGET
     return [
@@ -363,6 +368,8 @@ export function createScreens(ctx) {
   // карточка болида: цифры сборки и разница со стандартом (зелёная — лучше, красная — хуже)
   function buildCard() {
     const b = ctx.build.get()
+    const BUDGET = budgetOf()
+    const seasonMode = ctx.build.mode?.() === 'career'
     const st = buildStats(b)
     const S = buildStats(STOCK_BUILD)
     const delta = (x, x0, better = 1, unit = '%', k = 100) => {
@@ -375,7 +382,7 @@ export function createScreens(ctx) {
     const left = BUDGET - st.cost
     return `
       <aside class="sc-plaque wide">
-        <div class="sc-plaque-t">Сборка болида</div>
+        <div class="sc-plaque-t">${seasonMode ? 'Сборка сезона' : 'Сборка болида'}</div>
         <div class="sc-budget"><span>Бюджет</span><i class="sc-bar"><b style="width:${Math.round((st.cost / BUDGET) * 100)}%"></b></i><em>${st.cost} из ${BUDGET}</em></div>
         <div class="sc-stats">
           ${row('Мощность', `${st.powerKw} кВт · ${st.hp} л.с.`, delta(st.powerKw, S.powerKw))}
@@ -384,11 +391,13 @@ export function createScreens(ctx) {
           ${row('Прижим', rel(st.downforce), delta(st.downforce, 1))}
           ${row('Сопротивление', rel(st.drag), delta(st.drag, 1, -1))}
           ${row('Масса', `${st.mass} кг`, delta(st.mass, S.mass, -1, 'кг'))}
+          ${row('Центр масс', st.comDropCm ? `ниже на ${String(st.comDropCm).replace('.', ',')} см` : 'стандарт', st.comDropCm ? '<em class="up">ниже</em>' : '<em></em>')}
+          ${row('Ход балласта', `±${String(st.ballastCm).replace('.', ',')} см`, delta(st.ballastCm, S.ballastCm))}
           ${row('Батарея', `${st.batteryMJ.toFixed(1).replace('.', ',')} МДж`, delta(st.batteryMJ, S.batteryMJ))}
           ${row('Тормоза', rel(st.brakes), delta(st.brakes, 1))}
           ${row('Надёжность', `${st.reliability}%`, delta(st.reliability, 100, 1, 'п.', 1))}
         </div>
-        <p>${left > 0 ? `Осталось ${left} — можно поставить деталь получше.` : 'Бюджет потрачен весь.'} Своя сборка — в одиночной игре и в онлайн-комнатах «Свои сборки». У ботов — свои.</p>
+        <p>${left > 0 ? `Осталось ${left} — можно поставить деталь получше.` : 'Бюджет потрачен весь.'} ${seasonMode ? 'Сборка сезона — только для гонок чемпионата; бюджет растёт с призовыми за этапы.' : 'Своя сборка — в одиночной игре и в онлайн-комнатах «Свои сборки». У ботов — свои.'}</p>
       </aside>`
   }
   function renderGarage() {
@@ -399,6 +408,7 @@ export function createScreens(ctx) {
     sel.garage = i
     const tabsBar = `<nav class="sc-tabs">${GARAGE_TABS.map((t, k) => `<button data-gtab="${k}" class="${k === garageTab ? 'on' : ''}">${t}</button>`).join('')}</nav>`
     if (garageTab === 1 && ctx.build) {
+      const BUDGET = budgetOf()
       const left = BUDGET - buildCost(ctx.build.get())
       const html = rows
         .map((r, k) => {
@@ -412,7 +422,7 @@ export function createScreens(ctx) {
         .join('')
       return `
       <section class="sc-col garage">
-        ${brand('Гараж', `Бюджет: осталось ${left} из ${BUDGET}`)}
+        ${brand(ctx.build.mode?.() === 'career' ? 'Гараж сезона' : 'Гараж', `Бюджет: осталось ${left} из ${BUDGET}`)}
         ${tabsBar}
         <div class="sc-rows">${html}</div>
         <p class="sc-about">${rows[i]?.hint?.() ?? ''}</p>
@@ -454,6 +464,60 @@ export function createScreens(ctx) {
       </aside>`
   }
 
+  // ---------- чемпионат ----------
+  const seasonSetup = { rounds: 6, laps: 5, level: 'medium' }
+  let resetArmed = false // «Бросить сезон» — в два нажатия
+  const careerRows = () => {
+    const s = ctx.season.get()
+    if (!s)
+      return [
+        choice('rounds', 'Этапов', ROUNDS.map((v) => ({ v, name: String(v) })), () => seasonSetup.rounds, (v) => (seasonSetup.rounds = v), { hint: () => `Трассы по очереди: ${(ctx.tracks ?? []).map((t) => t.name).join(', ') || 'одна'}. Marina Bay — ночью, как Сингапур.` }),
+        choice('laps', 'Кругов в гонке', SEASON_LAPS.map((v) => ({ v, name: String(v) })), () => seasonSetup.laps, (v) => (seasonSetup.laps = v), { hint: () => 'От 5 кругов действует правило двух составов шин — нужен пит-стоп.' }),
+        choice('level', 'Соперники', ['light', 'medium', 'hard'].map((v) => ({ v, name: AI_LEVELS[v].name })), () => seasonSetup.level, (v) => (seasonSetup.level = v), { hint: () => 'Одни и те же одиннадцать пилотов на весь сезон: у каждого свой темп и своя сборка болида.' }),
+        action('start', 'Начать сезон', () => ctx.season.start({ ...seasonSetup }), { cta: true, hint: () => `Очки как в F1: ${POINTS.join('-')}. Бюджет сборки на старте — 76 (стандартный болид стоит 68), за каждый этап — призовые.` }),
+      ]
+    if (isOver(s)) return [action('new', 'Новый сезон', () => ctx.season.reset(), { cta: true, hint: () => 'Сезон окончен. Новый — с новым календарём, соперниками и стартовым бюджетом.' })]
+    const r = nextRound(s)
+    const tname = ctx.tracks?.find((t) => t.id === r.track)?.name ?? r.track
+    return [
+      action('go', `На старт · этап ${s.round + 1}`, () => ctx.season.play(), { cta: true, hint: () => `${tname}${r.night ? ', ночью' : ''} · ${s.laps} кр. · сначала квалификация, потом гонка. Из гонки можно выйти — этап останется непроеханным.` }),
+      action('garage', 'Гараж сезона', () => push('garage', () => ctx.build.mode('career')), { hint: () => `Сборка болида для чемпионата: бюджет ${s.budget}. Растёт с призовыми.` }),
+      action('reset', resetArmed ? 'Точно бросить? Нажми ещё раз' : 'Бросить сезон', () => {
+        if (resetArmed) ctx.season.reset()
+        resetArmed = !resetArmed
+      }, { hint: () => 'Очки и сборка сезона пропадут.' }),
+    ]
+  }
+  function renderCareer() {
+    const s = ctx.season.get()
+    const kicker = !s ? 'Новый сезон' : isOver(s) ? 'Сезон окончен' : `Этап ${s.round + 1} из ${s.rounds} · бюджет ${s.budget}`
+    const html = renderRows('career', 'Чемпионат', kicker, careerRows(), '', [['↑ ↓', 'пункт'], ['← →', 'значение'], ['Enter', 'выбрать'], ['Esc', 'назад']])
+    if (!s) return html
+    const table = standings(s)
+    const tn = (id) => ctx.tracks?.find((t) => t.id === id)?.name ?? id
+    const cal = s.calendar
+      .map((c, i) => {
+        const res = s.results[i]
+        const mark = res ? (res.dnf ? 'сход' : `${res.pos}-й`) : i === s.round ? 'дальше' : ''
+        return `<span class="${i < s.round ? 'done' : i === s.round ? 'next' : ''}">${i + 1}. ${esc(tn(c.track))}${c.night ? ' ☾' : ''}${mark ? ` · ${mark}` : ''}</span>`
+      })
+      .join('')
+    const champ = isOver(s) ? ctx.season.who(table[0].id) : null
+    return (
+      html +
+      `<aside class="sc-plaque wide sc-season">
+        <div class="sc-plaque-t">${champ ? `Чемпион: ${esc(champ.name)}` : 'Таблица пилотов'}</div>
+        <div class="sc-cal">${cal}</div>
+        <ol class="sc-stand">${table
+          .map((r, i) => {
+            const w = ctx.season.who(r.id)
+            return `<li class="${r.id === 'player' ? 'me' : ''}"><span>${i + 1}</span><i style="--c:${w.paint}"></i><b>${esc(w.name)}</b><em>${r.points}</em></li>`
+          })
+          .join('')}</ol>
+      </aside>`
+    )
+  }
+
   function renderRecords() {
     const info = ctx.info()
     const c = info.career
@@ -493,6 +557,7 @@ export function createScreens(ctx) {
     settings: { render: renderSettings, shift: 0.2 },
     records: { render: renderRecords, shift: 0.2 },
     play: { render: renderPlay, shift: 0.0 },
+    career: { render: renderCareer, shift: 0.2 },
   }
 
   // ---------- состояние и навигация ----------
@@ -560,6 +625,11 @@ export function createScreens(ctx) {
       render()
     },
     refresh: () => api.isOpen() && render(),
+    // экран чемпионата (после этапа, после перезагрузки на трассу этапа)
+    openCareer() {
+      stack = ['main', 'play']
+      push('career')
+    },
   }
 
   // изменить значение строки на шаг (dir = −1 или 1) или нажать
@@ -587,6 +657,7 @@ export function createScreens(ctx) {
     if (name === 'start') return startRows().filter((r) => !r.hidden?.())
     if (name === 'settings') return settingsTabs()[tab].rows.filter((r) => !r.hidden?.())
     if (name === 'garage') return garageRows()
+    if (name === 'career') return careerRows()
     return null
   }
   const selKey = () => (current() === 'settings' ? 'settings' + tab : current())

@@ -7,7 +7,8 @@ import { buildTrack } from './track.js'
 import { loadCircuit } from './circuit.js'
 import { loadCar, PAINTS } from './car.js'
 import { createVehicle, stepVehicle, collectImpacts, setGhost, applyTuning } from './vehicle.js'
-import { loadBuild, saveBuild, buildTuning, STOCK_BUILD } from './build.js'
+import { loadBuild, saveBuild, buildTuning, STOCK_BUILD, BUDGET } from './build.js'
+import { newSeason, loadSeason, saveSeason, applyResult, nextRound } from './career.js'
 import { CameraRig } from './camera.js'
 import { createHud, createTelemetry } from './hud.js'
 import { scanCar } from './carScan.js'
@@ -22,7 +23,7 @@ import { createSound } from './sound.js'
 import { createLaps, formatTime } from './laps.js'
 import { createStart } from './start.js'
 import { createPauseMenu } from './menu.js'
-import { createBots, BOT_COUNT } from './bots.js'
+import { createBots, BOT_COUNT, NAMES as BOT_NAMES, PAINTS as BOT_PAINTS } from './bots.js'
 import { createRace } from './race.js'
 import { AI_LEVELS } from './ai.js'
 import { wheelsOut, createLimits } from './limits.js'
@@ -31,12 +32,13 @@ import { createPitLane, pitEntryHit, createPitStop, defaultPlan, pitLimiter, rai
 import { RACE_LAPS, TWO_COMPOUND_MIN_LAPS } from './race.js'
 import { settings, QUALITY } from './settings.js'
 import { createScreens } from './screens.js'
-import { retireReason, mechanicalFlag, ORANGE_LAPS, judgeContact, contactPenalty } from './stewards.js'
+import { retireReason, mechanicalFlag, ORANGE_LAPS, judgeContact, contactPenalty, nextPenalty, DRIVE_LAPS, DRIVE_LATE } from './stewards.js'
 import { repairSeconds, needsRepair } from './wear.js'
 import { createFlags, VSC_SPEED } from './flags.js'
 import { createTow } from './tow.js'
 import { createSafetyCar } from './safetycar.js'
 import { loadLivery, saveLivery } from './teams.js'
+import { createMotionBlur, BLUR_LEVELS } from './motionblur.js'
 
 const STEP = 1 / 240 // шины жёсткие: на 240 Гц их силы считаются без дрожи
 
@@ -55,6 +57,7 @@ async function main() {
   renderer.setSize(innerWidth, innerHeight)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 1
+  const post = createMotionBlur(renderer) // размытие в движении (Графика → «Размытие в движении»)
   renderer.shadowMap.enabled = QUALITY[settings.get('quality')].shadows
   renderer.shadowMap.type = THREE.PCFShadowMap
   document.body.prepend(renderer.domElement)
@@ -110,6 +113,12 @@ async function main() {
   const vehicle = createVehicle(RAPIER, world, { x: pose.x, y: (pose.y || 0) + 0.05, z: pose.z, yaw: pose.yaw })
   // сборка болида (гараж, build.js): из чего сделан болид; настройка (TUNING.setup) — общий объект, его крутит экран настройки
   let build = loadBuild()
+  // чемпионат (career.js): сезон, идёт ли сейчас его этап, какой гараж открыт (свободная игра или сборка сезона)
+  let season = loadSeason()
+  let seasonRace = false
+  let seasonRound = -1 // номер этапа, который сейчас едем (очки — один раз за этап)
+  let seasonNote = null // строка про очки и призовые на экране итогов
+  let buildMode = 'free'
   const useBuild = (b) => applyTuning(vehicle, buildTuning(b, TUNING.setup))
   useBuild(build)
   const rig = new CameraRig(camera, car)
@@ -350,12 +359,33 @@ async function main() {
     },
     // сборка болида в гараже: сразу в физику (кроме онлайн-гонки — там сборку задаёт комната)
     build: {
-      get: () => build,
+      get: () => (buildMode === 'career' && season ? season.build : build),
       set: (b) => {
+        if (buildMode === 'career' && season) {
+          season.build = b // сборка сезона — в физику только на старте этапа
+          saveSeason(season)
+          return
+        }
         build = b
         saveBuild(b)
         if (!online.inRace) useBuild(b)
       },
+      budget: () => (buildMode === 'career' && season ? season.budget : BUDGET),
+      // 'free' | 'career' — какой гараж открыт; без аргумента — какой сейчас
+      mode: (m) => (m ? (buildMode = m) : buildMode),
+    },
+    season: {
+      get: () => season,
+      start(o) {
+        season = newSeason({ ...o, tracks: useTest ? ['test'] : Object.keys(TRACKS), botCount: BOT_COUNT })
+        saveSeason(season)
+      },
+      reset() {
+        season = null
+        saveSeason(null)
+      },
+      play: () => playSeasonRound(),
+      who: (id) => (id === 'player' ? { name: 'ТЫ', paint: livery.primary } : { name: BOT_NAMES[Number(id.slice(3)) % BOT_NAMES.length], paint: BOT_PAINTS[Number(id.slice(3)) % BOT_PAINTS.length] }),
     },
     previewCompound: (c) => {
       if (inMenu) vehicle.compound = c
@@ -424,6 +454,8 @@ async function main() {
     pitRequest = false
     retired = false
     orange = null
+    driveThrough = null
+    penaltyBook = { count: 0 }
     resultsAt = 0
     bots?.clear()
     flags?.reset()
@@ -483,6 +515,7 @@ async function main() {
   function enterMenu() {
     if (online.inRace) online.quit() // из онлайн-гонки — выйти из комнаты (болид доедет на автопилоте)
     inMenu = true
+    seasonRace = false
     useBuild(build) // после онлайна с одинаковыми болидами — снова своя сборка
     weather.set('dry')
     quali = null
@@ -528,9 +561,41 @@ async function main() {
   }
 
   // начало гонки или заезда с экрана «Гонка»
+  // этап чемпионата: трасса этапа другая — перезагрузка на неё (физика трассы строится при загрузке) и старт сразу после
+  function playSeasonRound() {
+    const r = nextRound(season)
+    if (!r) return
+    if (!useTest && r.track !== trackId && TRACKS[r.track]) {
+      try {
+        localStorage.setItem(TRACK_KEY, r.track)
+        sessionStorage.setItem('f1-race.reopen', 'season')
+      } catch {
+        // не запомнили — загрузится трасса по умолчанию
+      }
+      location.href = location.pathname
+      return
+    }
+    ui.hide()
+    startSession({ mode: 'race', level: season.level, laps: season.laps, slot: -1, compound: startCompound, weather: 'dry', time: r.night ? 'night' : 'day', career: true })
+  }
+
+  // этап чемпионата доехан (финиш, сход, дисквалификация): очки и призовые — один раз за этап
+  function seasonAward() {
+    if (!seasonRace || !season || !race || season.round !== seasonRound) return
+    const n = season.round + 1
+    const r = applyResult(season, race.state.order)
+    saveSeason(season)
+    seasonNote = `Этап ${n} из ${season.rounds}: ${r.dnf ? 'без очков' : `${r.pos}-е место, +${r.pts} очк.`} · призовые +${r.prize} — бюджет сборки ${r.budget}`
+  }
+  // кнопки итогов: в чемпионате — «К чемпионату» вместо «Ещё раз» (этап засчитан)
+  const resultsOpts = () => (seasonRace ? { note: seasonNote, actions: [['season', 'К чемпионату'], ['menu', 'В главное меню']] } : {})
+
   function startSession(o) {
     inMenu = false
-    useBuild(build)
+    seasonRace = !!(o.career && season)
+    seasonRound = seasonRace ? season.round : -1
+    seasonNote = null
+    useBuild(seasonRace ? season.build : build)
     document.body.classList.remove('menu-mode')
     botLevel = o.mode === 'race' && canRace ? o.level : 'off'
     startCompound = o.compound
@@ -598,6 +663,8 @@ async function main() {
   // стюарды и сход (Рома 29.10: «чтобы я был пилотом Формулы-1, точь-в-точь»)
   let retired = false // болид игрока сошёл (разрушен, нет колеса, отказ мотора) или дисквалифицирован
   let retireText = ''
+  let driveThrough = null // штраф «проезд по пит-лейну»: { lap, why } — когда выдан и за что
+  let penaltyBook = { count: 0 } // штрафов игрока за гонку (stewards.js nextPenalty: каждый третий — проезд по пит-лейну)
   let orange = null // чёрно-оранжевый флаг: { reason, lap } — обязан заехать в боксы за ORANGE_LAPS кругов, иначе чёрный флаг
   let resultsAt = 0 // когда показать экран итогов после схода (чтобы успеть увидеть, что случилось)
   const contactSeen = new Map() // пара болидов → когда стюарды уже разбирали контакт (раз в 4 с)
@@ -637,6 +704,8 @@ async function main() {
     marks.clear()
     retired = false
     orange = null
+    driveThrough = null
+    penaltyBook = { count: 0 }
     resultsAt = 0
     contactSeen.clear()
     hud.setFlag(null)
@@ -651,7 +720,7 @@ async function main() {
     if (bots && botLevel !== 'off') {
       // игрок на выбранном месте решётки, одиннадцать соперников — на остальных
       const slot = Math.min(playerSlot, track.grid.length - 1)
-      bots.spawn(botLevel, track.grid.slice(0, BOT_COUNT + 1).filter((_, i) => i !== slot))
+      bots.spawn(botLevel, track.grid.slice(0, BOT_COUNT + 1).filter((_, i) => i !== slot), seasonRace ? season : null)
       s = track.grid[slot]
       race = createRace(
         track.length,
@@ -734,7 +803,8 @@ async function main() {
           if (m) for (const x of Array.isArray(m) ? m : [m]) x.needsUpdate = true
         })
       }
-    } else if (k === 'volume') sound.setVolume(v / 100)
+    } else if (k === 'blur') post.level = BLUR_LEVELS[v] ?? 0
+    else if (k === 'volume') sound.setVolume(v / 100)
     else if (k === 'engineSound') sound.setEngine(v)
     else if (k === 'mouse') rig.mouseK = v / 100
     else if (k === 'invertY') rig.invertY = v
@@ -756,7 +826,10 @@ async function main() {
     if (online.inRace) online.results(act) // онлайн: «Ещё раз» — в комнату, «В меню» — выйти из комнаты
     else if (act === 'again') gridStart()
     else if (act === 'race') goRace()
-    else enterMenu()
+    else if (act === 'season') {
+      enterMenu()
+      ui.openCareer()
+    } else enterMenu()
   })
 
   // шейдеры компилируем до показа: иначе первый показ материала (зеркало, дождь, ночь, новые шины) даёт подвисание
@@ -767,6 +840,11 @@ async function main() {
   // сменили трассу в настройке заезда — после перезагрузки сразу на следующий шаг
   try {
     if (sessionStorage.getItem('f1-race.reopen') === 'flow') ui.openFlow()
+    if (sessionStorage.getItem('f1-race.reopen') === 'season') {
+      sessionStorage.removeItem('f1-race.reopen')
+      ui.openCareer()
+      playSeasonRound() // перезагрузились на трассу этапа — сразу на старт
+    }
     sessionStorage.removeItem('f1-race.reopen')
   } catch {
     // нет хранилища — остаёмся в главном меню
@@ -845,6 +923,24 @@ async function main() {
     hud.setTrackFlag(null)
   }
 
+  // штраф игроку в гонке: секунды — или, если это каждый третий штраф, проезд по пит-лейну. Возвращает true, если выдан проезд
+  // (тогда сообщение пишет эта функция); false — начислить секунды как обычно
+  function driveInstead(why) {
+    if (!race?.state.running) return false
+    const me = race.car('player')
+    if (me.finished) return false
+    const kind = nextPenalty(penaltyBook, !!driveThrough, race.state.laps - me.lap)
+    if (kind === 'time') return false
+    if (kind === 'late') {
+      race.addPenalty('player', DRIVE_LATE)
+      hud.notify(`Стюарды: ${why} · повторное нарушение — проезд по пит-лейну, до финиша не успеть: +${DRIVE_LATE} с`, true, 7)
+      return true
+    }
+    driveThrough = { lap: me.lap, why }
+    hud.notify(`Стюарды: ${why} · повторное нарушение — проезд по пит-лейну за ${DRIVE_LAPS} кр. (L), иначе дисквалификация`, true, 8)
+    return true
+  }
+
   function judgeContactPair(a, b) {
     if (!race?.state.running) return
     const ia = idOf(a)
@@ -862,8 +958,9 @@ async function main() {
       return
     }
     const fid = idOf(j.fault)
-    race.addPenalty(fid, pen)
     const other = fid === ia ? ib : ia
+    if (fid === 'player' && driveInstead(`столкновение с ${nameOf(other)}`)) return
+    race.addPenalty(fid, pen)
     if (fid === 'player') hud.notify(`Стюарды: ты виноват в столкновении с ${nameOf(other)} · штраф +${pen} с`, true, 6)
     else if (other === 'player') hud.notify(`Стюарды: ${nameOf(fid)} виноват в столкновении с тобой · ему штраф +${pen} с`, false, 5)
   }
@@ -879,6 +976,7 @@ async function main() {
     hud.setFlag(null)
     if (kind === 'dsq') race?.disqualify('player', reason)
     else race?.retire('player', reason)
+    seasonAward()
     // итоги — через пару секунд, чтобы успеть увидеть, что случилось; в гонке это же засчитывается в статистику
     resultsAt = performance.now() + 2500
     if (race) {
@@ -892,8 +990,10 @@ async function main() {
 
   function frame(now) {
     requestAnimationFrame(frame)
+    // лимит кадров: пропускаем кадр, только если до нужного ещё далеко (меньше ¾ шага). Раньше запас был 1,5 мс — на экране
+    // 120 Гц кадр иногда приходил на 2 мс раньше, пропускался, и выходил кадр в 25 мс: рывок (Рома 30.10: «картинка дрожит»)
     const maxFps = settings.get('fps')
-    if (maxFps && now - last < 1000 / maxFps - 1.5) return
+    if (maxFps && now - last < 750 / maxFps) return
     const dt = Math.min(0.1, (now - last) / 1000)
     last = now
 
@@ -902,7 +1002,10 @@ async function main() {
       if ((inMenu || ui.isOpen()) && code !== 'Escape') continue
       // в гараже и меню свои клавиши (стрелки, Enter, Q, E) — игровые не трогаем
       if ((setupScreen.isOpen() || menu.isOpen()) && code !== 'KeyG' && code !== 'Escape') continue
-      if (code === 'KeyC') hud.notify('Камера: ' + rig.next(), false, 1.6)
+      if (code === 'KeyC') {
+        hud.notify('Камера: ' + rig.next(), false, 1.6)
+        post.reset() // другой вид — без смаза на первом кадре
+      }
       if (code === 'KeyR') {
         if (online.active) online.requestReset() // в онлайне на трассу возвращает сервер (в гонке — сам, по правилам)
         if (online.active && online.mode === 'quali') laps?.invalidate() // круг не в зачёт — как на сервере
@@ -987,19 +1090,21 @@ async function main() {
       const q = vehicle.body.rotation()
       const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.x * q.x))
       const toEntry = entryS === null ? Infinity : (entryS - track.axis[laps.state.idx].distance_m + track.length) % track.length
-      const planText = `шины: ${COMPOUNDS[pitPlan.compound].name}${pitPlan.wing ? ', ремонт кузова' : ''}`
+      // штраф «проезд по пит-лейну» ждёт — этот заезд и есть проезд: без остановки, шины и ремонт не меняют
+      const drive = !!driveThrough && !orange // чёрно-оранжевый флаг важнее: сначала ремонт в боксе, проезд — следующим заездом
+      const planText = drive ? 'проезд по пит-лейну (штраф)' : `шины: ${COMPOUNDS[pitPlan.compound].name}${pitPlan.wing ? ', ремонт кузова' : ''}`
       if (pitRequest && toEntry < PIT_TAKEOVER[0] && toEntry > PIT_TAKEOVER[1]) {
         // автопилот берёт руль заранее, как у ботов: не нужно успевать самому ни тормозить, ни попадать в въезд
-        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, T: vehicle.T, damage: vehicle.damage, hold: () => flags?.mode === 'red' })
+        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, T: vehicle.T, damage: vehicle.damage, hold: () => flags?.mode === 'red', drive })
         pitRequest = false
         input.aero = false
         hud.notify(`Автопилот: заезд в боксы · ${planText}`, false, 4)
       } else if (pitEntryHit(lane, p.x, p.z, yaw)) {
         // въехал в пит-лейн сам, без заказа — дальше то же самое
-        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, T: vehicle.T, damage: vehicle.damage, hold: () => flags?.mode === 'red' })
+        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, T: vehicle.T, damage: vehicle.damage, hold: () => flags?.mode === 'red', drive })
         pitRequest = false
         input.aero = false
-        hud.notify(`Пит-лейн · автопилот, ограничитель 80 · ${planText}${pitPlan.wing ? ` · стоянка +${repairSeconds(vehicle.damage)} с` : ''}`, false, 4)
+        hud.notify(`Пит-лейн · автопилот, ограничитель 80 · ${planText}${pitPlan.wing && !drive ? ` · стоянка +${repairSeconds(vehicle.damage)} с` : ''}`, false, 4)
       }
     }
     while (acc >= STEP) {
@@ -1084,7 +1189,10 @@ async function main() {
     if (simDt > 0 && !vehicle.aeroOn) input.aero = false
     if (pitCtl?.state.phase === 'done' || pitCtl?.state.phase === 'abort') {
       if (pitCtl.state.phase === 'abort') hud.notify('Не пит-лейн — управление твоё', false, 3)
-      else hud.notify('Управление твоё', false, 2)
+      else if (pitCtl.state.drive && driveThrough) {
+        driveThrough = null
+        hud.notify('Штраф отбыт: проезд по пит-лейну · управление твоё', false, 4)
+      } else hud.notify('Управление твоё', false, 2)
       pitSince = performance.now()
       pitCtl = null
       pitPlan = defaultPlan(vehicle, lapsLeft())
@@ -1109,10 +1217,15 @@ async function main() {
         hud.notify(`Чёрно-оранжевый флаг · ${flag} · заезжай в боксы (L)`, true, 8)
       }
       if (orange && !flag) orange = null
+      const driveLeft = driveThrough ? DRIVE_LAPS - (me.lap - driveThrough.lap) : Infinity
       if (orange) {
         const left = ORANGE_LAPS - (me.lap - orange.lap)
         if (left <= 0 && !pitCtl) endRun('небезопасный болид не заехал в боксы', 'dsq')
         else hud.setFlag(`Чёрно-оранжевый флаг · ${orange.reason} · в боксы (L) · осталось ${Math.max(0, left)} кр.`)
+      } else if (driveThrough) {
+        // не отбыл проезд за DRIVE_LAPS круга — чёрный флаг (пока едет по пит-лейну — отбывает)
+        if (driveLeft <= 0 && !pitCtl) endRun('не отбыл проезд по пит-лейну', 'dsq')
+        else hud.setFlag(`Проезд по пит-лейну · ${driveThrough.why} · в боксы (L) · осталось ${Math.max(0, driveLeft)} кр.`)
       } else hud.setFlag(null)
     } else if (!race) hud.setFlag(null)
     // флаги раз в 0,25 с: инциденты, машина безопасности, эвакуатор, обгон под жёлтым
@@ -1176,8 +1289,10 @@ async function main() {
           for (const id of prevAhead) {
             if (!ahead.has(id) && !race.car(id).dnf && !race.car(id).inPit && now - lastPassPenalty > 10000) {
               lastPassPenalty = now
-              race.addPenalty('player', 5)
-              hud.notify(`Стюарды: обгон ${nameOf(id)} под флагом · штраф +5 с`, true, 6)
+              if (!driveInstead(`обгон ${nameOf(id)} под флагом`)) {
+                race.addPenalty('player', 5)
+                hud.notify(`Стюарды: обгон ${nameOf(id)} под флагом · штраф +5 с`, true, 6)
+              }
             }
           }
         }
@@ -1290,8 +1405,10 @@ async function main() {
         const me = race?.car('player')
         if (limits.state.strikes <= LIMIT_WARNINGS) hud.notify(`Границы трассы · предупреждение ${limits.state.strikes}/${LIMIT_WARNINGS}`, true, 3)
         else if (race?.state.running && !me.finished) {
-          race.addPenalty('player', LIMIT_PENALTY)
-          hud.notify(`Границы трассы · +${LIMIT_PENALTY} с к гонке (всего +${me.penalty} с)`, true, 4)
+          if (!driveInstead('границы трассы')) {
+            race.addPenalty('player', LIMIT_PENALTY)
+            hud.notify(`Границы трассы · +${LIMIT_PENALTY} с к гонке (всего +${me.penalty} с)`, true, 4)
+          }
         } else if (!race) {
           laps.addPenalty(LIMIT_PENALTY)
           hud.notify(`Границы трассы · +${LIMIT_PENALTY} с к кругу`, true, 4)
@@ -1309,7 +1426,8 @@ async function main() {
       const wasDone = race.state.playerDone
       race.update(simDt, (c) => (c.player ? laps.state.s : bots.distanceOf(byId.get(c.id))))
       if (!wasDone && race.state.playerDone) {
-        hud.showResults(race.state)
+        seasonAward()
+        hud.showResults(race.state, resultsOpts())
         const me = race.state.cars.find((c) => c.player)
         const pos = race.state.order.indexOf(me) + 1
         career.races++
@@ -1324,7 +1442,7 @@ async function main() {
 
     if (resultsAt && now > resultsAt) {
       resultsAt = 0
-      if (race) hud.showResults(race.state)
+      if (race) hud.showResults(race.state, resultsOpts())
       else hud.showRetire(retireText)
     }
     car.setCompound(vehicle.compound)
@@ -1375,6 +1493,7 @@ async function main() {
     env.follow(car.group.position)
     floodlights.update(car.group)
     const view = input.takeLook()
+    if (rig.fresh) post.reset()
     rig.update(dt, vehicle, paused && !rig.showcase ? null : view)
     if (online.inRace) {
       // табло флагов и чёрно-оранжевый флаг — с сервера
@@ -1399,17 +1518,17 @@ async function main() {
       if (entryS === null) return 0
       const p = (entryS - track.axis[laps.state.idx].distance_m + track.length) % track.length
       return p < track.length / 2 ? p : 0
-    })(), vehicle.damage)
+    })(), vehicle.damage, !!driveThrough)
     telemetry.update(vehicle)
     sound.update(vehicle, lastInput, paused, { bots: rivals, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: online.inRace ? Math.max(0, online.lights()) : start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
     // зеркала заднего вида: только если их видно (кабина, T-камера) и игра идёт
     mirrors?.update(renderer, scene, !inMenu && (rig.mode === 'onboard' || rig.mode === 'tcam'))
-    renderer.render(scene, camera)
+    post.render(scene, camera, inMenu || paused)
   }
   requestAnimationFrame(frame)
 
   // для проверок и настройки из консоли браузера
-  window.__game = { THREE, scene, camera, renderer, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get pitRequest() { return pitRequest }, online }
+  window.__game = { THREE, scene, camera, renderer, post, driveInstead, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get pitRequest() { return pitRequest }, online }
 }
 
 main().catch((e) => {

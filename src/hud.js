@@ -298,7 +298,7 @@ export function createHud(track) {
     setPitPickHandler(fn) {
       onPitPick = fn
     },
-    updatePitPlan(requested, plan, toEntry, damage) {
+    updatePitPlan(requested, plan, toEntry, damage, drive = false) {
       if (pitPlanEl.hidden === requested) pitPlanEl.hidden = !requested
       if (!requested) return
       for (const b of ppTyres.children) setClass(b, b.dataset.c === plan.compound ? 'on' : '')
@@ -307,8 +307,8 @@ export function createHud(track) {
       setClass(ppFix.firstElementChild, plan.wing ? '' : 'on')
       setClass(ppFixOn, plan.wing ? 'on' : '')
       setText(ppFixOn, jobs.length ? `Чинить · +${repairSeconds(damage)} с` : 'Чинить')
-      setText(ppDamage, jobs.length ? `Повреждено: ${list}` : 'Повреждений нет')
-      setText(ppSub, (toEntry > 0 ? `До въезда ${Math.round(toEntry)} м — ` : '') + 'автопилот сам заведёт в боксы. Выбор — клавишами или мышью.')
+      setText(ppDamage, drive ? 'Штраф: проезд по пит-лейну без остановки — шины и ремонт в этот раз не меняют' : jobs.length ? `Повреждено: ${list}` : 'Повреждений нет')
+      setText(ppSub, (toEntry > 0 ? `До въезда ${Math.round(toEntry)} м — ` : '') + (drive ? 'автопилот проведёт по пит-лейну.' : 'автопилот сам заведёт в боксы. Выбор — клавишами или мышью.'))
     },
 
     // состояние болида (4 раза в секунду) и пит-лейн
@@ -400,8 +400,8 @@ export function createHud(track) {
         .join('')
     },
 
-    // итог гонки (null — спрятать)
-    showResults(st) {
+    // итог гонки (null — спрятать); opts: { note — строка под заголовком (очки чемпионата), actions: [[действие, надпись]…] }
+    showResults(st, opts = {}) {
       if (!st) {
         results.hidden = true
         return
@@ -417,8 +417,9 @@ export function createHud(track) {
           <div class="sheet-kicker">Финиш · ${st.laps} кругов</div>
           <h2>${me.dsq ? 'Дисквалификация' : me.dnf ? 'Сход' : pos === 1 ? 'Победа!' : `${pos}-е место`}</h2>
           ${me.reason && (me.dnf || me.dsq) ? `<p class="res-why">${me.reason}</p>` : ''}
+          ${opts.note ? `<p class="res-why">${opts.note}</p>` : ''}
           <ol>${st.order.map((c, i) => `<li class="${c.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${c.paint}"></i><span>${c.name}</span><span class="t">${time(c)}</span></li>`).join('')}</ol>
-          <div class="res-actions"><button data-act="again">Ещё раз</button><button data-act="menu">В главное меню</button></div>
+          <div class="res-actions">${(opts.actions ?? [['again', 'Ещё раз'], ['menu', 'В главное меню']]).map(([a, t]) => `<button data-act="${a}">${t}</button>`).join('')}</div>
         </div>`
       for (const b of results.querySelectorAll('[data-act]')) b.addEventListener('click', () => onResults?.(b.dataset.act))
       results.hidden = false

@@ -143,7 +143,8 @@ export function pitEntryHit(lane, x, z, yaw) {
 
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t))
 
-// plan: { compound, wing } — что делать в боксе; opts: { player, auto, rand, T, damage, hold } (hold() — пока true, из бокса не выпускают: красный флаг)
+// plan: { compound, wing } — что делать в боксе; opts: { player, auto, rand, T, damage, hold, drive } (hold() — пока true, из бокса не
+// выпускают: красный флаг; drive — штраф «проезд по пит-лейну»: весь пит-лейн по быстрой полосе с ограничителем, в бокс не заезжает)
 export function createPitStop(lane, boxIndex, plan, opts = {}) {
   const damage = opts.damage // повреждения болида на въезде: от них зависит, сколько стоим
   const T = opts.T || TUNING
@@ -159,6 +160,7 @@ export function createPitStop(lane, boxIndex, plan, opts = {}) {
     reaction: null, // реакция игрока на выпуск, с
     total: 0, // всё время в пит-лейне
     plan,
+    drive: !!opts.drive,
   }
   // hold — стоим на тормозе без заднего хода: без него тормоз на месте включал задний ход и болид в боксе ехал назад
   const input = { throttle: 0, brake: 0, steer: 0, handbrake: false, aero: false, aeroZone: false, abs: true, ersMode: 'balanced', boost: false, hold: true }
@@ -171,7 +173,7 @@ export function createPitStop(lane, boxIndex, plan, opts = {}) {
     const fast = (lane.fast ?? FAST_LANE) * Math.min(smooth((s - 40) / 50), 1 - smooth((s - (lane.length - 60)) / 40))
     if (s < lane.limitStart) return fast * smooth((s - (lane.limitStart - 40)) / 40)
     if (s > lane.limitEnd) return fast * (1 - smooth((s - lane.limitEnd) / 40))
-    const toBox = st.phase === 'in' ? smooth((s - (box.s - 30)) / 30) : 1 - smooth((s - box.s) / 25)
+    const toBox = opts.drive ? 0 : st.phase === 'in' ? smooth((s - (box.s - 30)) / 30) : 1 - smooth((s - box.s) / 25)
     return fast + (box.off - fast) * Math.max(0, Math.min(1, toBox))
   }
 
@@ -248,8 +250,11 @@ export function createPitStop(lane, boxIndex, plan, opts = {}) {
       if (st.phase === 'in') {
         // к линии ограничителя — уже 80, с запасом 15 м (тормоза жмутся не мгновенно)
         vt = Math.sqrt(PIT_SPEED ** 2 + 2 * ENTRY_DECEL * Math.max(0, lane.limitStart - 15 - st.s)) - (st.s > lane.limitStart - 15 ? 1 : 0)
-        vt = Math.min(vt, Math.sqrt(2 * STOP_DECEL * Math.max(0, box.s - st.s - 0.3)))
-        if (st.s >= box.s - 1.5 && speed < 0.6) {
+        if (opts.drive) {
+          // проезд: за линией ограничителя — сразу выезд (80 до конца зоны), без остановки
+          if (st.s >= lane.limitStart) st.phase = 'out'
+        } else vt = Math.min(vt, Math.sqrt(2 * STOP_DECEL * Math.max(0, box.s - st.s - 0.3)))
+        if (!opts.drive && st.s >= box.s - 1.5 && speed < 0.6) {
           st.phase = 'service'
           st.t = 0
         }

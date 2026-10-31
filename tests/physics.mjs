@@ -306,6 +306,18 @@ function aeroAt(kmhTarget) {
   const lo = lift(0)
   const hi = lift(100)
   check('торможение мотором: 100% тормозит на сбросе сильнее 0%', `−${lo.toFixed(1)} против −${hi.toFixed(1)} км/ч за 1 с с 200`, hi > lo + 1.5)
+  // балласт: назад — центр масс назад, в быстром повороте держит больше; плитки переставляются по ходу (без нового болида)
+  const ballastG = (ballast) => withSetup({ ballast }, () => steady(200).g)
+  const gBack = ballastG(-5)
+  const gFwd = ballastG(5)
+  const moved = withSetup({ ballast: 0 }, () => {
+    const w = fresh()
+    const z0 = w.v.massCollider.translation().z - w.v.body.translation().z
+    TUNING.setup.ballast = 5
+    run(w, NONE, 0.1)
+    return w.v.massCollider.translation().z - w.v.body.translation().z - z0
+  })
+  check('балласт: назад — в повороте на 200 цепче, чем вперёд; плитки переставляются на ходу', `${gBack.toFixed(3)} против ${gFwd.toFixed(3)} g, сдвиг ${(moved * 100).toFixed(1)} см`, gBack > gFwd + 0.03 && Math.abs(moved - 0.03) < 0.003)
   // угол поворота колёс: на 25 км/ч с рулём до упора радиус меньше при 30°, чем при 18°
   const radius = (steerLock) =>
     withSetup({ steerLock }, () => {
@@ -1418,7 +1430,7 @@ function hitWall(kmhIn, wallDeg) {
   const boxes = kids('Пит-боксы').map((n) => ({ x: P(n)[0], z: P(n)[2] }))
   const ex = (name) => json.nodes.find((n) => n.name === name).extras.distance_m
   const lane = createPitLane({ axis: pitAxis, boxes, limitStart: ex('Пит лимит начало'), limitEnd: ex('Пит лимит конец') })
-  const pitRun = (player, auto = false) => {
+  const pitRun = (player, auto = false, drive = false) => {
     const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 })
     world.timestep = DT
     const g = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
@@ -1428,7 +1440,7 @@ function hitWall(kmhIn, wallDeg) {
     v.compound = 'soft'
     v.tyres.forEach((t) => (t.wear = 0.6))
     const plan = { compound: 'medium', wing: false }
-    const stop = createPitStop(lane, 11, plan, { player, auto })
+    const stop = createPitStop(lane, 11, plan, { player, auto, drive })
     const human = createPitStop(lane, 11, plan, {}) // руль «водителя»
     let err = null
     let vmax = 0
@@ -1468,6 +1480,10 @@ function hitWall(kmhIn, wallDeg) {
     // возвращается у конца ограничителя; за время стоянки болид стоит на месте (раньше тормоз включал задний ход)
     const auto = pitRun(true, true)
     check('пит-стоп игрока на автопилоте: весь пит-лейн сам', `фазы ${auto.phases}, промах ${auto.err?.toFixed(2)} м, в зоне до ${auto.vmax.toFixed(0)} км/ч, сдвиг за стоянку ${(auto.drift * 100).toFixed(1)} см, ${auto.stop.state.total.toFixed(1)} с, шины ${auto.v.compound}`, auto.stop.state.phase === 'done' && auto.phases === 'in→service→release→out' && auto.err < 1.5 && auto.vmax <= 82 && auto.drift < 0.05 && auto.v.compound === 'medium' && auto.stop.state.total < 40)
+    // штраф «проезд по пит-лейну»: весь пит-лейн по быстрой полосе с ограничителем, без остановки и без смены шин;
+    // теряется меньше, чем на пит-стопе
+    const dt = pitRun(true, true, true)
+    check('проезд по пит-лейну (штраф): без остановки, ограничитель, шины те же', `фазы ${dt.phases}, в зоне до ${dt.vmax.toFixed(0)} км/ч, ${dt.stop.state.total.toFixed(1)} с (стоп ${auto.stop.state.total.toFixed(1)} с), шины ${dt.v.compound}`, dt.stop.state.phase === 'done' && dt.phases === 'in→out' && dt.vmax <= 82 && dt.v.compound === 'soft' && dt.stop.state.total < auto.stop.state.total - 2)
     check('в боксе болид не едет назад (бот)', `сдвиг за стоянку ${(r.drift * 100).toFixed(1)} см`, r.drift < 0.05)
     // тормоз на месте: с hold держит, без hold включает задний ход (так игрок сдаёт назад клавишей S)
     const idle = (inp) => {

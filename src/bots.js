@@ -16,8 +16,8 @@ import { buildTuning, randomBuild, STOCK_BUILD } from './build.js'
 
 export const BOT_COUNT = 11 // с игроком 12 болидов (Рома 28.10)
 // трёхбуквенные коды, как в таблице F1; имена выдуманные
-const NAMES = ['БЕЛ', 'ГРО', 'ДАН', 'ЖУК', 'КОС', 'ЛИС', 'МОР', 'ОРЛ', 'СОК', 'ТИХ', 'ЯКО']
-const PAINTS = ['#1f5fbf', '#f07a12', '#0d7a55', '#e9e6df', '#1a1c20', '#2bb5c9', '#d4b21c', '#7a1f2b', '#5a6470', '#8fd14f', '#e05a9c']
+export const NAMES = ['БЕЛ', 'ГРО', 'ДАН', 'ЖУК', 'КОС', 'ЛИС', 'МОР', 'ОРЛ', 'СОК', 'ТИХ', 'ЯКО']
+export const PAINTS = ['#1f5fbf', '#f07a12', '#0d7a55', '#e9e6df', '#1a1c20', '#2bb5c9', '#d4b21c', '#7a1f2b', '#5a6470', '#8fd14f', '#e05a9c']
 const STUCK_RESET = 3 // с: стоит на месте после старта — вернуть на трассу
 const LOST_RESET = 25 // м от линии — улетел, вернуть
 const PIT_DECIDE = [100, 25] // м до въезда в пит-лейн, где бот решает заехать
@@ -108,8 +108,9 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
       list = []
     },
 
-    // level: light | medium | hard; slots — позиции на решётке
-    spawn(level, slots) {
+    // level: light | medium | hard; slots — позиции на решётке; season — чемпионат (career.js): у каждого бота свой темп
+    // и своя сборка на весь сезон ({ pilots, builds } по номеру бота), а не новые на каждую гонку
+    spawn(level, slots, season = null) {
       api.clear()
       // пилоты вразброс по решётке: имя и цвет — один пилот, номер темпа — новый на каждую гонку
       const pilots = makePilots(BOT_COUNT, rand)
@@ -121,7 +122,7 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
       list = slots.slice(0, BOT_COUNT).map((p, slot) => {
         const i = order[slot]
         // своя копия чисел: у бота своя настройка (игрок свою крутит в гараже) и своя сборка болида
-        const build = builds ? randomBuild(rand) : { ...STOCK_BUILD }
+        const build = season ? { ...season.builds[i] } : builds ? randomBuild(rand) : { ...STOCK_BUILD }
         const T = buildTuning(build, { ...SETUP_DEFAULT })
         const v = createVehicle(RAPIER, world, { x: p.x, y: (p.y || 0) + 0.05, z: p.z, yaw: p.yaw }, T)
         // стартовые шины и план: мягкие — заезд на 2–3-м круге, средние — на 3-м
@@ -131,7 +132,7 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
         const planLap = v.compound === 'soft' ? 2 + Math.round(rand()) : 3
         const c = car.spawn(PAINTS[i % PAINTS.length])
         scene?.add(c.group)
-        const pilot = pilots[slot]
+        const pilot = season ? season.pilots[i] : pilots[slot]
         const d = createAiDriver(createRaceLine(track.axis, level, T, pilot), { T, zone: track.straightZone })
         return { id: 'bot' + i, name: NAMES[i % NAMES.length], paint: PAINTS[i % PAINTS.length], pilot, build, v, car: c, d, input: d.input, box: slot, stops: 0, planLap, pit: null }
       })

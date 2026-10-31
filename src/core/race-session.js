@@ -20,7 +20,7 @@ import { createStart } from '../start.js'
 import { createLimits, wheelsOut } from '../limits.js'
 import { createPitLane, createPitStop, pitEntryHit, pitLimiter, defaultPlan } from '../pit.js'
 import { freshTyres, freshDamage, freshPowerUnit, freshBrakes, setFuel, fuelForRace, COMPOUNDS } from '../wear.js'
-import { retireReason, mechanicalFlag, judgeContact, contactPenalty, ORANGE_LAPS } from '../stewards.js'
+import { retireReason, mechanicalFlag, judgeContact, contactPenalty, ORANGE_LAPS, nextPenalty, DRIVE_LAPS, DRIVE_LATE } from '../stewards.js'
 import { createRaceLine, createAiDriver } from '../ai.js'
 import { buildTuning, cleanBuild, STOCK_BUILD } from '../build.js'
 import { SETUP_DEFAULT } from '../tuning.js'
@@ -150,6 +150,8 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
       ghostUntil: 0, // с: призрак после возврата на трассу
       retired: false,
       orange: null, // чёрно-оранжевый флаг: { reason, lap }
+      drive: null, // штраф «проезд по пит-лейну»: { lap, why }
+      book: { count: 0 }, // штрафов за гонку (каждый третий — проезд, stewards.js)
       raw: cleanInput(),
       auto: null, // водитель ИИ, пока игрок без связи (автопилот)
       gap: 1000, // м до болида впереди по трассе (коридор под машиной безопасности)
@@ -364,8 +366,7 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
           for (const id of h.prevAhead) {
             if (!ahead.has(id) && !race.car(id).dnf && !race.car(id).inPit && time() - h.lastPass > 10) {
               h.lastPass = time()
-              race.addPenalty(h.id, PASS_PENALTY)
-              news.push({ type: 'note', to: h.id, warn: true, text: `Стюарды: обгон ${race.car(id).name} под флагом · штраф +${PASS_PENALTY} с` })
+              penalize(h, PASS_PENALTY, `обгон ${race.car(id).name} под флагом`, true)
             }
           }
         }
@@ -387,7 +388,28 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
     contactSeen.set(key, now)
     const pen = contactPenalty(j.closing)
     if (!j.fault || !pen) return
-    race.addPenalty(idOf(j.fault), pen)
+    const fh = byHuman.get(idOf(j.fault))
+    if (fh) penalize(fh, pen, `столкновение с ${race.car(fh.id === ia ? ib : ia).name}`, true)
+    else race.addPenalty(idOf(j.fault), pen)
+  }
+
+  // штраф игроку: секунды — или каждый третий за гонку проезд по пит-лейну (как в одиночной игре, stewards.js)
+  function penalize(h, sec, why, say) {
+    const me = race.car(h.id)
+    if (me.finished) return
+    const kind = nextPenalty(h.book, !!h.drive, race.state.laps - me.lap)
+    if (kind === 'drive') {
+      h.drive = { lap: me.lap, why }
+      news.push({ type: 'note', to: h.id, warn: true, text: `Стюарды: ${why} · повторное нарушение — проезд по пит-лейну за ${DRIVE_LAPS} кр. (L), иначе дисквалификация` })
+      return
+    }
+    if (kind === 'late') {
+      race.addPenalty(h.id, DRIVE_LATE)
+      news.push({ type: 'note', to: h.id, warn: true, text: `Стюарды: ${why} · повторное нарушение — проезд по пит-лейну, до финиша не успеть: +${DRIVE_LATE} с` })
+      return
+    }
+    race.addPenalty(h.id, sec)
+    if (say) news.push({ type: 'note', to: h.id, warn: true, text: `Стюарды: ${why} · штраф +${sec} с` })
   }
 
   function endRun(h, reason, kind = 'dnf') {
@@ -396,6 +418,7 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
     h.pitCtl = null
     h.pitRequest = false
     h.orange = null
+    h.drive = null
     if (kind === 'dsq') race.disqualify(h.id, reason)
     else race.retire(h.id, reason)
   }
@@ -429,7 +452,8 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
       const p = v.body.translation()
       const toEntry = entryS === null ? Infinity : (entryS - track.axis[h.laps.state.idx].distance_m + L) % L
       if ((h.pitRequest && toEntry < PIT_TAKEOVER[0] && toEntry > PIT_TAKEOVER[1]) || pitEntryHit(lane, p.x, p.z, yawOf(v.body.rotation()))) {
-        h.pitCtl = createPitStop(lane, h.box, { ...h.pitPlan }, { player: true, auto: true, T: v.T, damage: v.damage, hold: () => flags.mode === 'red', rand })
+        // ждёт проезд по пит-лейну — этот заезд и есть проезд (без остановки); чёрно-оранжевый флаг важнее — сначала ремонт
+        h.pitCtl = createPitStop(lane, h.box, { ...h.pitPlan }, { player: true, auto: true, T: v.T, damage: v.damage, hold: () => flags.mode === 'red', rand, drive: !!h.drive && !h.orange })
         h.pitRequest = false
         input.aero = false
       }
@@ -469,6 +493,7 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
       if (flag && !h.orange && !h.pitCtl) h.orange = { reason: flag, lap: me.lap }
       if (h.orange && !flag) h.orange = null
       if (h.orange && ORANGE_LAPS - (me.lap - h.orange.lap) <= 0 && !h.pitCtl) endRun(h, 'небезопасный болид не заехал в боксы', 'dsq')
+      else if (h.drive && !h.orange && DRIVE_LAPS - (me.lap - h.drive.lap) <= 0 && !h.pitCtl) endRun(h, 'не отбыл проезд по пит-лейну', 'dsq')
     }
     const p = v.body.translation()
     h.laps.update(STEP, p.x, p.z, yawOf(v.body.rotation()), v.state.fwdSpeed)
@@ -483,9 +508,13 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
     const inPitArea = !!h.pitCtl || h.pitRequest || time() - h.pitSince < PIT_GRACE || nearPitLane(p.x, p.z)
     if (!start.waiting && h.limits.update(STEP, !inPitArea && wheelsOut(track.axis, h.laps.state.idx, v.body, TUNING))) {
       const me = race.car(h.id)
-      if (h.limits.state.strikes > LIMIT_WARNINGS && race.state.running && !me.finished) race.addPenalty(h.id, LIMIT_PENALTY)
+      if (h.limits.state.strikes > LIMIT_WARNINGS && race.state.running && !me.finished) penalize(h, LIMIT_PENALTY, 'границы трассы', false)
     }
     if (h.pitCtl?.state.phase === 'done' || h.pitCtl?.state.phase === 'abort') {
+      if (h.pitCtl.state.phase === 'done' && h.pitCtl.state.drive && h.drive) {
+        h.drive = null
+        news.push({ type: 'note', to: h.id, text: 'Штраф отбыт: проезд по пит-лейну' })
+      }
       h.pitSince = time()
       h.pitCtl = null
       h.pitPlan = defaultPlan(v, lapsLeft(h))
@@ -589,7 +618,12 @@ export function createRaceSession({ RAPIER, track, seed = 1, laps: lapCount = RA
     human(id) {
       const h = byHuman.get(id)
       if (!h) return null
-      const orange = h.orange && race.state.running ? `Чёрно-оранжевый флаг · ${h.orange.reason} · в боксы (L) · осталось ${Math.max(0, ORANGE_LAPS - (race.car(h.id).lap - h.orange.lap))} кр.` : null
+      const orange =
+        h.orange && race.state.running
+          ? `Чёрно-оранжевый флаг · ${h.orange.reason} · в боксы (L) · осталось ${Math.max(0, ORANGE_LAPS - (race.car(h.id).lap - h.orange.lap))} кр.`
+          : h.drive && race.state.running
+            ? `Проезд по пит-лейну · ${h.drive.why} · в боксы (L) · осталось ${Math.max(0, DRIVE_LAPS - (race.car(h.id).lap - h.drive.lap))} кр.`
+            : null
       return { v: h.v, slot: h.slot, auto: !!h.pitCtl || h.retired, pit: h.pitCtl?.state.phase ?? null, retired: h.retired, removed: h.removed, pitRequest: h.pitRequest, autopilot: !!h.auto, lap: h.laps.state, cap: h.cap, banner: h.banner, orange }
     },
     // события для клиентов с прошлого раза (флаги, эвакуатор, штрафы) — забрать и очистить

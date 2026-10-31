@@ -4,7 +4,7 @@
 // с общим запасом сцепления на тягу/тормоз и поворот; аэро — крылья, граунд-эффект днища, наклон кузова.
 // Rapier только интегрирует кузов как твёрдое тело. Настройка болида — TUNING.setup.
 // Износ шин, повреждения и износ мотора — wear.js: здесь только применяются их множители.
-import { TUNING, setupPhysics, engineBrakeOf, damperOf, steerLockOf, coolDragOf } from './tuning.js'
+import { TUNING, setupPhysics, engineBrakeOf, damperOf, steerLockOf, coolDragOf, ballastOf } from './tuning.js'
 import { freshTyres, tyreGrip, updateTyres, freshDamage, aeroDamage, applyImpact, freshPowerUnit, updatePowerUnit, powerFactor, suspDamageAt, SUSP_BROKEN, updateEngineHeat, freshBrakes, brakeEff, updateBrakes, updateFuel } from './wear.js'
 
 // кузов → болид: по коллайдеру из событий удара Rapier найти, чей это болид.
@@ -161,8 +161,8 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
   const massCollider = world.createCollider(
     RAPIER.ColliderDesc.cuboid(0.55, 0.175, 2.0)
       .setCollisionGroups(WALL_GROUPS) // как корпус: стены видит, других болидов — нет
-      .setTranslation(0, T.comY, T.comZ)
-      .setMass(T.mass + (T.buildMass || 0)) // сборка (build.js): облегчённое шасси, тяжёлая батарея
+      .setTranslation(0, T.comY - (T.comDrop || 0), T.comZ + ballastOf(T.setup, T))
+      .setMass(T.mass + (T.buildMass || 0)) // сборка (build.js): тяжёлая батарея, прочное шасси; балласт — сдвиг центра масс
       .setFriction(0.1)
       .setRestitution(0),
     body,
@@ -284,6 +284,7 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
   }
   v.hullCar = hullCar
   v.massCollider = massCollider
+  v.ballastAt = ballastOf(T.setup, T)
   registerHull(world, hull.handle, v)
   registerHull(world, hullCar.handle, v)
   return v
@@ -293,6 +294,7 @@ export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
 export function applyTuning(v, T) {
   v.T = T
   v.massCollider?.setMass(T.mass + (T.buildMass || 0))
+  placeBallast(v)
 }
 
 export function gearInfo(speedKmh, T = TUNING) {
@@ -396,9 +398,18 @@ export function stepVehicle(v, input, dt, surfaceAt = () => 'asphalt') {
   }
 }
 
+// центр масс по сборке и балласту из настройки: переставляем «грузовой» блок, только когда балласт поменяли
+function placeBallast(v) {
+  const T = v.T
+  const z = ballastOf(T.setup, T)
+  v.ballastAt = z
+  v.massCollider?.setTranslationWrtParent({ x: 0, y: T.comY - (T.comDrop || 0), z: T.comZ + z })
+}
+
 function stepVehicleRaw(v, input, dt, surfaceAt) {
   const { T, body, wheels, world } = v
   const setup = T.setup
+  if (v.massCollider && ballastOf(setup, T) !== v.ballastAt) placeBallast(v)
   // в Rapier добавленные силы копятся между шагами, пока их не сбросить
   body.resetForces(true)
   body.resetTorques(true)

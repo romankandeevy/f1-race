@@ -20,6 +20,7 @@ export const ENGINE_SOUNDS = {
 export const DEFAULTS = {
   quality: 'high', // low | medium | high | ultra
   fps: 60, // 30 | 60 | 120 | 0 (без лимита)
+  blur: 'normal', // размытие в движении: off | soft | normal (motionblur.js)
   volume: 100, // 0…100, общая громкость
   engineSound: 'ls', // звук мотора: ls | v10 | f136 (ENGINE_SOUNDS); по умолчанию большой V8 (Рома 30.10: «берём V8 большой GM LS»)
   mouse: 100, // чувствительность мыши при обзоре, %

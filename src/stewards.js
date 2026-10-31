@@ -30,6 +30,21 @@ export function mechanicalFlag(v) {
   return null
 }
 export const ORANGE_LAPS = 2 // кругов на то, чтобы заехать в боксы; иначе чёрный флаг — дисквалификация
+
+// Проезд по пит-лейну (Рома 30.10: штраф за повторные нарушения, как в F1): каждый DRIVE_EVERY-й штраф игрока за гонку
+// (границы трассы, столкновение, обгон под флагом) — не секунды, а проезд по пит-лейну с ограничителем без остановки
+// (~20 с потери). Отбыть за DRIVE_LAPS круга, иначе чёрный флаг. До финиша меньше DRIVE_LAPS кругов — вместо проезда +DRIVE_LATE с.
+// Одно правило для одиночной гонки (main.js) и сервера (core/race-session.js).
+export const DRIVE_EVERY = 3
+export const DRIVE_LAPS = 3
+export const DRIVE_LATE = 20
+// очередной штраф игрока: book — { count } на гонку, pending — проезд уже ждёт; 'time' — секунды как обычно,
+// 'drive' — проезд по пит-лейну, 'late' — проезд не успеть, +DRIVE_LATE с
+export function nextPenalty(book, pending, lapsLeft) {
+  book.count++
+  if (book.count % DRIVE_EVERY || pending) return 'time'
+  return lapsLeft < DRIVE_LAPS ? 'late' : 'drive'
+}
 export { SUSP_BROKEN }
 
 // Кто виноват в столкновении двух болидов. Смотрим на положение и скорость до удара (prevVel — скорость в начале шага).

@@ -425,6 +425,17 @@
   .sc-part .sc-seg button { padding: 4px 8px; font-size: 12px; }
   .sc-part .sc-seg button small { margin-left: 5px; font: 700 11px var(--font); opacity: .7; }
   .sc-seg button.off { opacity: .35; cursor: not-allowed; }
+  .sc-season { bottom: auto; top: 7vh; max-height: 86vh; overflow-y: auto; }
+  .sc-cal { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+  .sc-cal span { font: 700 11px var(--font); letter-spacing: .04em; padding: 3px 7px; background: #23262C; color: var(--muted); }
+  .sc-cal span.done { color: var(--text); }
+  .sc-cal span.next { background: var(--red); color: #fff; }
+  .sc-stand { list-style: none; margin: 12px 0 0; padding: 0; }
+  .sc-stand li { display: grid; grid-template-columns: 22px 12px 1fr auto; gap: 10px; align-items: center; padding: 4px 0; font: 700 14px var(--font); border-bottom: 1px solid rgba(255,255,255,.06); }
+  .sc-stand li span { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sc-stand li i { width: 12px; height: 12px; background: var(--c); }
+  .sc-stand li em { font-style: normal; font-variant-numeric: tabular-nums; }
+  .sc-stand li.me b { color: var(--yellow); }
   .sc-seg button.on.off { opacity: 1; }
   .sc-budget { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; margin-top: 12px; font: 700 12px var(--font); letter-spacing: .1em; text-transform: uppercase; }
   .sc-budget .sc-bar { height: 8px; }

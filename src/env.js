@@ -99,6 +99,11 @@ export function createEnvironment(renderer, scene) {
   sun.shadow.normalBias = 0.04
   scene.add(sun, sun.target)
 
+  // оси карты теней (как у камеры солнца: смотрит вдоль −SUN_DIR, верх — мировой Y) и размер её точки
+  const TEXEL = (2 * s) / sun.shadow.mapSize.x
+  const SHADOW_X = new THREE.Vector3(0, 1, 0).cross(SUN_DIR).normalize()
+  const SHADOW_Y = SUN_DIR.clone().cross(SHADOW_X)
+
   const fill = new THREE.HemisphereLight(FILL_DAY.clone(), FILL_GROUND_DAY.clone(), 0.45)
   scene.add(fill)
 
@@ -137,9 +142,14 @@ export function createEnvironment(renderer, scene) {
       light()
       rebuildSky()
     },
+    // Рома 30.10: «картинка дрожит» — тень ехала за болидом плавно, и карта теней каждый кадр сдвигалась на доли своей
+    // точки: края теней (болид, деревья, ограждения) мерцали и ползли. Теперь центр карты шагает ровно по её сетке (2,7 см).
     follow(pos) {
-      sun.target.position.copy(pos)
-      sun.position.copy(pos).addScaledVector(SUN_DIR, 70)
+      const a = Math.round(pos.dot(SHADOW_X) / TEXEL) * TEXEL
+      const b = Math.round(pos.dot(SHADOW_Y) / TEXEL) * TEXEL
+      const c = pos.dot(SUN_DIR)
+      sun.target.position.copy(SHADOW_X).multiplyScalar(a).addScaledVector(SHADOW_Y, b).addScaledVector(SUN_DIR, c)
+      sun.position.copy(sun.target.position).addScaledVector(SUN_DIR, 70)
     },
   }
 }
