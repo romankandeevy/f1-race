@@ -1757,7 +1757,7 @@ async function main() {
   requestAnimationFrame(frame)
 
   // для проверок и настройки из консоли браузера
-  window.__game = { THREE, scene, camera, renderer, post, driveInstead, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get crew() { return crew }, lane, replay, racingLine, tutorial, lapView, get pitRequest() { return pitRequest }, online }
+  window.__game = { THREE, scene, camera, renderer, post, driveInstead, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get crew() { return crew }, lane, pitEntryHit, replay, racingLine, tutorial, lapView, get pitRequest() { return pitRequest }, online }
 }
 
 main().catch((e) => {

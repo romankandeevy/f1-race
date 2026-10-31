@@ -21,6 +21,7 @@ const ENTRY = [16, 60] // точки оси пит-лейна (по 2 м), гд�
 // Теперь въезд — только по самому пит-лейну (не дальше ENTRY_HALF от его оси) и не ближе ENTRY_CLEAR за белой линией трассы
 const ENTRY_HALF = 2.2 // м
 const ENTRY_CLEAR = 2.5 // м
+const ENTRY_SPAN = 45 // точек (90 м): длина зоны въезда от места, где пит-лейн ушёл за белую линию
 const STOP_DECEL = 4 // м/с² — мягкая остановка в боксе
 const ENTRY_DECEL = 9 // м/с² — торможение до 80 к линии ограничителя
 const AUTO_RELEASE = 2 // с: не нажал газ — механик выпускает сам (с потерей)
@@ -111,13 +112,37 @@ export function createPitLane(pit, trackAxis = null) {
   // полоса проезда — по другую сторону оси от боксов: у LUMEN RING боксы справа от оси (−2,9 м), у Marina Bay слева (+2,9),
   // и полоса «влево на 2 м» шла прямо через боксы — болид в боксе перегораживал её, едущие мимо в него врезались
   const fast = boxes.length && boxes.reduce((s, b) => s + b.off, 0) > 0 ? -FAST_LANE : FAST_LANE
-  return { axis: a, n, nx, nz, boxes, fast, limitStart: pit.limitStart, limitEnd: pit.limitEnd, length: a[n - 1].distance_m, nearestIdx, near, track }
+  // зона въезда (Рома 31.10 на Спа: «триггер не активировался, не пустило в боксы»): у Спа пит-лейн отходит от трассы прямо
+  // с асфальта и только к ~86 м уходит за белую линию на ENTRY_CLEAR — постоянное окно точек 16…60 оставляло 34 м, свернул чуть
+  // не так — въезд не засчитан. Теперь окно своё у каждой трассы: с первой точки, где пит-лейн уже за линией, и ENTRY_SPAN точек дальше
+  let entry = ENTRY
+  if (track) {
+    const ta = track.axis
+    for (let i = ENTRY[0]; i < n - 2; i++) {
+      let bd = Infinity
+      let bi = 0
+      for (let k = 0; k < ta.length; k++) {
+        const d = (ta[k].x - a[i].x) ** 2 + (ta[k].z - a[i].z) ** 2
+        if (d < bd) {
+          bd = d
+          bi = k
+        }
+      }
+      const half = Math.max(ta[bi].width_left ?? (ta[bi].width ?? 12) / 2, ta[bi].width_right ?? (ta[bi].width ?? 12) / 2)
+      if (Math.sqrt(bd) > half + ENTRY_CLEAR + 0.3) {
+        entry = [Math.max(ENTRY[0], i - 2), Math.min(n - 2, Math.max(ENTRY[1], i + ENTRY_SPAN))]
+        break
+      }
+    }
+  }
+  return { axis: a, n, nx, nz, boxes, fast, limitStart: pit.limitStart, limitEnd: pit.limitEnd, length: a[n - 1].distance_m, nearestIdx, near, track, entry }
 }
 
 // болид въехал в пит-лейн: рядом с началом оси пит-лейна и едет по ней
 export function pitEntryHit(lane, x, z, yaw) {
-  const { i, d } = lane.nearestIdx(x, z, ENTRY[0], ENTRY[1])
-  if (i <= ENTRY[0] || i >= ENTRY[1] - 1) return false
+  const [e0, e1] = lane.entry ?? ENTRY
+  const { i, d } = lane.nearestIdx(x, z, e0, e1)
+  if (i <= e0 || i >= e1 - 1) return false
   const p = lane.axis[i]
   const q = lane.axis[i + 1]
   const along = Math.sin(yaw) * (q.x - p.x) + Math.cos(yaw) * (q.z - p.z)
@@ -200,7 +225,10 @@ export function createPitStop(lane, boxIndex, plan, opts = {}) {
       const lx = Math.cos(yaw)
       const lz = -Math.sin(yaw)
       const speed = Math.max(0, v.state.fwdSpeed)
-      const near = lane.nearestIdx(p.x, p.z, st.idx - 5, st.idx + 40)
+      // первый шаг — по всей зоне въезда: свернул в него позже (у Спа зона въезда до ~176 м) — иначе ближайшей была бы точка 40,
+      // болид «далеко от пит-лейна», и автопилот сразу отменялся (Рома 31.10: «не пустило в боксы»)
+      const near = st.located ? lane.nearestIdx(p.x, p.z, st.idx - 5, st.idx + 40) : lane.nearestIdx(p.x, p.z, 0, (lane.entry ?? ENTRY)[1] + 5)
+      st.located = true
       st.idx = near.i
       st.s = lane.axis[near.i].distance_m
       // игрок едет сам: до своего бокса и после выпуска (ограничитель — pitLimiter); null — «управляет игрок»
