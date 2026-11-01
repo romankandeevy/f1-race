@@ -139,7 +139,12 @@ export function createRacingLine(scene, track, line) {
         if (mode === 'brake' && c === COLORS.go) continue
         // края окна — плавно
         const a = Math.min(1, (k - NEAR / 2) / 6, (ahead - k) / 12) * 0.85
-        col.set([...c, a, ...c, a], j * 8)
+        // без новых массивов в кадре: сборщик мусора давал рывки
+        const o = j * 8
+        col[o] = col[o + 4] = c[0]
+        col[o + 1] = col[o + 5] = c[1]
+        col[o + 2] = col[o + 6] = c[2]
+        col[o + 3] = col[o + 7] = a
         painted.add(j)
       }
       colAttr.needsUpdate = true

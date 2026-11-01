@@ -139,11 +139,12 @@ export function createCrew(scene, gltf, lane) {
     fo.rotation.set(fw - up.rotation.x, 0, 0)
   }
   const v3 = new THREE.Vector3()
+  const invM = new THREE.Matrix4()
   // цель (в осях механика root) → в оси тела: учитываем наклон тела и высоту таза
   function toBody(p, y, z) {
     v3.set(0, y, z)
     p.body.updateMatrix()
-    v3.applyMatrix4(new THREE.Matrix4().copy(p.body.matrix).invert())
+    v3.applyMatrix4(invM.copy(p.body.matrix).invert())
     return v3
   }
   function arms(p, tL, tR) {

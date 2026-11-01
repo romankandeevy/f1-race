@@ -35,34 +35,43 @@ export function createRainDrops() {
     drops.push({ x: Math.random() * w, y: Math.random() * h, r, vx: 0, vy: 0, life: 4 + Math.random() * 6, age: 0, stick: Math.random() * 0.6 })
   }
 
-  function draw(d, alpha) {
-    const sp = Math.hypot(d.vx, d.vy)
-    const stretch = Math.min(6, 1 + sp / (d.r * 6))
-    g.save()
-    g.translate(d.x, d.y)
-    if (stretch > 1.05) g.rotate(Math.atan2(d.vy, d.vx) - Math.PI / 2)
-    g.scale(1, stretch)
-    g.globalAlpha = alpha
-    // тело: почти прозрачное, чуть темнее по краю
-    const body = g.createRadialGradient(0, -d.r * 0.25, d.r * 0.1, 0, 0, d.r)
+  // заготовка капли: рисуется один раз, в кадре — только drawImage (градиенты в кадре давали мусор и рывки)
+  const S = 64
+  const sprite = document.createElement('canvas')
+  sprite.width = sprite.height = S
+  {
+    const sg = sprite.getContext('2d')
+    const r = S / 2 - 1
+    sg.translate(S / 2, S / 2)
+    const body = sg.createRadialGradient(0, -r * 0.25, r * 0.1, 0, 0, r)
     body.addColorStop(0, 'rgba(255,255,255,0.05)')
     body.addColorStop(0.7, 'rgba(200,215,230,0.08)')
     body.addColorStop(1, 'rgba(10,14,20,0.35)')
-    g.fillStyle = body
-    g.beginPath()
-    g.arc(0, 0, d.r, 0, Math.PI * 2)
-    g.fill()
-    // блик сверху и светлая кромка снизу (свет через линзу)
-    g.fillStyle = 'rgba(255,255,255,0.55)'
-    g.beginPath()
-    g.arc(-d.r * 0.3, -d.r * 0.35, d.r * 0.22, 0, Math.PI * 2)
-    g.fill()
-    g.strokeStyle = 'rgba(255,255,255,0.18)'
-    g.lineWidth = Math.max(0.6, d.r * 0.18)
-    g.beginPath()
-    g.arc(0, 0, d.r * 0.8, Math.PI * 0.15, Math.PI * 0.85)
-    g.stroke()
-    g.restore()
+    sg.fillStyle = body
+    sg.beginPath()
+    sg.arc(0, 0, r, 0, Math.PI * 2)
+    sg.fill()
+    sg.fillStyle = 'rgba(255,255,255,0.55)'
+    sg.beginPath()
+    sg.arc(-r * 0.3, -r * 0.35, r * 0.22, 0, Math.PI * 2)
+    sg.fill()
+    sg.strokeStyle = 'rgba(255,255,255,0.18)'
+    sg.lineWidth = r * 0.18
+    sg.beginPath()
+    sg.arc(0, 0, r * 0.8, Math.PI * 0.15, Math.PI * 0.85)
+    sg.stroke()
+  }
+  function draw(d, alpha) {
+    const sp = Math.hypot(d.vx, d.vy)
+    const stretch = Math.min(6, 1 + sp / (d.r * 6))
+    g.globalAlpha = alpha
+    if (stretch > 1.05) {
+      g.setTransform(1, 0, 0, 1, d.x, d.y)
+      g.rotate(Math.atan2(d.vy, d.vx) - Math.PI / 2)
+      g.scale(1, stretch)
+      g.drawImage(sprite, -d.r, -d.r, d.r * 2, d.r * 2)
+      g.setTransform(1, 0, 0, 1, 0, 0)
+    } else g.drawImage(sprite, d.x - d.r, d.y - d.r, d.r * 2, d.r * 2)
   }
 
   return {
@@ -115,6 +124,7 @@ export function createRainDrops() {
         }
       }
       g.clearRect(0, 0, w, h)
+      g.globalAlpha = 1
       for (const d of drops) {
         const fade = Math.min(1, d.age * 6, (d.life - d.age) * 1.5)
         draw(d, Math.max(0, fade))

@@ -764,7 +764,7 @@ async function main() {
 
   // решётка по квалификации: время игрока и времена ботов (темп пилота от уровня + разброс), места по времени
   function qualiGrid() {
-    const base = QUALI_BASE[botLevel]
+    const base = QUALI_BASE[botLevel] * (botLevel === 'pro' ? 0.97 : 1) // «Сложные» на лучших сборках — круг ~3% быстрее
     const rows = [{ id: 'player', name: playerName(), paint: livery.primary, player: true, time: qualiTime ?? Infinity }, ...bots.list.map((b) => ({ id: b.id, name: b.name, paint: b.paint, time: base / (b.pilot.pace * (b.pilot.qualiK ?? 1)) + (Math.random() * 0.6 - 0.2) }))]
     rows.sort((a, b) => a.time - b.time)
     rows.forEach((r, i) => {
@@ -931,9 +931,15 @@ async function main() {
   })
 
   // настройки игрока: применить всё сразу и следить за изменениями
+  const dyn = { scale: 1, sum: 0, n: 0, good: 0, prev: 0 } // автоматическое разрешение (dynamicResolution ниже)
   const applySetting = (k) => {
     const v = settings.get(k)
-    if (k === 'quality') {
+    if (k === 'autores') {
+      dyn.scale = 1
+      renderer.setPixelRatio(pixelRatioFor(settings.get('quality')))
+      renderer.setSize(innerWidth, innerHeight)
+    } else if (k === 'quality') {
+      dyn.scale = 1
       renderer.setPixelRatio(pixelRatioFor(v))
       renderer.setSize(innerWidth, innerHeight)
       env.setShadowSize(QUALITY[v].shadow)
@@ -1011,6 +1017,42 @@ async function main() {
 
   let acc = 0
   let last = performance.now()
+  // Автоматическое разрешение (Рома 01.11: «иногда подлагивает, картинка резкая, хотя плавно всё включено»): на тяжёлой сцене
+  // (Спа: лес, тени 4096, «Максимум» — картинка вдвое больше экрана) кадр иногда не успевает в 16,7 мс, и экран показывает
+  // прошлый — рывок. Каждые 30 кадров смотрим средний промежуток между кадрами: дольше цели на 10% — масштаб картинки −10%
+  // (не ниже DYN_MIN), 2 с подряд с запасом — +5% обратно, до масштаба качества. В меню, на паузе и в фоне не меряем.
+  const DYN_MIN = 0.6
+  function dynamicResolution(now, active) {
+    const gap = now - dyn.prev
+    dyn.prev = now
+    if (!active || !settings.get('autores') || document.hidden || gap > 100) {
+      dyn.sum = dyn.n = 0
+      return
+    }
+    dyn.sum += gap
+    dyn.n++
+    if (dyn.n < 30) return
+    const avg = dyn.sum / dyn.n
+    dyn.sum = dyn.n = 0
+    const target = 1000 / (settings.get('fps') || 60)
+    const base = pixelRatioFor(settings.get('quality'))
+    let next = dyn.scale
+    if (avg > target * 1.1) {
+      next = Math.max(Math.max(DYN_MIN, 0.75 / base), dyn.scale - 0.1)
+      dyn.good = 0
+    } else if (avg < target * 1.04) {
+      dyn.good++
+      if (dyn.good >= 4) {
+        next = Math.min(1, dyn.scale + 0.05)
+        dyn.good = 0
+      }
+    }
+    if (next !== dyn.scale) {
+      dyn.scale = next
+      renderer.setPixelRatio(base * dyn.scale)
+      renderer.setSize(innerWidth, innerHeight)
+    }
+  }
   // рейтинг пилотов-соперников после гонки (drivers.js): один раз за гонку, онлайн — нет
   let rated = null
   function rateBots() {
@@ -1113,7 +1155,7 @@ async function main() {
       return true
     }
     driveThrough = { lap: me.lap, why }
-    hud.notify(`Стюарды: ${why} · повторное нарушение — проезд по пит-лейну за ${DRIVE_LAPS} кр. (L), иначе дисквалификация`, true, 8)
+    hud.notify(`Стюарды: ${why} · повторное нарушение — проезд по пит-лейну за ${DRIVE_LAPS} кр. — сверни в пит-лейн сам, без L; иначе дисквалификация`, true, 8)
     return true
   }
 
@@ -1173,6 +1215,7 @@ async function main() {
     if (maxFps && now - last < 750 / maxFps) return
     const dt = Math.min(0.1, (now - last) / 1000)
     last = now
+    dynamicResolution(now, !inMenu && !menu.isOpen() && !ui.isOpen() && !setupScreen.isOpen() && !replay.active)
 
     for (const code of input.takePressed()) {
       if (replay.active) {
@@ -1282,15 +1325,18 @@ async function main() {
       const q = vehicle.body.rotation()
       const yaw = Math.atan2(2 * (q.w * q.y + q.x * q.z), 1 - 2 * (q.y * q.y + q.x * q.x))
       const toEntry = entryS === null ? Infinity : (entryS - track.axis[laps.state.idx].distance_m + track.length) % track.length
-      // штраф «проезд по пит-лейну» ждёт — этот заезд и есть проезд: без остановки, шины и ремонт не меняют
+      // штраф «проезд по пит-лейну» ждёт — заезд без заказа (сам свернул в пит-лейн) и есть проезд: без остановки, шины и ремонт
+      // не меняют. Заказ L — всегда остановка со шинами и ремонтом (Рома 31.10: «нажал L, заехал — он проехал мою остановку, ничего
+      // не поменялось»: висел штраф, и заказанный пит-стоп молча превращался в проезд); проезд — следующим заездом, срок тот же
       const drive = !!driveThrough && !orange // чёрно-оранжевый флаг важнее: сначала ремонт в боксе, проезд — следующим заездом
-      const planText = drive ? 'проезд по пит-лейну (штраф)' : `шины: ${COMPOUNDS[pitPlan.compound].name}${pitPlan.wing ? ', ремонт кузова' : ''}`
+      const stopText = `шины: ${COMPOUNDS[pitPlan.compound].name}${pitPlan.wing ? ', ремонт кузова' : ''}`
+      const planText = drive ? 'проезд по пит-лейну (штраф)' : stopText
       if (pitRequest && toEntry < PIT_TAKEOVER[0] && toEntry > PIT_TAKEOVER[1]) {
         // автопилот берёт руль заранее, как у ботов: не нужно успевать самому ни тормозить, ни попадать в въезд
-        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, T: vehicle.T, damage: vehicle.damage, hold: () => flags?.mode === 'red', drive })
+        pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, T: vehicle.T, damage: vehicle.damage, hold: () => flags?.mode === 'red', drive: false })
         pitRequest = false
         input.aero = false
-        hud.notify(`Автопилот: заезд в боксы · ${planText}`, false, 4)
+        hud.notify(`Автопилот: заезд в боксы · ${stopText}${driveThrough ? ' · штраф «проезд» — следующим заездом' : ''}`, false, 5)
       } else if (pitEntryHit(lane, p.x, p.z, yaw)) {
         // въехал в пит-лейн сам, без заказа — дальше то же самое
         pitCtl = createPitStop(lane, PLAYER_BOX, { ...pitPlan }, { player: true, auto: true, T: vehicle.T, damage: vehicle.damage, hold: () => flags?.mode === 'red', drive })
@@ -1419,7 +1465,7 @@ async function main() {
       } else if (driveThrough) {
         // не отбыл проезд за DRIVE_LAPS круга — чёрный флаг (пока едет по пит-лейну — отбывает)
         if (driveLeft <= 0 && !pitCtl) endRun('не отбыл проезд по пит-лейну', 'dsq')
-        else hud.setFlag(`Проезд по пит-лейну · ${driveThrough.why} · в боксы (L) · осталось ${Math.max(0, driveLeft)} кр.`)
+        else hud.setFlag(`Проезд по пит-лейну · ${driveThrough.why} · сверни в пит-лейн сам (L — остановка) · осталось ${Math.max(0, driveLeft)} кр.`)
       } else hud.setFlag(null)
     } else if (!race) hud.setFlag(null)
     // флаги раз в 0,25 с: инциденты, машина безопасности, эвакуатор, обгон под жёлтым
@@ -1733,7 +1779,7 @@ async function main() {
       if (entryS === null) return 0
       const p = (entryS - track.axis[laps.state.idx].distance_m + track.length) % track.length
       return p < track.length / 2 ? p : 0
-    })(), vehicle.damage, !!driveThrough)
+    })(), vehicle.damage, driveThrough ? 'later' : false)
     telemetry.update(vehicle)
     sound.update(vehicle, lastInput, paused, { carPos: car.group.position, bots: rivals, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: online.inRace ? Math.max(0, online.lights()) : start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
     // зеркала заднего вида: только если их видно (кабина, T-камера) и игра идёт

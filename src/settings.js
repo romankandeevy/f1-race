@@ -22,6 +22,7 @@ export const ENGINE_SOUNDS = {
 export const DEFAULTS = {
   quality: 'high', // low | medium | high | ultra
   fps: 60, // 30 | 60 | 120 | 0 (без лимита)
+  autores: true, // автоматическое разрешение: не успевает кадр — картинка чуть мягче, но ровные 60 (main.js dynamicResolution)
   blur: 'normal', // размытие в движении: off | soft | normal (motionblur.js)
   volume: 100, // 0…100, общая громкость
   music: 50, // 0…100, музыка в меню (menuaudio.js)

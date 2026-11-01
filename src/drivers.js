@@ -62,7 +62,8 @@ function saveDrivers(s) {
 
 // пилот для ИИ (ai.js читает pace, line, brake, look, aggression; bots.js — tyreK, wetK, qualiK, defend)
 // rand — для небольшого разброса манеры от гонки к гонке (у живых пилотов тоже бывают дни лучше и хуже)
-export function pilotOf(i, rating, rand = Math.random) {
+// spread — доля разброса темпа по рейтингу («Сложные» — 0,35: все у предела)
+export function pilotOf(i, rating, rand = Math.random, spread = 1) {
   const d = ROSTER[i % ROSTER.length]
   const t = d.trait
   const day = (rand() - 0.5) * 0.004 // ±0,2% — день на день не приходится
@@ -73,7 +74,7 @@ export function pilotOf(i, rating, rand = Math.random) {
     number: d.number,
     trait: t,
     rating,
-    pace: 1 - (MAX - rating) * STEP + day,
+    pace: 1 - (MAX - rating) * STEP * spread + day,
     line: t === 'aggressive' ? 1 : t === 'careful' ? 0.85 : 0.9 + rand() * 0.08,
     brake: t === 'careful' ? 0.95 : t === 'aggressive' ? 0.97 : 0.98,
     look: t === 'careful' ? 1.08 : 1,
@@ -87,9 +88,9 @@ export function pilotOf(i, rating, rand = Math.random) {
 }
 
 // все одиннадцать на гонку (по номеру бота)
-export function rosterPilots(rand = Math.random) {
+export function rosterPilots(rand = Math.random, spread = 1) {
   const s = loadDrivers()
-  return ROSTER.map((_, i) => pilotOf(i, s.ratings[i], rand))
+  return ROSTER.map((_, i) => pilotOf(i, s.ratings[i], rand, spread))
 }
 
 // после гонки: order — места (id ботов 'bot0'…, игрок 'player'), dnf — сошедшие. Ожидаемое место — по рейтингу среди

@@ -154,6 +154,7 @@ export function createScreens(ctx) {
       name: 'Графика',
       rows: [
         choice('quality', 'Качество', Object.entries(QUALITY).map(([v, q]) => ({ v, name: q.name })), () => settings.get('quality'), (v) => settings.set('quality', v), { hint: () => QUALITY[settings.get('quality')].about }),
+        toggle('autores', 'Авто-разрешение', () => settings.get('autores'), (v) => settings.set('autores', v), { hint: () => 'Если видеокарта не успевает (тяжёлая трасса, дождь, много болидов), картинка на время становится чуть мягче — зато кадры идут ровно, без подлагиваний. Запас появился — чёткость возвращается сама.' }),
         choice('blur', 'Размытие в движении', [{ v: 'off', name: 'Выкл' }, { v: 'soft', name: 'Слабое' }, { v: 'normal', name: 'Обычное' }], () => settings.get('blur'), (v) => settings.set('blur', v), { hint: () => 'На скорости окружение чуть смазывается по движению, как в гоночных играх и на ТВ: на 60 кадрах трасса не прыгает ступеньками. Свой болид не смазывается.' }),
         choice('fps', 'Лимит кадров', FPS_OPTIONS, () => settings.get('fps'), (v) => settings.set('fps', v), { hint: () => 'Больше кадров — плавнее, но видеокарта работает сильнее. 60 хватает почти всегда; на экранах 120 Гц без лимита нагрузка вдвое выше.' }),
       ],

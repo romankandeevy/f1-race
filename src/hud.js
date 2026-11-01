@@ -307,8 +307,9 @@ export function createHud(track) {
       setClass(ppFix.firstElementChild, plan.wing ? '' : 'on')
       setClass(ppFixOn, plan.wing ? 'on' : '')
       setText(ppFixOn, jobs.length ? `Чинить · +${repairSeconds(damage)} с` : 'Чинить')
-      setText(ppDamage, drive ? 'Штраф: проезд по пит-лейну без остановки — шины и ремонт в этот раз не меняют' : jobs.length ? `Повреждено: ${list}` : 'Повреждений нет')
-      setText(ppSub, (toEntry > 0 ? `До въезда ${Math.round(toEntry)} м — ` : '') + (drive ? 'автопилот проведёт по пит-лейну.' : 'автопилот сам заведёт в боксы. Выбор — клавишами или мышью.'))
+      // drive: 'later' — висит штраф «проезд»: этот заезд — остановка, проезд — следующим
+      setText(ppDamage, drive === 'later' ? `Остановка: шины и ремонт. Штраф «проезд по пит-лейну» — следующим заездом${jobs.length ? ` · повреждено: ${list}` : ''}` : drive ? 'Штраф: проезд по пит-лейну без остановки — шины и ремонт в этот раз не меняют' : jobs.length ? `Повреждено: ${list}` : 'Повреждений нет')
+      setText(ppSub, (toEntry > 0 ? `До въезда ${Math.round(toEntry)} м — ` : '') + (drive === true ? 'автопилот проведёт по пит-лейну.' : 'автопилот сам заведёт в боксы. Выбор — клавишами или мышью.'))
     },
 
     // состояние болида (4 раза в секунду) и пит-лейн

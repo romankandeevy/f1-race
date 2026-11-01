@@ -13,7 +13,7 @@ import { freshTyres } from './wear.js'
 import { createPitStop, defaultPlan, rainTyreFor } from './pit.js'
 import { retireReason, mechanicalFlag } from './stewards.js'
 import { TWO_COMPOUND_MIN_LAPS } from './race.js'
-import { buildTuning, randomBuild, STOCK_BUILD } from './build.js'
+import { buildTuning, randomBuild, lapForecast, STOCK_BUILD } from './build.js'
 
 export const BOT_COUNT = 11 // с игроком 12 болидов (Рома 28.10)
 // трёхбуквенные коды, как в таблице F1; имена выдуманные
@@ -36,8 +36,13 @@ const NO_CAR = { spawn: () => ({ group: { visible: true }, snapshot() {}, setCom
 // же быстрее по профилю), бот далеко впереди игрока — чуть меньше. Рядом с игроком (−RUBBER_NEAR…+RUBBER_NEAR м) — честно.
 // gap — на сколько метров игрок впереди бота (по прогрессу гонки), отрицательный — бот впереди.
 const RUBBER_NEAR = 25 // м: ближе — без подтягивания, честная борьба
-const RUBBER_UP = 0.07 // до +7% сцепления, мощности и тормозов у отставшего от игрока (круг на ~6% быстрее)
-const RUBBER_UP_AT = 400 // м отставания, на которых прибавка полная
+// 01.11 (Рома: «обогнал всех на «Сложных», четыре круга — даже не приблизились»): было +7% всего и на 400 м. Теперь сцепление и
+// тормоза до +8%, мощность и тяга вдвое больше — до +16% (RUBBER_POWER): в поворотах больше нельзя (ИИ выносит за линию),
+// а на прямых — можно. Полная прибавка уже на 300 м. Замер круга на LUMEN RING (tools/track/pro-lap.mjs): обычный бот 68,95 с,
+// «Сложный» с лучшей сборкой 66,9, отставший с полной прибавкой 61,7 с (центр за белой линией не дальше 0,19 м)
+const RUBBER_UP = 0.08 // до +8% сцепления и тормозов у отставшего от игрока
+const RUBBER_POWER = 2 // мощность и тяга: прибавка ×2 (до +16%)
+const RUBBER_UP_AT = 300 // м отставания, на которых прибавка полная
 const RUBBER_DOWN = 0.03 // до −3% у уехавшего вперёд от игрока
 const RUBBER_DOWN_FROM = 80 // м: ближе впереди игрока — не сбавляет (борьба за место)
 const RUBBER_DOWN_AT = 500
@@ -137,7 +142,21 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
       api.clear()
       rubberOn = !!AI_LEVELS[level]?.rubber
       // пилоты постоянные (drivers.js): имя, характер и рейтинг закреплены за ботом; на решётке — вразброс
-      const pilots = rosterPilots(rand)
+      // «Сложные»: разброс темпа втрое меньше (все у предела), сборки — лучшая из 40 случайных по прогнозу круга
+      const pilots = rosterPilots(rand, rubberOn ? 0.35 : 1)
+      const proBuild = () => {
+        let best = null
+        let bt = Infinity
+        for (let k = 0; k < 40; k++) {
+          const b = randomBuild(rand)
+          const t = lapForecast(b, 'lumen')?.time ?? 0
+          if (t < bt) {
+            bt = t
+            best = b
+          }
+        }
+        return best
+      }
       const order = Array.from({ length: BOT_COUNT }, (_, i) => i)
       for (let k = order.length - 1; k > 0; k--) {
         const r = Math.floor(rand() * (k + 1))
@@ -146,7 +165,7 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
       list = slots.slice(0, BOT_COUNT).map((p, slot) => {
         const i = order[slot]
         // своя копия чисел: у бота своя настройка (игрок свою крутит в гараже) и своя сборка болида
-        const build = season ? { ...season.builds[i] } : builds ? randomBuild(rand) : { ...STOCK_BUILD }
+        const build = season ? { ...season.builds[i] } : builds ? (rubberOn ? proBuild() : randomBuild(rand)) : { ...STOCK_BUILD }
         const T = buildTuning(build, { ...SETUP_DEFAULT })
         const v = createVehicle(RAPIER, world, { x: p.x, y: (p.y || 0) + 0.05, z: p.z, yaw: p.yaw }, T)
         // стартовые шины и план: мягкие — заезд на 2–3-м круге, средние — на 3-м
@@ -226,8 +245,8 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
         if (Math.abs(b.rub - 1) > 1e-4 || b.v.T.tireMu !== b.T0.tireMu * wetK) {
           const T = b.v.T
           T.tireMu = b.T0.tireMu * b.rub * wetK
-          T.power = b.T0.power * b.rub
-          T.maxDriveForce = b.T0.maxDriveForce * b.rub
+          T.power = b.T0.power * (1 + (b.rub - 1) * RUBBER_POWER)
+          T.maxDriveForce = b.T0.maxDriveForce * (1 + (b.rub - 1) * RUBBER_POWER)
           T.brakeForce = b.T0.brakeForce * b.rub
           b.d.state.rubber = Math.sqrt(b.rub) // скорость в повороте растёт как корень из сцепления: иначе ИИ выносит за линию
         }
