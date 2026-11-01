@@ -939,16 +939,18 @@ async function main() {
   })
 
   // настройки игрока: применить всё сразу и следить за изменениями
-  const dyn = { scale: 1, sum: 0, n: 0, good: 0, prev: 0 } // автоматическое разрешение (dynamicResolution ниже)
+  const dyn = { scale: 1, sum: 0, n: 0, good: 0, prev: 0, ceil: 1, ceilT: -Infinity } // автоматическое разрешение (dynamicResolution ниже)
   const applySetting = (k) => {
     const v = settings.get(k)
     if (k === 'bloom') post.bloom = v
     if (k === 'autores') {
       dyn.scale = 1
+      dyn.ceilT = -Infinity
       renderer.setPixelRatio(pixelRatioFor(settings.get('quality')))
       renderer.setSize(innerWidth, innerHeight)
     } else if (k === 'quality') {
       dyn.scale = 1
+      dyn.ceilT = -Infinity
       renderer.setPixelRatio(pixelRatioFor(v))
       renderer.setSize(innerWidth, innerHeight)
       env.setShadowSize(QUALITY[v].shadow)
@@ -1046,12 +1048,18 @@ async function main() {
     const target = 1000 / (settings.get('fps') || 60)
     const base = pixelRatioFor(settings.get('quality'))
     let next = dyn.scale
+    // 01.11 (Рома: «что-то лагает»): масштаб качался — поднимался до того, на котором не успевали, падал, снова
+    // поднимался; каждый шаг пересоздаёт картинки кадра (setSize) — сам по себе рывок. Теперь масштаб, на котором не
+    // успели, запоминается (dyn.ceil) и 30 с к нему не поднимаемся; вверх — только после 8 спокойных окон (~4 с)
     if (avg > target * 1.1) {
+      dyn.ceil = dyn.scale
+      dyn.ceilT = now
       next = Math.max(Math.max(DYN_MIN, 0.75 / base), dyn.scale - 0.1)
       dyn.good = 0
     } else if (avg < target * 1.04) {
       dyn.good++
-      if (dyn.good >= 4) {
+      const ceil = now - dyn.ceilT < 30000 ? dyn.ceil - 0.05 : 1
+      if (dyn.good >= 8 && dyn.scale + 0.05 <= ceil + 1e-6) {
         next = Math.min(1, dyn.scale + 0.05)
         dyn.good = 0
       }

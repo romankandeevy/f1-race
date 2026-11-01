@@ -7,24 +7,76 @@
 //  · трава — полосы стрижки (как на трассах F1), пятна и оттенки.
 // Дождь (weather.js) и ночное свечение (floodlights.js) работают как раньше: шейдер умножает цвет материала, а не
 // подменяет его, и свечение берёт тот же рисунок.
+import * as THREE from 'three'
 
 const ASPHALT = /^(асфальт|asphalt)$/i
 const GRASS = /^(grass|газон|трава)/i
 
-const NOISE = /* glsl */ `
-float lkHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float lkNoise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = fract(p);
-  vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(mix(lkHash(i), lkHash(i + vec2(1.0, 0.0)), u.x), mix(lkHash(i + vec2(0.0, 1.0)), lkHash(i + vec2(1.0, 1.0)), u.x), u.y);
+// Шум — из готовой картинки (01.11, Рома: «что-то лагает»): шумы считались в каждой точке кадра — 4 слоя × 4 соседа,
+// у асфальта ещё раз столько же, около 50 синусов на точку; на «Максимуме» это ~5 млн точек асфальта и травы за кадр.
+// Теперь один раз при загрузке рисуется бесшовная картинка 256×256 (R, G — два разных fbm по 4 слоя, B — мелкий шум),
+// а шейдер берёт из неё 2–3 выборки. Рисунок тот же по характеру, цена — как у обычной текстуры.
+const TEX = 256
+function noiseTexture() {
+  const out = new Uint8Array(TEX * TEX * 4)
+  // бесшовный value noise с периодом p клеток на картинку
+  const layer = (p, seed) => {
+    const g = new Float32Array(p * p)
+    let x = seed * 9301 + 49297
+    for (let i = 0; i < p * p; i++) {
+      x = (x * 16807) % 2147483647
+      g[i] = x / 2147483647
+    }
+    const at = (i, j) => g[((j % p) + p) % p * p + (((i % p) + p) % p)]
+    return (u, v) => {
+      const fx = u * p
+      const fy = v * p
+      const i = Math.floor(fx)
+      const j = Math.floor(fy)
+      let tx = fx - i
+      let ty = fy - j
+      tx = tx * tx * (3 - 2 * tx)
+      ty = ty * ty * (3 - 2 * ty)
+      const a = at(i, j) + (at(i + 1, j) - at(i, j)) * tx
+      const b = at(i, j + 1) + (at(i + 1, j + 1) - at(i, j + 1)) * tx
+      return a + (b - a) * ty
+    }
+  }
+  const fbm = (seed) => {
+    const ls = [4, 8, 16, 32].map((p, o) => layer(p, seed + o))
+    return (u, v) => ls[0](u, v) * 0.5 + ls[1](u, v) * 0.25 + ls[2](u, v) * 0.125 + ls[3](u, v) * 0.0625
+  }
+  const r = fbm(1)
+  const g = fbm(11)
+  const b = layer(64, 21)
+  for (let y = 0; y < TEX; y++) {
+    for (let x = 0; x < TEX; x++) {
+      const u = x / TEX
+      const v = y / TEX
+      const k = (y * TEX + x) * 4
+      out[k] = Math.round((r(u, v) / 0.9375) * 255)
+      out[k + 1] = Math.round((g(u, v) / 0.9375) * 255)
+      out[k + 2] = Math.round(b(u, v) * 255)
+      out[k + 3] = 255
+    }
+  }
+  const t = new THREE.DataTexture(out, TEX, TEX)
+  t.wrapS = t.wrapT = THREE.RepeatWrapping
+  t.magFilter = THREE.LinearFilter
+  t.minFilter = THREE.LinearMipmapLinearFilter
+  t.generateMipmaps = true
+  t.needsUpdate = true
+  return t
 }
-float lkFbm(vec2 p) {
-  float s = 0.0;
-  float a = 0.5;
-  for (int i = 0; i < 4; i++) { s += a * lkNoise(p); p = p * 2.03 + 17.1; a *= 0.5; }
-  return s;
-}`
+let noiseTex = null
+const lkNoise = { value: null }
+
+// fbm на картинке — 4 клетки шума на её сторону (r, g — шкала 0…1 как у прежнего lkFbm × 1,07)
+const NOISE = /* glsl */ `
+uniform sampler2D lkNoiseTex;
+float lkFbmR(vec2 p) { return texture2D(lkNoiseTex, p * 0.25).r * 0.9375; }
+float lkFbmG(vec2 p) { return texture2D(lkNoiseTex, p * 0.25).g * 0.9375; }
+float lkFine(vec2 p) { return texture2D(lkNoiseTex, p * 0.015625).b; }`
 
 // асфальт: множитель к цвету материала (материал белый, плитка зерна — map)
 const ASPHALT_FN = /* glsl */ `
@@ -34,8 +86,8 @@ ${NOISE}
 vec3 lkAsphalt() {
   vec2 w = vLkWorld.xz;
   // крупные пятна: старый и свежий асфальт, ремонтные заплаты
-  float big = lkFbm(w * 0.035);
-  float mid = lkFbm(w * 0.22 + 31.0);
+  float big = lkFbmR(w * 0.035);
+  float mid = lkFbmG(w * 0.22 + 31.0);
   float k = 1.0 + (big - 0.5) * 0.34 + (mid - 0.5) * 0.12;
   // мелкое зерно — та же плитка, что была (теперь в метрах мира, 4 м на плитку)
   float grain = texture2D(map, w * 0.25).r / 0.024;
@@ -55,8 +107,8 @@ vec3 lkGrass() {
   // полосы стрижки: 6 м, повёрнуты на 30°; край полосы мягкий
   float u = dot(w, vec2(0.866, 0.5)) / 6.0;
   float stripe = smoothstep(0.42, 0.58, abs(fract(u) - 0.5) * 2.0);
-  float big = lkFbm(w * 0.03);
-  float fine = lkNoise(w * 3.1);
+  float big = lkFbmR(w * 0.03 + 0.37);
+  float fine = lkFine(w * 3.1);
   float k = mix(0.86, 1.1, stripe) * (0.85 + 0.3 * big) * (0.94 + 0.12 * fine);
   // выгоревшие пятна желтее
   vec3 tint = mix(vec3(0.92, 1.03, 0.86), vec3(1.12, 1.04, 0.78), smoothstep(0.55, 0.8, big));
@@ -75,6 +127,7 @@ const lkBase = { value: BASE_DAY }
 function asphaltShader(m) {
   m.onBeforeCompile = (sh) => {
     sh.uniforms.lkBase = lkBase
+    sh.uniforms.lkNoiseTex = lkNoise
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vLkWorld;')
       .replace('#include <worldpos_vertex>', WORLD_VARYING)
@@ -90,6 +143,7 @@ function asphaltShader(m) {
 
 function grassShader(m) {
   m.onBeforeCompile = (sh) => {
+    sh.uniforms.lkNoiseTex = lkNoise
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vLkWorld;')
       .replace('#include <worldpos_vertex>', WORLD_VARYING)
@@ -109,6 +163,8 @@ export function setLookNight(k) {
 
 // root — сцена трассы (gltf.scene)
 export function dressCircuit(root) {
+  noiseTex ??= noiseTexture()
+  lkNoise.value = noiseTex
   root.updateMatrixWorld(true)
   const done = new Set()
   root.traverse((o) => {

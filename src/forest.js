@@ -9,7 +9,8 @@
 import * as THREE from 'three'
 
 const NEAR = 320 // м: ближе — подробные деревья
-const RESORT = 20 // кадров между пересортировками ближних/дальних
+const RESORT = 20 // кадров между проверками, не пора ли пересортировать ближние/дальние
+const MOVE = 40 // м: камера ушла дальше — пересортировать
 const FOREST = /^Лес/ // склеенные сетки крон (Спа)
 
 // ---- шаблоны (ось Y вверх, основание кроны в 0, высота 1, радиус 1) ----
@@ -205,7 +206,8 @@ function splitTrees(mesh) {
 
 // материал: цвет по вершинам (тень внутри кроны) × цвет дерева (экземпляр) × материал модели; верх качается от ветра
 function treeMaterial(src, sway) {
-  const m = new THREE.MeshStandardMaterial({ color: src.color, roughness: 0.9, metalness: 0, vertexColors: true })
+  // матовый Lambert, а не Standard (01.11, «что-то лагает»): листве блики не нужны, а тысячи крон закрывают полкадра
+  const m = new THREE.MeshLambertMaterial({ color: src.color, vertexColors: true })
   m.name = src.name
   m.onBeforeCompile = (sh) => {
     sh.uniforms.lkTime = sway
@@ -251,7 +253,7 @@ export function createForest(root) {
       im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(trees.length * 3), 3)
       im.count = 0
       im.frustumCulled = false
-      im.receiveShadow = true
+      im.receiveShadow = g === near // тень солнца есть только рядом с болидом (квадрат ±32 м) — дальним не нужна
       im.name = mesh.name + (g === near ? ' (близко)' : ' (далеко)')
       root.add(im)
       return im
@@ -280,6 +282,8 @@ export function createForest(root) {
   }
   if (!groups.length) return null
   let frame = RESORT
+  let lastX = Infinity
+  let lastZ = Infinity
   return {
     update(camera, dt) {
       sway.value += dt
@@ -287,6 +291,11 @@ export function createForest(root) {
       frame = 0
       const cx = camera.position.x
       const cz = camera.position.z
+      // заново делим и заливаем в видеокарту (8700 матриц, ~0,5 МБ) — только если камера ушла дальше MOVE м: раньше
+      // заливали каждые 20 кадров, и каждый такой кадр давал рывок
+      if ((cx - lastX) ** 2 + (cz - lastZ) ** 2 < MOVE * MOVE) return
+      lastX = cx
+      lastZ = cz
       for (const g of groups) {
         let a = 0
         let b = 0

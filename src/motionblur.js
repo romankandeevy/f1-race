@@ -154,9 +154,11 @@ export function createMotionBlur(renderer) {
       u.shutter.value = fresh || jump || calm || !level ? 0 : level
       renderer.setRenderTarget(target)
       renderer.render(scene, camera)
-      if (bloomOn) {
-        const w = Math.round(size.x / 2)
-        const h = Math.round(size.y / 2)
+      // свечение — только ночью (01.11, «что-то лагает»: днём сила 0,12 почти не видна, а 10 проходов по кадру стоили
+      // заметно). Размер — от окна, а не от картинки: на «Максимуме» (×2) размытое свечение не нужно рисовать вчетверо крупнее
+      if (bloomOn && night > 0.3) {
+        const w = Math.round(innerWidth / 2)
+        const h = Math.round(innerHeight / 2)
         if (bloomSize.x !== w || bloomSize.y !== h) {
           bloomSize.set(w, h)
           bloom.setSize(w, h) // сам делит ещё пополам — четверть кадра
