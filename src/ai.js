@@ -24,7 +24,7 @@
 // 9) Пилоты, как в F1 25: у каждого свои рейтинги (makePilots) — темп по номеру 1…N (1 — предел уровня,
 //    каждый следующий на 0,5% медленнее), своя траектория (насколько срезает), тормоза, взгляд вперёд,
 //    агрессия (как охотно закрывается и идёт на обгон). Уровень сложности сдвигает всех разом.
-import { TUNING } from './tuning.js'
+import { TUNING, aeroOf } from './tuning.js'
 import { tyreGrip } from './wear.js'
 
 const G = 9.81
@@ -152,11 +152,15 @@ export function createRaceLine(axis, levelKey, T = TUNING, pilot = {}) {
   // скорость: предел в повороте по сцеплению с прижимом, mv²κ = μ(v)·(mg + k·v²).
   // μ(v) подогнано по замеру нашей физики : на 60 км/ч ≈1,40,
   // на 250 ≈1,21 — чем сильнее прижим, тем ниже коэффициент шины
-  const k = T.downforceK
+  // прижим и сопротивление — с крыльями настройки (aeroOf): 01.11 профиль считался с прижимом по умолчанию, и замер круга
+  // с разными крыльями видел только прямые (низкое крыло выходило быстрее везде). У ботов 30/30 — множители 1
+  const A = T.setup ? aeroOf(T) : { front: T.aeroFrontShare, rear: 1 - T.aeroFrontShare, drag: 1 }
+  const k = T.downforceK * (A.front + A.rear)
+  const dragK = T.dragK * A.drag
   const m = T.mass
   const mu = (v) => T.tireMu * 0.84 * L.grip * (pilot.pace ?? 1) * Math.pow(1 + (k * v * v) / (m * G), -T.loadSensitivity * 1.24)
   const vMax = 95
-  const brakeAcc = (v) => Math.min(T.brakeForce / m, mu(v) * (G + (k * v * v) / m)) * L.brake * (pilot.brake ?? 1) + (T.dragK * v * v) / m
+  const brakeAcc = (v) => Math.min(T.brakeForce / m, mu(v) * (G + (k * v * v) / m)) * L.brake * (pilot.brake ?? 1) + (dragK * v * v) / m
   const R = 5 // точки по бокам для кривизны (10 м)
   // профиль скорости по линии (xs, zs — её точки, d — расстояния между ними)
   const profile = (xs, zs, d) => {

@@ -256,7 +256,8 @@ function hardBrake(absOn) {
 }
 
 // 12. Настройка болида действительно меняет поведение
-import { SETUP_DEFAULT, SETUP_PRESETS } from '../src/tuning.js'
+import { SETUP_DEFAULT, SETUP_LEVELS, presetsFor, PRESET_ORDER } from '../src/tuning.js'
+import { SETUP_DATA } from '../src/setup-data.js'
 import { measure as measurePreset, rates as presetRates } from '../tools/setup/presets.mjs'
 function withSetup(values, fn) {
   Object.assign(TUNING.setup, SETUP_DEFAULT, values)
@@ -280,16 +281,24 @@ function aeroAt(kmhTarget) {
   const low = withSetup({ rideF: 1, rideR: 1, suspF: 1, suspR: 1 }, () => aeroAt(300).plankContact)
   check('низко и мягко на 300: днище чиркает', low, low > 0, ' Н')
 }
-// готовые настройки: оценки на карточках гаража (1–5) совпадают с замером (tools/setup/presets.mjs — та же физика)
+// готовые настройки: оценки на карточках гаража (1–5) совпадают с замером (tools/setup/presets.mjs — та же физика);
+// у каждой трассы свои «Надёжная» и «Дождь» (от её лучшего уровня прижима, src/setup-data.js)
 {
   const bad = []
-  const all = Object.entries(SETUP_PRESETS).map(([id, p]) => {
-    const m = measurePreset(p.values)
-    const r = presetRates(m)
-    if (r.straight !== p.rate.straight || r.corners !== p.rate.corners || r.forgiving !== p.rate.forgiving) bad.push(`${p.name}: замер ${r.straight}/${r.corners}/${r.forgiving}, в карточке ${p.rate.straight}/${p.rate.corners}/${p.rate.forgiving}`)
-    return `${p.name} ${m.top.toFixed(0)} км/ч, ${m.g200.toFixed(2)} g, занос ${m.trail.toFixed(1)}°`
-  })
-  check('готовые настройки: оценки совпадают с замером', bad.length ? bad.join('; ') : all.join(' · '), bad.length === 0)
+  const seen = new Map()
+  for (const [track, d] of Object.entries(SETUP_DATA)) {
+    const P = presetsFor(d.best)
+    for (const k of PRESET_ORDER) {
+      const key = JSON.stringify(P[k].values)
+      if (!seen.has(key)) seen.set(key, presetRates(measurePreset(P[k].values)))
+      const r = seen.get(key)
+      const c = d.rate[k]
+      if (r.straight !== c.straight || r.corners !== c.corners || r.forgiving !== c.forgiving) bad.push(`${track} ${P[k].name}: замер ${r.straight}/${r.corners}/${r.forgiving}, в данных ${c.straight}/${c.corners}/${c.forgiving}`)
+    }
+  }
+  check('готовые настройки: оценки совпадают с замером', bad.length ? bad.join('; ') : `${seen.size} настроек, ${Object.keys(SETUP_DATA).length} трассы`, bad.length === 0)
+  const r = (k) => presetRates(measurePreset(SETUP_LEVELS[k].values))
+  check('уровни прижима: низкий — быстрее на прямой, высокий — держит повороты', `прямая ${r('low').straight}/${r('mid').straight}/${r('high').straight}, повороты ${r('low').corners}/${r('mid').corners}/${r('high').corners}`, r('low').straight > r('mid').straight && r('mid').straight > r('high').straight && r('high').corners > r('low').corners)
 }
 // новые параметры настройки (30.10) — каждый что-то меняет
 {

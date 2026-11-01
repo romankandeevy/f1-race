@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { Sky } from 'three/examples/jsm/objects/Sky.js'
 
 export const SUN_DIR = new THREE.Vector3(-0.55, 0.62, 0.55).normalize()
 
@@ -14,7 +15,7 @@ const FILL_DAY = new THREE.Color(0xbcd4ee)
 const FILL_NIGHT = new THREE.Color(0x2a3d63)
 const FILL_GROUND_DAY = new THREE.Color(0x5a5d54)
 const FILL_GROUND_NIGHT = new THREE.Color(0x101318)
-const FOG_DAY = new THREE.Color(0xcfdde9)
+const FOG_DAY = new THREE.Color(0xb9cadb) // как горизонт неба Sky: дальнее голубеет, а не сереет
 const FOG_NIGHT = new THREE.Color(0x0d1220)
 const FOG_WET = new THREE.Color(0x8b939c)
 
@@ -63,8 +64,46 @@ function skyTexture(night) {
   return tex
 }
 
+// Свет дня (Рома 01.11: «всё невзрачное, ничего не вижу»): было солнце 2,6, заливка 0,45, отражения 0,9, экспозиция 1 —
+// сцена недоэкспонирована, асфальт почти чёрный. Ночью — прежние числа (там свет дают фонари, floodlights.js).
+const DAY = { sun: 3.6, fill: 0.75, env: 1.1, exposure: 1.15, fogNear: 260, fogFar: 2700 }
+// небо Sky светит в своих единицах (у солнца десятки): фон и отражения от него — ×SKY_K
+const SKY_K = 0.11
+const NIGHT = { sun: 0.08, fill: 0.3, env: 0.495, exposure: 1, fogNear: 700, fogFar: 3200 }
+
+// Дневное небо — физическая модель неба (Preetham, three Sky): голубой зенит, светлый горизонт, ореол вокруг солнца.
+// Рисуется один раз в куб 512 — фон, из него же отражения (PMREM). Ночью — прежнее небо со звёздами (skyTexture).
+function daySky(renderer, pmrem) {
+  const sky = new Sky()
+  sky.scale.setScalar(1000)
+  const u = sky.material.uniforms
+  u.turbidity.value = 5
+  u.rayleigh.value = 1.4
+  u.mieCoefficient.value = 0.004
+  u.mieDirectionalG.value = 0.82
+  u.sunPosition.value.copy(SUN_DIR)
+  const skyScene = new THREE.Scene()
+  skyScene.add(sky)
+  const cube = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType })
+  const cam = new THREE.CubeCamera(1, 2000, cube)
+  const tone = renderer.toneMapping
+  renderer.toneMapping = THREE.NoToneMapping
+  cam.update(renderer, skyScene)
+  // для отражений — без диска солнца: иначе на кузове лишняя точка-блик поверх блика от самого света
+  u.showSunDisc.value = false
+  const envCube = new THREE.WebGLCubeRenderTarget(256, { type: THREE.HalfFloatType })
+  new THREE.CubeCamera(1, 2000, envCube).update(renderer, skyScene)
+  renderer.toneMapping = tone
+  const env = pmrem.fromCubemap(envCube.texture)
+  envCube.dispose()
+  sky.geometry.dispose()
+  sky.material.dispose()
+  return { background: cube, env }
+}
+
 export function createEnvironment(renderer, scene) {
   const pmrem = new THREE.PMREMGenerator(renderer)
+  let day = null // дневное небо (daySky) — строится один раз
   let night = 0
   let gloom = 0
   let sky = null
@@ -75,6 +114,12 @@ export function createEnvironment(renderer, scene) {
   function rebuildSky() {
     if (skyNight === night) return
     skyNight = night
+    if (night < 0.5) {
+      day ??= daySky(renderer, pmrem)
+      scene.background = day.background.texture
+      scene.environment = day.env.texture
+      return
+    }
     const next = skyTexture(night)
     const nextEnv = pmrem.fromEquirectangular(next)
     sky?.dispose()
@@ -87,10 +132,10 @@ export function createEnvironment(renderer, scene) {
 
   scene.environmentIntensity = 0.9
   scene.backgroundIntensity = 1
-  scene.fog = new THREE.Fog(FOG_DAY.clone(), 700, 3200)
+  scene.fog = new THREE.Fog(FOG_DAY.clone(), DAY.fogNear, DAY.fogFar)
   rebuildSky()
 
-  const sun = new THREE.DirectionalLight(SUN_DAY.clone(), 2.6)
+  const sun = new THREE.DirectionalLight(SUN_DAY.clone(), DAY.sun)
   sun.castShadow = true
   sun.shadow.mapSize.set(1024, 1024) // на квадрат 28×28 м этого хватает: 2,7 см на точку
   let s = 14
@@ -105,26 +150,29 @@ export function createEnvironment(renderer, scene) {
   const SHADOW_X = new THREE.Vector3(0, 1, 0).cross(SUN_DIR).normalize()
   const SHADOW_Y = SUN_DIR.clone().cross(SHADOW_X)
 
-  const fill = new THREE.HemisphereLight(FILL_DAY.clone(), FILL_GROUND_DAY.clone(), 0.45)
+  const fill = new THREE.HemisphereLight(FILL_DAY.clone(), FILL_GROUND_DAY.clone(), DAY.fill)
   scene.add(fill)
 
   const fogColor = new THREE.Color()
   // один раз на кадр пересчитываем свет по дню/ночи и дождю; ничего не создаём
   function light() {
     sun.color.copy(SUN_DAY).lerp(SUN_NIGHT, night)
-    sun.intensity = (2.6 * (1 - night) + 0.08 * night) * (1 - 0.62 * gloom)
+    const mix = (k) => DAY[k] * (1 - night) + NIGHT[k] * night
+    sun.intensity = mix('sun') * (1 - 0.62 * gloom)
+    renderer.toneMappingExposure = mix('exposure')
     // ночью тени дают фонари трассы; тень от луны не считаем (её почти не видно, а проход теней дорогой)
     sun.castShadow = night < 0.5
     fill.color.copy(FILL_DAY).lerp(FILL_NIGHT, night)
     fill.groundColor.copy(FILL_GROUND_DAY).lerp(FILL_GROUND_NIGHT, night)
-    fill.intensity = (0.45 * (1 - night) + 0.3 * night) * (1 + 0.35 * gloom)
-    scene.backgroundIntensity = 1 - 0.55 * gloom
-    scene.environmentIntensity = 0.9 * (1 - 0.3 * gloom) * (1 - 0.45 * night)
+    fill.intensity = mix('fill') * (1 + 0.35 * gloom)
+    const skyK = night < 0.5 ? SKY_K : 1
+    scene.backgroundIntensity = skyK * (1 - 0.55 * gloom)
+    scene.environmentIntensity = mix('env') * skyK * (1 - 0.3 * gloom)
     fogColor.copy(FOG_DAY).lerp(FOG_NIGHT, night).lerp(FOG_WET, gloom)
     scene.fog.color.copy(fogColor)
     // ночью туман не ближе, чем днём: трасса освещена, впереди должно быть видно далеко
-    scene.fog.near = 700 - 560 * gloom
-    scene.fog.far = 3200 - 2300 * gloom
+    scene.fog.near = mix('fogNear') * (1 - 0.6 * gloom)
+    scene.fog.far = mix('fogFar') - 2000 * gloom
   }
   light()
 
@@ -140,8 +188,8 @@ export function createEnvironment(renderer, scene) {
     setNight(k) {
       if (k === night) return
       night = k
-      light()
       rebuildSky()
+      light() // небо сменилось (Sky ↔ звёздное) — его яркость другая
     },
     // Рома 30.10: «картинка дрожит» — тень ехала за болидом плавно, и карта теней каждый кадр сдвигалась на доли своей
     // точки: края теней (болид, деревья, ограждения) мерцали и ползли. Теперь центр карты шагает ровно по её сетке (2,7 см).

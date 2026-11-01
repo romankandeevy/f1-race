@@ -238,6 +238,7 @@ export async function loadCircuit(url, scene, renderer, RAPIER, world, onProgres
   const sectors = (find('Финиш и сектора')?.children || []).map((o) => ({ name: o.name.replace(/_/g, ' '), ...pose(o), ...o.userData }))
 
   return {
+    root, // сцена трассы (look.js красит асфальт и траву)
     length,
     axis,
     sectors,

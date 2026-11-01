@@ -42,6 +42,8 @@ import { createReplay } from './replay.js'
 import { createMenuAudio } from './menuaudio.js'
 import { createRainDrops } from './raindrops.js'
 import { createRacingLine } from './racingline.js'
+import { dressCircuit, setLookNight } from './look.js'
+import { createForest } from './forest.js'
 import { createTutorial } from './tutorial.js'
 import { createLapView } from './lapview.js'
 import { createRaceLine } from './ai.js'
@@ -121,6 +123,8 @@ async function main() {
   const setNight = (k) => {
     env.setNight(k)
     floodlights.setNight(k)
+    post.night = k
+    setLookNight(k)
     renderer.compileAsync(scene, camera).catch(() => {})
   }
 
@@ -145,7 +149,7 @@ async function main() {
   const headrest = car.group.getObjectByName('headrest') // подголовник: из кабины не виден (см. кадр)
   const mirrors = car.initMirrors() // зеркала заднего вида — после схемы: экраны и камеры зеркал на схеме не нужны
   const particles = createParticles(scene)
-  const marks = createTrackMarks(scene) // обломки и следы торможения
+  const marks = createTrackMarks(scene) // обломки (следов шин нет — Рома 01.11)
   const weather = createWeather(scene, env) // дождь и мокрая трасса
   let weatherMode = 'dry'
   let rainNeed = null // какие шины нужны сейчас (rainTyreFor): смена — подсказка и план пит-стопа
@@ -242,7 +246,7 @@ async function main() {
   const lapsLeft = () => (race ? Math.max(0, race.state.laps - race.car('player').lap) : raceLaps)
   const events = new RAPIER.EventQueue(true) // удары по кузовам → повреждения
   const telemetry = createTelemetry()
-  const setupScreen = createSetupScreen()
+  const setupScreen = createSetupScreen({ track: useTest ? null : trackId, trackName: useTest ? '' : trackInfo.name }) // готовые настройки — под эту трассу
   const sound = createSound()
   const menuAudio = createMenuAudio() // музыка меню и звуки интерфейса
   const rainDrops = createRainDrops() // капли на экране в дождь
@@ -335,6 +339,10 @@ async function main() {
   }
   // гоночная линия и тормозные таблички (racingline.js): линия — как у ботов уровня «Средние»
   const racingLine = !useTest && track.axis?.length ? createRacingLine(scene, track, createRaceLine(track.axis, 'hard', TUNING)) : null
+  // вид асфальта и травы (look.js): пятна и зерно асфальта, полосы стрижки
+  if (track.root) dressCircuit(track.root)
+  // лес (forest.js): склеенные кроны из модели → свои деревья экземплярами, ближние подробные, с ветром
+  const forest = track.root ? createForest(track.root) : null
   // повтор гонки (replay.js): запись идёт всю гонку, смотреть — кнопкой «Повтор» на итогах
   const replay = createReplay({ camera, axis: track.axis, length: track.length })
   // механики на пит-стопе (crew.js): модель грузится в фоне, без неё пит-стоп как раньше
@@ -934,6 +942,7 @@ async function main() {
   const dyn = { scale: 1, sum: 0, n: 0, good: 0, prev: 0 } // автоматическое разрешение (dynamicResolution ниже)
   const applySetting = (k) => {
     const v = settings.get(k)
+    if (k === 'bloom') post.bloom = v
     if (k === 'autores') {
       dyn.scale = 1
       renderer.setPixelRatio(pixelRatioFor(settings.get('quality')))
@@ -1748,7 +1757,7 @@ async function main() {
       }
     }
     particles.update(paused ? 0 : dt, vehicle, bots?.list, camera, renderer, weather.state.wet)
-    marks.update(paused ? 0 : dt, vehicle, bots?.list, camera, weather.state.wet)
+    marks.update(paused ? 0 : dt, vehicle, bots?.list)
     env.follow(car.group.position)
     floodlights.update(car.group)
     const view = input.takeLook()
@@ -1798,6 +1807,7 @@ async function main() {
     if (inMenu && tutorial.active) tutorial.stop()
     // музыка: главное меню, экраны вне гонки и итоги (в повторе — нет)
     menuAudio.setMusic(!replay.active && (inMenu || !document.getElementById('results').hidden))
+    forest?.update(camera, paused ? 0 : dt)
     post.render(scene, camera, inMenu || paused)
   }
   requestAnimationFrame(frame)

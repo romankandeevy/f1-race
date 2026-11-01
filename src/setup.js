@@ -3,7 +3,8 @@
 // Значения сразу попадают в TUNING.setup, физика читает их каждый шаг. Сохраняются в браузере.
 // Первая вкладка — «Готовые»: карточки пресетов с оценками для новичка и свои сохранённые настройки.
 // Клавиши: ↑ ↓ — параметр, ← → — изменить (на «Готовых» Enter — поставить), Q E — вкладки, G или Esc — закрыть.
-import { TUNING, SETUP_DEFAULT, SETUP_PRESETS } from './tuning.js'
+import { TUNING, SETUP_DEFAULT, presetsFor, PRESET_ORDER } from './tuning.js'
+import { SETUP_DATA } from './setup-data.js'
 
 const STORE_KEY = 'f1-race.setup.v2' // v2 — шкалы F1 25 (у старой настройки другие ключи)
 const TAB_KEY = 'f1-race.setup.tab2' // tab2 — первой стала вкладка «Готовые»
@@ -383,7 +384,22 @@ const TABS = [
   },
 ]
 const FIELDS = TABS.flatMap((t) => t.fields)
-const PRESET_KEYS = Object.keys(SETUP_PRESETS)
+// готовые настройки под трассу, которая сейчас загружена (createSetupScreen({ track })): лучший уровень прижима, круг и
+// оценки — замер (src/setup-data.js); у трассы без замера (тестовая) — «Средний» лучший и без времени круга
+const PRESET_KEYS = PRESET_ORDER
+let PRESETS = presetsFor('mid')
+let DATA = null
+let TRACK_NAME = ''
+const NO_RATE = { straight: 3, corners: 3, forgiving: 3 }
+const rateOf = (k) => DATA?.rate?.[k] || NO_RATE
+// время круга: 1:58,6
+const lapText = (t) => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0').replace('.', ',')}`
+const lapLine = (k) => {
+  const t = DATA?.laps?.[k]
+  if (!t || k === 'wet') return '' // «Дождь» мерить на сухой нечестно: бот не чувствует, что мягкий болид на сухой нервный
+  const d = t - Math.min(...['low', 'mid', 'high'].map((x) => DATA.laps[x]))
+  return `${lapText(t)}${d < 0.05 ? '' : ` · +${d.toFixed(1).replace('.', ',')}`}`
+}
 const RATES = [
   ['straight', 'Скорость на прямой'],
   ['corners', 'Держит повороты'],
@@ -410,7 +426,7 @@ function save() {
 // у старых сохранёнок нет новых параметров — для них считается значение по умолчанию
 const same = (values) => FIELDS.every((f) => Math.abs((values[f.key] ?? SETUP_DEFAULT[f.key]) - TUNING.setup[f.key]) < 1e-6)
 // какая готовая настройка стоит сейчас (null — своя)
-const currentPreset = () => PRESET_KEYS.find((k) => same(SETUP_PRESETS[k].values)) || null
+const currentPreset = () => PRESET_KEYS.find((k) => same(PRESETS[k].values)) || null
 
 function loadMine() {
   try {
@@ -435,7 +451,10 @@ const dateOf = (at) => new Date(at).toLocaleDateString('ru-RU', { day: 'numeric'
 // игрок печатает название — клавиши игры и гаража не трогаем
 export const isTyping = (e) => e.target instanceof HTMLInputElement && e.target.type === 'text'
 
-export function createSetupScreen() {
+export function createSetupScreen({ track = null, trackName = '' } = {}) {
+  DATA = SETUP_DATA[track] || null
+  PRESETS = presetsFor(DATA?.best || 'mid')
+  TRACK_NAME = trackName
   load()
   const root = document.getElementById('setup')
   // tab 0 — «Готовые», дальше вкладки параметров (TABS[tab - 1])
@@ -491,11 +510,13 @@ export function createSetupScreen() {
       rows.innerHTML = items()
         .map((it, i) => {
           if (it.kind === 'preset') {
-            const p = SETUP_PRESETS[it.key]
+            const p = PRESETS[it.key]
+            const best = DATA?.best === it.key
+            const lap = lapLine(it.key)
             return `
-        <div class="field card" data-i="${i}">
-          <div class="card-name"><b>${p.name}</b><span>${p.who}</span></div>
-          <div class="card-rates">${RATES.map(([key, label]) => `<span class="rate"><em>${label}</em>${meter(p.rate[key])}</span>`).join('')}</div>
+        <div class="field card${best ? ' best' : ''}" data-i="${i}">
+          <div class="card-name"><b>${p.name}${best ? '<i class="card-best">Лучшая здесь</i>' : ''}</b><span>${p.who}${lap ? ` · <em class="card-lap">круг ${lap}</em>` : ''}</span></div>
+          <div class="card-rates">${RATES.map(([key, label]) => `<span class="rate"><em>${label}</em>${meter(rateOf(it.key)[key])}</span>`).join('')}</div>
           <span class="card-on">Стоит</span>
         </div>`
           }
@@ -593,14 +614,17 @@ export function createSetupScreen() {
     }
     if (isPresets()) {
       const k = items()[sel].key
-      const p = SETUP_PRESETS[k]
+      const p = PRESETS[k]
       const v = p.values
       const on = currentPreset() === k
+      const lap = lapLine(k)
+      const where = TRACK_NAME ? ` на ${TRACK_NAME}` : ''
       desc.innerHTML = `
-        <div class="caps">Готовая настройка</div>
+        <div class="caps">Готовая настройка${where ? ` · ${TRACK_NAME}` : ''}</div>
         <h3>${p.name}</h3>
         <div class="who">${p.who}</div>
-        <div class="rates-big">${RATES.map(([key, label]) => `<div><span>${label}</span>${meter(p.rate[key])}</div>`).join('')}</div>
+        <div class="rates-big">${RATES.map(([key, label]) => `<div><span>${label}</span>${meter(rateOf(k)[key])}</div>`).join('')}</div>
+        ${lap ? `<div class="effect"><span class="caps">Круг${where}</span><p>${lap}${DATA.best === k ? ' — лучший уровень прижима для этой трассы' : k === 'safe' ? ' — спокойнее лучшей, зато прощает ошибки' : ''}. Замер: бот «Средних» без износа.</p></div>` : ''}
         <p class="what">${p.hint}</p>
         <div class="effect"><span class="caps">Что внутри</span><p>Крылья ${v.frontWing} / ${v.rearWing} · дифференциал ${v.diffOn}%, мотор на сбросе ${v.engineBraking}% · подвеска ${v.suspF} / ${v.suspR}, амортизаторы ${v.damperF} / ${v.damperR} · клиренс ${v.rideF} / ${v.rideR} · руль ${v.steerLock}°, балласт ${v.ballast ?? 0} · тормоза ${v.brakePressure}%, баланс ${v.brakeBias}% · охлаждение тормозов ${v.brakeDucts}, мотора ${v.radiator}</p></div>
         <div class="tip"><span class="caps">${on ? 'Стоит сейчас' : 'Как поставить'}</span><p>${on ? 'Можешь подкрутить любую вкладку — эта настройка станет основой.' : 'Нажми на карточку или Enter. Потом можно подкрутить любую вкладку.'}</p></div>`
@@ -636,7 +660,7 @@ export function createSetupScreen() {
   function activate(i) {
     const it = items()[i]
     confirmDel = -1
-    if (it.kind === 'preset') applyValues(SETUP_PRESETS[it.key].values)
+    if (it.kind === 'preset') applyValues(PRESETS[it.key].values)
     else if (it.kind === 'mine') applyValues(mine[it.i].values)
     else if (!naming) {
       naming = true
@@ -690,7 +714,7 @@ export function createSetupScreen() {
     }
     renderDesc()
     const mineNow = cur ? null : mine.find((m) => same(m.values))
-    nowEl.innerHTML = `<span class="caps">Сейчас</span> ${cur ? SETUP_PRESETS[cur].name : mineNow ? esc(mineNow.name) : 'Своя настройка, не сохранена'}`
+    nowEl.innerHTML = `<span class="caps">Сейчас</span> ${cur ? PRESETS[cur].name : mineNow ? esc(mineNow.name) : 'Своя настройка, не сохранена'}`
   }
 
   function goTab(i) {

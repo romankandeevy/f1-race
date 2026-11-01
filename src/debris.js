@@ -1,18 +1,13 @@
-// Обломки и следы торможения (Рома 29.10).
+// Обломки (Рома 29.10).
 // Обломки: при ударе от болида отлетают куски карбона (и крашеные — цветом болида), кувыркаются, отскакивают
 // и остаются лежать на трассе; болид, проехавший рядом, их подбрасывает. На физику болидов не влияют.
-// Следы: при блокировке, пробуксовке и заносе на асфальте колесо оставляет тёмную полосу, она бледнеет за ~90 с.
+// Следов шин на трассе нет (Рома 01.11: «убери полностью след колёс с трассы»; были тёмные полосы от блокировки и заноса) — не возвращать.
 // Всё — готовые буферы по кругу: в кадре ничего не создаётся.
 import * as THREE from 'three'
 
 const DEBRIS_MAX = 260
 const DEBRIS_PER_HIT = 14
 const KICK_R = 1.3 // м: ближе — колесо/днище подбрасывает обломок
-const MARKS_MAX = 3000 // отрезков следа
-const MARK_HALF = 0.16 // м, полширины следа (шина F1 ~0,33–0,4 м)
-const MARK_STEP = 0.3 // м между точками следа
-const MARK_LIFE = 90 // с
-const FAR = 140 // м от камеры
 const rnd = (a, b) => a + Math.random() * (b - a)
 const CARBON = new THREE.Color(0x141414)
 
@@ -157,148 +152,21 @@ function createDebris(scene) {
   }
 }
 
-function createSkidMarks(scene) {
-  const pos = new Float32Array(MARKS_MAX * 4 * 3)
-  const alpha = new Float32Array(MARKS_MAX * 4)
-  const a0 = new Float32Array(MARKS_MAX)
-  const born = new Float32Array(MARKS_MAX)
-  const idx = new Uint32Array(MARKS_MAX * 6)
-  for (let i = 0; i < MARKS_MAX; i++) {
-    const b = i * 4
-    idx.set([b, b + 1, b + 2, b + 2, b + 1, b + 3], i * 6)
-  }
-  const geo = new THREE.BufferGeometry()
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage))
-  geo.setAttribute('alpha', new THREE.BufferAttribute(alpha, 1).setUsage(THREE.DynamicDrawUsage))
-  geo.setIndex(new THREE.BufferAttribute(idx, 1))
-  const mat = new THREE.ShaderMaterial({
-    vertexShader: 'attribute float alpha; varying float vA; void main(){ vA = alpha; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-    fragmentShader: 'varying float vA; void main(){ if (vA < 0.004) discard; gl_FragColor = vec4(0.0, 0.0, 0.0, vA); }',
-    transparent: true,
-    depthWrite: false,
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
-  })
-  const mesh = new THREE.Mesh(geo, mat)
-  mesh.frustumCulled = false
-  mesh.renderOrder = 1
-  scene.add(mesh)
-  const state = new WeakMap() // по болиду: последняя точка следа каждого колеса
-  let next = 0
-  let time = 0
-  let fadeAcc = 0
-
-  const addQuad = (l, p, a) => {
-    const i = next
-    next = (next + 1) % MARKS_MAX
-    // поперёк направления движения
-    let dx = p.x - l.x
-    let dz = p.z - l.z
-    const len = Math.hypot(dx, dz) || 1
-    dx /= len
-    dz /= len
-    const nx = -dz * MARK_HALF
-    const nz = dx * MARK_HALF
-    const o = i * 12
-    pos[o] = l.x + nx
-    pos[o + 1] = l.y
-    pos[o + 2] = l.z + nz
-    pos[o + 3] = l.x - nx
-    pos[o + 4] = l.y
-    pos[o + 5] = l.z - nz
-    pos[o + 6] = p.x + nx
-    pos[o + 7] = p.y
-    pos[o + 8] = p.z + nz
-    pos[o + 9] = p.x - nx
-    pos[o + 10] = p.y
-    pos[o + 11] = p.z - nz
-    a0[i] = a
-    born[i] = time
-    alpha.fill(a, i * 4, i * 4 + 4)
-    geo.attributes.position.needsUpdate = true
-    geo.attributes.alpha.needsUpdate = true
-  }
-
-  return {
-    update(dt, cars, cam) {
-      time += dt
-      for (const v of cars) {
-        const t = v.body.translation()
-        let st = state.get(v)
-        if (!st) state.set(v, (st = [null, null, null, null].map(() => ({ on: false, x: 0, y: 0, z: 0 }))))
-        if ((t.x - cam.x) ** 2 + (t.z - cam.z) ** 2 > FAR * FAR) {
-          st.forEach((s) => (s.on = false))
-          continue
-        }
-        const speed = Math.abs(v.state.fwdSpeed)
-        for (let i = 0; i < 4; i++) {
-          const w = v.wheels[i]
-          const s = st[i]
-          const surf = w.surface
-          const slide = w.sliding || Math.abs(w.slip) > 0.12
-          if (!w.contact || v.damage.lost[i] || speed < 3 || !slide || (surf !== 'asphalt' && surf !== 'kerb')) {
-            s.on = false
-            continue
-          }
-          const p = w.point
-          if (!s.on) {
-            s.on = true
-            s.x = p.x
-            s.y = p.y + 0.01
-            s.z = p.z
-            continue
-          }
-          if ((p.x - s.x) ** 2 + (p.z - s.z) ** 2 < MARK_STEP * MARK_STEP) continue
-          // блокировка/пробуксовка темнее, занос — светлее
-          addQuad(s, { x: p.x, y: p.y + 0.01, z: p.z }, w.sliding ? 0.8 : 0.45)
-          s.x = p.x
-          s.y = p.y + 0.01
-          s.z = p.z
-        }
-      }
-      // бледнеют раз в секунду
-      fadeAcc += dt
-      if (fadeAcc > 1) {
-        fadeAcc = 0
-        let changed = false
-        for (let i = 0; i < MARKS_MAX; i++) {
-          if (!a0[i]) continue
-          const k = Math.max(0, 1 - (time - born[i]) / MARK_LIFE)
-          const a = a0[i] * k
-          if (!k) a0[i] = 0
-          alpha.fill(a, i * 4, i * 4 + 4)
-          changed = true
-        }
-        if (changed) geo.attributes.alpha.needsUpdate = true
-      }
-    },
-    clear() {
-      a0.fill(0)
-      alpha.fill(0)
-      geo.attributes.alpha.needsUpdate = true
-    },
-  }
-}
-
 export function createTrackMarks(scene) {
   const debris = createDebris(scene)
-  const skids = createSkidMarks(scene)
   const cars = []
   return {
     debris,
     // раз в кадр: все болиды (игрок и не убранные боты)
-    update(dt, player, bots, camera, wet = 0) {
+    update(dt, player, bots) {
       if (dt <= 0) return
       cars.length = 0
       cars.push(player)
       if (bots) for (const b of bots) if (!b.gone) cars.push(b.v)
-      if (wet < 0.3) skids.update(dt, cars, camera.position) // по воде шина не оставляет чёрных полос
       debris.update(dt, cars)
     },
     clear() {
       debris.clear()
-      skids.clear()
     },
   }
 }

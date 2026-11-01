@@ -1,4 +1,4 @@
-// Замеры готовых настроек (SETUP_PRESETS в src/tuning.js) — по ним ставятся оценки 1–5 на карточках гаража.
+// Замеры готовых настроек (SETUP_LEVELS, presetsFor в src/tuning.js) — по ним ставятся оценки 1–5 на карточках гаража.
 // Та же физика, что в игре, без браузера (как tests/physics.mjs): плоский асфальт, болид без износа.
 //   прямая      — скорость после 40 с газа в пол, км/ч;
 //   повороты    — боковая перегрузка на постоянном круге с полным рулём на 100 и 200 км/ч, g;
@@ -11,7 +11,7 @@
 import { pathToFileURL } from 'url'
 import RAPIER from '@dimforge/rapier3d-compat'
 import { createVehicle, stepVehicle, STATIC_GROUPS } from '../../src/vehicle.js'
-import { TUNING, SETUP_DEFAULT, SETUP_PRESETS } from '../../src/tuning.js'
+import { TUNING, SETUP_DEFAULT, presetsFor, PRESET_ORDER } from '../../src/tuning.js'
 
 await RAPIER.init()
 const DT = 1 / 240
@@ -106,24 +106,24 @@ export function measure(values) {
   }
 }
 
-// оценки 1–5 из замеров (пороги подобраны так, чтобы «Универсальная» была 3/3/3)
+// оценки 1–5 из замеров (пороги подобраны так, чтобы «Средний прижим» был 3/3/3)
 export function rates(m) {
   const step = (x, cuts) => 1 + cuts.filter((c) => x > c).length
   const corners = (m.g100 / 1.95 + m.g200 / 3.42) / 2 // доля от «Универсальной»
   return {
-    straight: step(m.top, [309, 315, 323, 328]),
+    straight: step(m.top, [304, 314, 328, 340]), // 01.11: крылья дают 296…361 км/ч
     corners: step(corners, [0.9, 0.96, 1.04, 1.085]),
     forgiving: 6 - step(m.trail, [1.2, 1.8, 3.5, 8]),
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  for (const [id, p] of Object.entries(SETUP_PRESETS)) {
-    const m = measure(p.values)
-    const r = rates(m)
-    const ok = r.straight === p.rate.straight && r.corners === p.rate.corners && r.forgiving === p.rate.forgiving
-    console.log(
-      `${p.name.padEnd(14)} прямая ${m.top.toFixed(0)} км/ч · повороты ${m.g100.toFixed(2)} / ${m.g200.toFixed(2)} g · занос: тормоз в повороте ${m.trail.toFixed(1)}°, сброс ${m.lift.toFixed(1)}°, перекладка ${m.slalom.toFixed(1)}° · тормоз ${m.brake.toFixed(0)} м · оценки по замеру ${r.straight}/${r.corners}/${r.forgiving}${ok ? '' : ` (в карточке ${p.rate.straight}/${p.rate.corners}/${p.rate.forgiving})`} [${id}]`,
-    )
+  for (const best of ['low', 'mid', 'high']) {
+    const P = presetsFor(best)
+    for (const id of best === 'low' ? PRESET_ORDER : ['safe', 'wet']) {
+      const m = measure(P[id].values)
+      const r = rates(m)
+      console.log(`${P[id].name.padEnd(16)} ${id === 'safe' || id === 'wet' ? `(от «${best}»)` : ''} прямая ${m.top.toFixed(0)} км/ч · повороты ${m.g100.toFixed(2)} / ${m.g200.toFixed(2)} g · занос: тормоз в повороте ${m.trail.toFixed(1)}°, сброс ${m.lift.toFixed(1)}°, перекладка ${m.slalom.toFixed(1)}° · тормоз ${m.brake.toFixed(0)} м · оценки ${r.straight}/${r.corners}/${r.forgiving}`)
+    }
   }
 }

@@ -124,6 +124,16 @@ export const TUNING = {
   // CD·A ≈ 1,2 м² (с 670 кВт даёт ~349 км/ч). Быстрые повороты держатся на прижиме, медленные — на шине
   downforceK: 4.53,
   aeroFrontShare: 0.42,
+  // Крылья (aeroOf ниже; при 30/30 всё ровно ×1). Прижим оси: wingDf0 + wingDfK·крыло/50; сопротивление:
+  // wingDrag0 + wingDragF·перед/50 + wingDragR·зад/50. 01.11 (Рома: «готовые настройки плохие, сделай как в других играх»):
+  // было 0,7 + 0,5·крыло и 0,85 + 0,25·зад — прижим решал всё, максимум крыльев выигрывал на любой трассе, «Скоростная»
+  // была медленнее всех даже на Спа. Теперь как в F1: крылья 5/5 — ~361 км/ч, 50/50 — ~296, а лучший уровень у трасс
+  // разный (замер tools/setup/preset-laps.mjs): LUMEN RING — высокий прижим, Спа — низкий, Marina Bay — средний
+  wingDf0: 0.86,
+  wingDfK: 0.233,
+  wingDrag0: 0.62,
+  wingDragF: 0.2,
+  wingDragR: 0.433,
   dragK: 0.80, // было 0,735 (CD·A 1,2 м²): 29.10 — воздух должен держать сильнее, потолок ~320 км/ч (с режимом прямой ~340)
   // Активная аэродинамика 2026 вместо DRS: «режим прямой» — оба крыла раскрываются, меньше сопротивления
   // и прижима на обеих осях (баланс тот же). Включается F только в зоне прямой, закрывается сам:
@@ -198,6 +208,18 @@ export const BALLAST_STEP = 0.006
 export const ballastOf = (s, T = TUNING) => (s.ballast ?? 0) * BALLAST_STEP * (T.ballastK ?? 1)
 export const coolDragOf = (s) => 1 + 0.005 * ((s.brakeDucts ?? 3) - 3) + 0.008 * ((s.radiator ?? 3) - 3)
 
+// крылья: доли прижима осей и сопротивление (при 30/30 — ровно как в таблице tuning.js)
+export function aeroOf(T) {
+  // 0–50, при 30 — ровно как в таблице tuning.js
+  const fw = T.setup.frontWing / 50
+  const rw = T.setup.rearWing / 50
+  return {
+    front: T.aeroFrontShare * (T.wingDf0 + T.wingDfK * fw),
+    rear: (1 - T.aeroFrontShare) * (T.wingDf0 + T.wingDfK * rw),
+    drag: T.wingDrag0 + T.wingDragF * fw + T.wingDragR * rw, // при 30/30 — 1
+  }
+}
+
 // игровые шкалы → настоящие величины
 export function setupPhysics(s) {
   return {
@@ -210,51 +232,54 @@ export function setupPhysics(s) {
   }
 }
 
-// Готовые настройки (вкладка «Готовые» в гараже). Переделаны 30.10 (Рома: «готовые настройки не очень») — у каждой своя
-// задача: новичок, универсальная, под трассу (городская со шпильками / быстрая с прямыми), дождь, для опытных.
-// Оценки 1–5 — по замерам физики (tools/setup/presets.mjs): скорость на прямой, держит повороты (перегрузка в медленном
-// и быстром повороте), прощает ошибки (увод зада в повороте, под газом на выходе и на сбросе газа). Порядок проверяют тесты.
-export const SETUP_PRESETS = {
-  rookie: {
-    name: 'Новичок',
-    who: 'Первые круги, клавиатура',
-    hint: 'Зад держит крепко: газ на выходе и сброс газа перед поворотом почти не срывают. Тормоз мягче — колёса блокируются не так легко, мотор на сбросе почти не тормозит. Поворачивает чуть ленивее, зато развернуть его надо постараться.',
-    rate: { straight: 2, corners: 3, forgiving: 5 },
-    values: { frontWing: 34, rearWing: 44, diffOn: 95, diffOff: 70, camberF: -3.2, camberR: -1.2, toeF: 0.02, toeR: 0.45, suspF: 18, suspR: 14, arbF: 15, arbR: 5, rideF: 14, rideR: 16, brakePressure: 88, brakeBias: 60, tyreFL: 24.0, tyreFR: 24.0, tyreRL: 21.5, tyreRR: 21.5, engineBraking: 25, damperF: 5, damperR: 5, steerLock: 26, brakeDucts: 4, radiator: 4 },
+// Готовые настройки (вкладка «Готовые» в гараже). Переделаны 01.11 по образцу F1 25 и ACC (Рома: «готовые настройки
+// плохие, узнай, как в других играх, и сделай так же»). Было шесть «по характеру» (Новичок, Городская, Скоростная…), и они
+// врали: на сухой трассе быстрее всех был «Дождь», «Скоростная» — медленнее всех даже на Спа. Как в играх:
+//  · три уровня прижима, как лесенка F1 25 от Монцы до Монако: Низкий / Средний / Высокий. Внутри каждого — то, что
+//    обычно идёт вместе (меньше крыла — ниже и жёстче, руль прямее, охлаждение прикрыто; больше — мягче и выше);
+//    правило F1: переднее крыло не меньше заднего;
+//  · «Надёжная» (Safe из ACC) — лучший уровень этой трассы, но спокойнее: заднее крыло +6, дифференциал зажат,
+//    задний стабилизатор мягче, баланс тормозов вперёд, мотор на сбросе почти не тормозит — для новичка и для гонки;
+//  · «Дождь» — лучший уровень этой трассы + 8 делений крыльев, мягче и выше, давление шин ниже, дифференциал открыт
+//    (правило из гайдов F1: сухая настройка → мокрая).
+// Какой уровень лучший на трассе и время круга каждой карточки — замер (tools/setup/preset-laps.mjs --write пишет
+// src/setup-data.js), там же оценки 1–5 (tools/setup/presets.mjs). Тест проверяет, что числа совпадают с замером.
+export const SETUP_LEVELS = {
+  low: {
+    name: 'Низкий прижим',
+    who: 'Длинные прямые',
+    hint: 'Крылья почти плоские, болид низкий и жёсткий, охлаждение прикрыто — меньше сопротивления воздуха: на прямой быстрее всех. В поворотах держит слабее — тормозить раньше и не спешить с газом.',
+    values: { frontWing: 16, rearWing: 12, diffOn: 72, diffOff: 65, camberF: -3.5, camberR: -1.5, toeF: 0.05, toeR: 0.25, suspF: 27, suspR: 20, arbF: 15, arbR: 9, rideF: 8, rideR: 12, brakePressure: 90, brakeBias: 59, tyreFL: 24.0, tyreFR: 24.0, tyreRL: 22.0, tyreRR: 22.0, engineBraking: 30, damperF: 7, damperR: 6, steerLock: 22, brakeDucts: 2, radiator: 2, ballast: 0 },
   },
-  balanced: {
-    name: 'Универсальная',
-    who: 'Когда освоился · любая трасса',
-    hint: 'Всё посередине: ничего не выделяется, ничего не мешает. Хорошая база, чтобы крутить что-то своё.',
-    rate: { straight: 3, corners: 3, forgiving: 3 },
-    values: { ...SETUP_DEFAULT },
+  mid: {
+    name: 'Средний прижим',
+    who: 'Прямые и повороты поровну',
+    hint: 'Середина во всём: ровно держит повороты и не сильно проигрывает на прямой. Хорошая основа, чтобы подкрутить своё.',
+    values: { frontWing: 32, rearWing: 28, diffOn: 70, diffOff: 65, camberF: -3.5, camberR: -1.5, toeF: 0.05, toeR: 0.25, suspF: 22, suspR: 19, arbF: 13, arbR: 9, rideF: 11, rideR: 13, brakePressure: 90, brakeBias: 59, tyreFL: 23.5, tyreFR: 23.5, tyreRL: 21.5, tyreRR: 21.5, engineBraking: 30, damperF: 6, damperR: 6, steerLock: 24, brakeDucts: 3, radiator: 3, ballast: 0 },
   },
-  street: {
-    name: 'Городская',
-    who: 'Marina Bay и медленные трассы',
-    hint: 'Крылья на максимуме, подвеска и амортизаторы мягкие — поребрики и кочки не подбрасывают, руль выворачивается круче для шпилек, тормоза и мотор охлаждаются сильнее. На прямой медленнее всех — на городской трассе прямых мало.',
-    rate: { straight: 1, corners: 5, forgiving: 4 },
-    values: { frontWing: 48, rearWing: 50, diffOn: 75, diffOff: 60, camberF: -2.8, camberR: -1.4, toeF: 0.08, toeR: 0.3, suspF: 15, suspR: 13, arbF: 10, arbR: 7, rideF: 16, rideR: 22, brakePressure: 100, brakeBias: 59, tyreFL: 23.0, tyreFR: 23.0, tyreRL: 21.0, tyreRR: 21.0, engineBraking: 35, damperF: 4, damperR: 4, steerLock: 28, brakeDucts: 5, radiator: 5 },
+  high: {
+    name: 'Высокий прижим',
+    who: 'Много поворотов',
+    hint: 'Крылья почти на максимуме: в быстрых поворотах болид как приклеенный. Подвеска мягче, руль круче — легче в шпильках и на поребриках. Цена — на прямой медленнее.',
+    values: { frontWing: 48, rearWing: 44, diffOn: 68, diffOff: 65, camberF: -3.3, camberR: -1.5, toeF: 0.05, toeR: 0.25, suspF: 18, suspR: 16, arbF: 12, arbR: 8, rideF: 13, rideR: 16, brakePressure: 90, brakeBias: 59, tyreFL: 23.0, tyreFR: 23.0, tyreRL: 21.0, tyreRR: 21.0, engineBraking: 30, damperF: 5, damperR: 5, steerLock: 26, brakeDucts: 4, radiator: 4, ballast: 0 },
   },
-  fast: {
-    name: 'Скоростная',
-    who: 'LUMEN RING и трассы с прямыми',
-    hint: 'Крылья почти плоские, болид низкий и жёсткий, радиаторы и тормоза прикрыты — меньше сопротивления: самый быстрый на прямой. В медленных поворотах скользит — тормозить раньше.',
-    rate: { straight: 5, corners: 2, forgiving: 2 },
-    values: { frontWing: 14, rearWing: 8, diffOn: 90, diffOff: 45, camberF: -3.0, camberR: -1.3, toeF: 0.03, toeR: 0.2, suspF: 27, suspR: 26, arbF: 16, arbR: 12, rideF: 7, rideR: 12, brakePressure: 100, brakeBias: 58, tyreFL: 26.5, tyreFR: 26.5, tyreRL: 24.0, tyreRR: 24.0, engineBraking: 50, damperF: 8, damperR: 7, steerLock: 22, brakeDucts: 2, radiator: 2 },
-  },
-  wet: {
-    name: 'Дождь',
-    who: 'Мокрая трасса',
-    hint: 'Максимум прижима, всё мягкое и высокое: болид не всплывает на воде и мягко отпускает зад. Дифференциал открытый и мотор на сбросе не тормозит — меньше пробуксовки и заносов на мокром. Охлаждение прикрыто: вода и так остужает.',
-    rate: { straight: 2, corners: 5, forgiving: 5 },
-    values: { frontWing: 48, rearWing: 50, diffOn: 60, diffOff: 80, camberF: -2.6, camberR: -1.0, toeF: 0.0, toeR: 0.4, suspF: 12, suspR: 10, arbF: 8, arbR: 4, rideF: 20, rideR: 24, brakePressure: 85, brakeBias: 60, tyreFL: 23.0, tyreFR: 23.0, tyreRL: 21.0, tyreRR: 21.0, engineBraking: 10, damperF: 3, damperR: 3, steerLock: 26, brakeDucts: 1, radiator: 2 },
-  },
-  sharp: {
-    name: 'Пилот',
-    who: 'Для опытных',
-    hint: 'Нос цепкий, зад лёгкий: болид сам ныряет в поворот и быстро меняет направление, мотор на сбросе тормозит сильно. Быстро, но ошибок не прощает — лишний газ в повороте разворачивает.',
-    rate: { straight: 3, corners: 4, forgiving: 1 },
-    values: { frontWing: 42, rearWing: 30, diffOn: 60, diffOff: 35, camberF: -3.5, camberR: -1.4, toeF: 0.15, toeR: 0.12, suspF: 25, suspR: 19, arbF: 11, arbR: 15, rideF: 9, rideR: 18, brakePressure: 100, brakeBias: 56, tyreFL: 24.0, tyreFR: 24.0, tyreRL: 23.5, tyreRR: 23.5, engineBraking: 60, damperF: 8, damperR: 6, steerLock: 26, brakeDucts: 3, radiator: 3 },
-  },
+}
+const clampTo = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
+// «Надёжная»: уровень трассы, но зад держит крепче и тормоз прощает
+function safeOf(v) {
+  return { ...v, rearWing: clampTo(v.rearWing + 6, 0, 50), diffOn: 95, diffOff: 70, arbR: clampTo(v.arbR - 3, 1, 21), brakeBias: v.brakeBias + 2, brakePressure: 85, engineBraking: 20, tyreRL: v.tyreRL - 1, tyreRR: v.tyreRR - 1, steerLock: clampTo(v.steerLock + 2, 18, 30) }
+}
+// «Дождь»: уровень трассы + 8 делений крыльев, мягко и высоко, шины мягче, дифференциал открыт
+function wetOf(v) {
+  return { ...v, frontWing: clampTo(v.frontWing + 8, 0, 50), rearWing: clampTo(v.rearWing + 8, 0, 50), diffOn: 60, diffOff: 75, suspF: clampTo(v.suspF - 6, 1, 41), suspR: clampTo(v.suspR - 6, 1, 41), arbF: clampTo(v.arbF - 4, 1, 21), arbR: clampTo(v.arbR - 4, 1, 21), rideF: v.rideF + 8, rideR: v.rideR + 8, brakePressure: 85, brakeBias: v.brakeBias, tyreFL: v.tyreFL - 1, tyreFR: v.tyreFR - 1, tyreRL: v.tyreRL - 1, tyreRR: v.tyreRR - 1, engineBraking: 15, damperF: 3, damperR: 3, steerLock: 26, brakeDucts: 1, radiator: 2 }
+}
+export const PRESET_ORDER = ['low', 'mid', 'high', 'safe', 'wet']
+// готовые настройки для трассы (best — лучший уровень прижима на ней, по замеру)
+export function presetsFor(best = 'mid') {
+  const base = SETUP_LEVELS[best] || SETUP_LEVELS.mid
+  return {
+    ...SETUP_LEVELS,
+    safe: { name: 'Надёжная', who: `${base.name.split(' ')[0]} прижим, спокойнее`, hint: 'Лучший уровень прижима для этой трассы, но болид прощает ошибки: зад держит крепче, газ на выходе и тормоз в повороте почти не срывают, мотор на сбросе не дёргает. Для первых кругов и длинной гонки — чуть медленнее на круге.', values: safeOf(base.values) },
+    wet: { name: 'Дождь', who: 'Мокрая трасса', hint: 'Лучший уровень этой трассы, но крылья выше, болид мягче и выше — не всплывает на воде и мягко отпускает зад. Дифференциал открыт, мотор на сбросе не тормозит, шины мягче. На сухой — медленно.', values: wetOf(base.values) },
+  }
 }

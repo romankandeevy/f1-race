@@ -6,14 +6,20 @@
 // болид игрока едет вместе с камерой, поэтому ближнее (до NEAR0…NEAR1 м от камеры) не смазывается совсем, и выборки с
 // ближнего не попадают в смаз дальнего (иначе болид «тёк» бы на фон). Длина смаза — как у кинокамеры с затвором 180°
 // (половина пути за кадр, `SHUTTER`), не длиннее MAX_BLUR экрана. Камеру перенесли (R, смена вида, новый старт) — кадр без смаза.
-// Выключено — рисуем как раньше, прямо на экран, без лишней работы. Тон (ACES) — при рисовании сцены, sRGB — в этом проходе.
+// Выключено — кадр всё равно идёт через проход (цветокоррекция, 01.11), только без смаза. Тон (ACES) — при рисовании сцены, sRGB — в этом проходе.
 import * as THREE from 'three'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 
 const SAMPLES = 12 // выборок вдоль смаза; каждая точка начинает со своего сдвига (шум) — без «ступенек» на скорости
 const NEAR0 = 7 // м: ближе — не смазываем (болид в кадре, кабина)
 const NEAR1 = 16 // м: дальше — смаз полностью
 const MAX_BLUR = 0.035 // доля экрана: потолок длины смаза
 const JUMP = 15 // м за кадр: камеру перенесли — без смаза
+// Свечение (Рома 01.11: «свечение»): яркое (уже после тона, 0…1) расплывается ореолом — UnrealBloomPass в четверть
+// разрешения, складывается в картинку до цветокоррекции. Ночью — прожекторы, огни, светящаяся разметка; днём слабо —
+// только блики на кузове (небо не должно светиться).
+const BLOOM = { day: { strength: 0.12, threshold: 0.93, radius: 0.3 }, night: { strength: 0.5, threshold: 0.94, radius: 0.35 } }
+const GRADE = { saturation: 1.1, contrast: 1.06, vignette: 0.22 }
 export const BLUR_LEVELS = { off: 0, soft: 0.3, normal: 0.5 } // доля пути за кадр (затвор)
 
 const vert = /* glsl */ `
@@ -63,6 +69,15 @@ void main() {
   }
   gl_FragColor = sum;
   #include <colorspace_fragment>
+  // цветокоррекция (Рома 01.11: «всё невзрачное») — уже в sRGB, как у фото: чуть насыщеннее и контрастнее,
+  // края кадра темнее (виньетка) — взгляд держится на трассе впереди
+  vec3 c = gl_FragColor.rgb;
+  float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(luma), c, ${GRADE.saturation.toFixed(3)});
+  c = (c - 0.5) * ${GRADE.contrast.toFixed(3)} + 0.5;
+  vec2 vq = vUv - 0.5;
+  c *= 1.0 - ${GRADE.vignette.toFixed(3)} * smoothstep(0.2, 0.75, dot(vq, vq) * 2.2);
+  gl_FragColor.rgb = clamp(c, 0.0, 1.0);
 }`
 
 export function createMotionBlur(renderer) {
@@ -99,6 +114,10 @@ export function createMotionBlur(renderer) {
   const prevPos = new THREE.Vector3()
   let fresh = true
   let level = 0
+  let bloomOn = true
+  let night = 0
+  const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0, 0, 1)
+  const bloomSize = new THREE.Vector2()
 
   return {
     set level(v) {
@@ -108,17 +127,19 @@ export function createMotionBlur(renderer) {
     get level() {
       return level
     },
+    set bloom(v) {
+      bloomOn = !!v
+    },
+    // время суток: 0 — день, 1 — ночь (сила свечения)
+    set night(k) {
+      night = k
+    },
     // кадр без смаза (перенос камеры, смена вида, витрина)
     reset() {
       fresh = true
     },
     // calm — кадр без смаза (меню, пауза): картинка стоит, смазывать нечего
     render(scene, camera, calm = false) {
-      if (!level) {
-        renderer.render(scene, camera)
-        fresh = true
-        return
-      }
       renderer.getDrawingBufferSize(size)
       if (target.width !== size.x || target.height !== size.y) target.setSize(size.x, size.y)
       camera.updateMatrixWorld()
@@ -129,9 +150,26 @@ export function createMotionBlur(renderer) {
       u.invViewProj.value.copy(viewProj).invert()
       u.cameraNear.value = camera.near
       u.cameraFar.value = camera.far
-      u.shutter.value = fresh || jump || calm ? 0 : level
+      // размытие выключено — кадр всё равно идёт через этот проход (цветокоррекция), только без смаза
+      u.shutter.value = fresh || jump || calm || !level ? 0 : level
       renderer.setRenderTarget(target)
       renderer.render(scene, camera)
+      if (bloomOn) {
+        const w = Math.round(size.x / 2)
+        const h = Math.round(size.y / 2)
+        if (bloomSize.x !== w || bloomSize.y !== h) {
+          bloomSize.set(w, h)
+          bloom.setSize(w, h) // сам делит ещё пополам — четверть кадра
+        }
+        const a = BLOOM.day
+        const b = BLOOM.night
+        bloom.strength = a.strength + (b.strength - a.strength) * night
+        bloom.threshold = a.threshold + (b.threshold - a.threshold) * night
+        bloom.radius = a.radius + (b.radius - a.radius) * night
+        target.isXRRenderTarget = false // проходы свечения — без тона
+        bloom.render(renderer, null, target, 0, false)
+        target.isXRRenderTarget = true
+      }
       renderer.setRenderTarget(null)
       renderer.render(quadScene, quadCam)
       u.prevViewProj.value.copy(viewProj)

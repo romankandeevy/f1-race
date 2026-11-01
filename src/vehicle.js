@@ -4,7 +4,7 @@
 // с общим запасом сцепления на тягу/тормоз и поворот; аэро — крылья, граунд-эффект днища, наклон кузова.
 // Rapier только интегрирует кузов как твёрдое тело. Настройка болида — TUNING.setup.
 // Износ шин, повреждения и износ мотора — wear.js: здесь только применяются их множители.
-import { TUNING, setupPhysics, engineBrakeOf, damperOf, steerLockOf, coolDragOf, ballastOf } from './tuning.js'
+import { TUNING, setupPhysics, aeroOf, engineBrakeOf, damperOf, steerLockOf, coolDragOf, ballastOf } from './tuning.js'
 import { freshTyres, tyreGrip, updateTyres, freshDamage, aeroDamage, applyImpact, freshPowerUnit, updatePowerUnit, powerFactor, suspDamageAt, SUSP_BROKEN, updateEngineHeat, freshBrakes, brakeEff, updateBrakes, updateFuel } from './wear.js'
 
 // кузов → болид: по коллайдеру из событий удара Rapier найти, чей это болид.
@@ -131,18 +131,6 @@ function damperForce(T, speed, slow) {
   const a = Math.abs(speed)
   const f = a <= T.damperKnee ? slow * a : slow * T.damperKnee + slow * T.damperFastRatio * (a - T.damperKnee)
   return Math.sign(speed) * f
-}
-
-// крылья: доли прижима осей и сопротивление (при 30/30 — ровно как в таблице tuning.js)
-function aeroOf(T) {
-  // 0–50, при 30 — ровно как в таблице tuning.js
-  const fw = T.setup.frontWing / 50
-  const rw = T.setup.rearWing / 50
-  return {
-    front: T.aeroFrontShare * (0.7 + 0.5 * fw),
-    rear: (1 - T.aeroFrontShare) * (0.7 + 0.5 * rw),
-    drag: 0.85 + 0.25 * rw,
-  }
 }
 
 export function createVehicle(RAPIER, world, spawn = {}, T = TUNING) {
