@@ -210,7 +210,7 @@ export function createScreens(ctx) {
   // ---------- главное меню ----------
   // Рома 30.10: на главном только пять пунктов; режимы — карточками в «Играть», «Управление» — вкладка «Настроек»
   const mainItems = () => [
-    { id: 'play', label: 'Играть', about: 'Заезд на время, гонка с ботами или онлайн с друзьями.', go: () => push('play') },
+    { id: 'play', label: 'Играть', about: ctx.openOnline ? 'Заезд на время, гонка с ботами или онлайн с друзьями.' : 'Заезд на время, гонка с ботами или чемпионат.', go: () => push('play') },
     { id: 'garage', label: 'Гараж', about: 'Ливрея и сборка болида: мотор, батарея, коробка, аэропакет, тормоза, охлаждение, шасси — в рамках бюджета.', go: () => push('garage', () => ctx.build?.mode('free')) },
     { id: 'setup', label: 'Настройка болида', about: 'Крылья, подвеска, тормоза, шины: готовые настройки и свои.', go: () => ctx.openSetup() },
     { id: 'records', label: 'Рекорды', about: 'Лучший круг, лучшие секторы и твоя статистика гонок.', go: () => push('records') },
@@ -676,10 +676,22 @@ export function createScreens(ctx) {
 
   // ---------- состояние и навигация ----------
   const current = () => stack[stack.length - 1]
+  let enterTimer = 0
   function render() {
     const name = current()
     if (!name) return
     root.innerHTML = `<div class="sc-shade"></div>${SCREENS[name].render()}`
+    // экран сменился — строки въезжают (index.html, .sc-enter); при перерисовке того же экрана (стрелки, значения) — нет
+    if (root.dataset.screen !== name) {
+      root.classList.remove('sc-enter')
+      void root.offsetWidth
+      root.classList.add('sc-enter')
+      clearTimeout(enterTimer)
+      enterTimer = setTimeout(() => root.classList.remove('sc-enter'), 600)
+    } else if (root.classList.contains('sc-enter')) {
+      // перерисовали во время въезда (быстрое нажатие): не начинать анимацию заново
+      root.classList.remove('sc-enter')
+    }
     root.dataset.screen = name
     focusNow()
     root.dataset.wide = name === 'play' || (name === 'settings' && settingsTabs()[tab]?.keys) ? '1' : ''
@@ -694,6 +706,7 @@ export function createScreens(ctx) {
     ctx.focus?.(null)
     stack = []
     root.hidden = true
+    root.dataset.screen = '' // следующий показ — снова с въездом строк
     ctx.showcase(false)
   }
   function push(name, before) {

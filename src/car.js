@@ -301,6 +301,8 @@ function decalContrast(list, primary, secondary) {
   }
 }
 
+const SHADOW_MIN = 0.2 // м: радиус детали, с которого она отбрасывает тень
+
 // Загружает модель болида, подготавливает её к игре и привязывает к физике.
 export async function loadCar(url, renderer, onProgress) {
   const gltf = await new GLTFLoader().loadAsync(url, onProgress)
@@ -324,9 +326,15 @@ export async function loadCar(url, renderer, onProgress) {
   const materials = {}
   const textures = new Set()
   const sidewalls = [] // боковины шин: на них меняем материал под состав
+  // тень отбрасывают только крупные детали (01.11, Рома: «всё подлагивает, дёргается»): было все 240 деталей — каждая
+  // рисовалась второй раз в карту теней (~240 лишних вызовов за кадр); тень от болтов, наклеек и кнопок руля не видна
+  carRoot.updateMatrixWorld(true)
+  const scaleOf = new THREE.Vector3()
   carRoot.traverse((o) => {
     if (!o.isMesh) return
-    o.castShadow = true
+    if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere()
+    o.getWorldScale(scaleOf)
+    o.castShadow = o.geometry.boundingSphere.radius * Math.max(scaleOf.x, scaleOf.y, scaleOf.z) >= SHADOW_MIN
     o.receiveShadow = true
     const list = Array.isArray(o.material) ? o.material : [o.material]
     if (list.some((m) => m.name === 'tyre_sidewall_soft')) sidewalls.push(o)
@@ -565,6 +573,47 @@ const tmpQ = new THREE.Quaternion()
 const Z_AXIS = new THREE.Vector3(0, 0, 1)
 const PER_CAR = ['paint', 'paint_livery', 'paint_secondary', 'accent_blue', 'light_rear']
 
+// Светодиоды торцов заднего крыла (две вертикальные полоски, x ±0,585, y 0,87–0,97, z −2,5) лежат в одной детали `lights` вместе с
+// дождевым фонарём на коробке передач (y ~0,35, z −2,26). Крыло разбито (v.damage.rearWing ≥ 0,95) — прячется rear_wing, а огни
+// оставались висеть в воздухе (Рома 10.11: «2 линии — это огни от спойлера, они остались, хотя спойлер отлетел»). Делим деталь по
+// высоте: полоски переезжают внутрь rear_wing и пропадают вместе с ним, фонарь остаётся. Геометрия делится один раз на все болиды.
+const WING_LED_Y = 0.6 // м, в осях болида: между фонарём (0,35) и полосками (0,87)
+const wingLedSplit = new WeakMap()
+const IDENTITY = new THREE.Matrix4()
+function moveWingLeds(carRoot, rearWingNode) {
+  const lights = carRoot.getObjectByName('lights')
+  // у обеих деталей в модели единичная матрица и один родитель — тогда координаты вершин не меняются; иначе не трогаем
+  if (!lights?.isMesh || !rearWingNode || lights.parent !== rearWingNode.parent) return
+  if (!lights.matrix.equals(IDENTITY) || !rearWingNode.matrix.equals(IDENTITY)) return
+  let split = wingLedSplit.get(lights.geometry)
+  if (!split) {
+    const g = lights.geometry
+    const pos = g.attributes.position
+    const index = g.index
+    const tris = (index ? index.count : pos.count) / 3
+    const body = []
+    const wing = []
+    for (let t = 0; t < tris; t++) {
+      const ids = [0, 1, 2].map((k) => (index ? index.getX(t * 3 + k) : t * 3 + k))
+      const y = (pos.getY(ids[0]) + pos.getY(ids[1]) + pos.getY(ids[2])) / 3
+      ;(y > WING_LED_Y ? wing : body).push(...ids)
+    }
+    if (!wing.length || !body.length) return // нечего делить — оставляем как есть
+    const part = (ids) => {
+      const p = g.clone()
+      p.setIndex(ids)
+      return p
+    }
+    split = { body: part(body), wing: part(wing) }
+    wingLedSplit.set(g, split)
+  }
+  lights.geometry = split.body
+  const leds = new THREE.Mesh(split.wing, lights.material)
+  leds.name = 'lights_wing'
+  leds.receiveShadow = lights.receiveShadow
+  rearWingNode.add(leds)
+}
+
 function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liveryBase = null, decals = [], tyreSets = null, shadows = true, driverTpl = null) {
   const livery = { primary: '#' + (materials.paint?.color.getHexString() ?? 'c8102e'), secondary: '#' + (materials.paint_secondary?.color.getHexString() ?? 'f2f0ea'), tex: null }
   // у колеса центр вращения на оси: оборачиваем его, чтобы отдельно рулить и крутить
@@ -656,6 +705,7 @@ function build(scene, carRoot, materials, sidewalls = [], sidewallMats = {}, liv
   const drs = carRoot.getObjectByName('drs_flap')
   const frontWingNode = carRoot.getObjectByName('front_wing')
   const rearWingNode = carRoot.getObjectByName('rear_wing')
+  moveWingLeds(carRoot, rearWingNode)
   const onboard = carRoot.getObjectByName('cam_onboard')
   // наклейки крыльев и закрылка — внутрь своей детали: крыло отвалилось — пропадают и его надписи (Рома 30.10: в меню
   // крыла не было, а V-Power и Ray-Ban висели над асфальтом); надписи на закрылке поворачиваются вместе с ним

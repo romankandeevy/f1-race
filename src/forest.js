@@ -11,6 +11,7 @@ import * as THREE from 'three'
 const NEAR = 320 // м: ближе — подробные деревья
 const RESORT = 20 // кадров между проверками, не пора ли пересортировать ближние/дальние
 const MOVE = 40 // м: камера ушла дальше — пересортировать
+const CULL = 1800 // м: дальше деревья не рисуем — туман дня там уже на ~2/3 (01.11, «всё подлагивает»)
 const FOREST = /^Лес/ // склеенные сетки крон (Спа)
 
 // ---- шаблоны (ось Y вверх, основание кроны в 0, высота 1, радиус 1) ----
@@ -300,7 +301,9 @@ export function createForest(root) {
         let a = 0
         let b = 0
         for (const t of g.mats) {
-          const near = (t.x - cx) ** 2 + (t.z - cz) ** 2 < NEAR * NEAR
+          const d2 = (t.x - cx) ** 2 + (t.z - cz) ** 2
+          if (d2 > CULL * CULL) continue
+          const near = d2 < NEAR * NEAR
           const im = near ? g.nearIm : g.farIm
           const i = near ? a++ : b++
           im.setMatrixAt(i, t.m)

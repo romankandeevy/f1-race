@@ -42,6 +42,8 @@ import { createReplay } from './replay.js'
 import { createMenuAudio } from './menuaudio.js'
 import { createRainDrops } from './raindrops.js'
 import { createRacingLine } from './racingline.js'
+import { createMarshalPanels } from './marshals.js'
+import { createPitKit } from './pitkit.js'
 import { dressCircuit, setLookNight } from './look.js'
 import { createForest } from './forest.js'
 import { createTutorial } from './tutorial.js'
@@ -51,6 +53,9 @@ import { rateRace } from './drivers.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { loadLivery, saveLivery } from './teams.js'
 import { createMotionBlur, BLUR_LEVELS } from './motionblur.js'
+
+// онлайн включён всегда, кроме выложенной версии: vercel.json собирает её с VITE_NO_ONLINE=1 (сервера там нет)
+const ONLINE_ENABLED = !import.meta.env.VITE_NO_ONLINE
 
 const STEP = 1 / 240 // шины жёсткие: на 240 Гц их силы считаются без дрожи
 
@@ -66,7 +71,9 @@ const WRONG_WAY_RESET = 3 // с
 async function main() {
   await RAPIER.init()
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
+  // сглаживание у холста не нужно (01.11): кадр всегда рисуется в картинку кадра со своим сглаживанием (motionblur.js),
+  // а сглаженный холст ×2 видеокарта держала впустую
+  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
   renderer.setPixelRatio(pixelRatioFor(settings.get('quality')))
   renderer.setSize(innerWidth, innerHeight)
   renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -282,6 +289,7 @@ async function main() {
   const playerName = () => livery.tag || 'ТЫ' // три буквы из гаража (вкладка «Пилот»)
   let paintIndex = Math.max(0, PAINTS.findIndex((c) => c.toLowerCase() === livery.primary.toLowerCase()))
   let muted = false
+  let cockpitCls = false // на body стоит класс cam-cockpit
   // P по ходу гонки листает цвет кузова; остальная ливрея не меняется
   const cyclePaint = () => {
     livery = { ...livery, team: 'own', primary: PAINTS[++paintIndex % PAINTS.length] }
@@ -339,6 +347,10 @@ async function main() {
   }
   // гоночная линия и тормозные таблички (racingline.js): линия — как у ботов уровня «Средние»
   const racingLine = !useTest && track.axis?.length ? createRacingLine(scene, track, createRaceLine(track.axis, 'hard', TUNING)) : null
+  // световые панели маршалов у трассы (marshals.js, модель из Forma): показывают флаги гонки
+  const marshals = !useTest && track.axis?.length ? createMarshalPanels(scene, track, world, RAPIER) : null
+  // оснащение пит-лейна (pitkit.js, модель из Forma): консоли над боксами, шины в грелках, командные мостики
+  const pitKit = !useTest && track.pit ? createPitKit(scene, track) : null
   // вид асфальта и травы (look.js): пятна и зерно асфальта, полосы стрижки
   if (track.root) dressCircuit(track.root)
   // лес (forest.js): склеенные кроны из модели → свои деревья экземплярами, ближние подробные, с ветром
@@ -507,11 +519,14 @@ async function main() {
     startSession: (o) => startSession(o),
     startTutorial: () => startTutorial(),
     showLapView: lapView ? () => lapView.show() : null,
-    openOnline: () => {
-      ui.hide()
-      rig.setShowcase(true, 0.2)
-      online.open()
-    },
+    // в выложенной версии (Vercel, VITE_NO_ONLINE=1) сервера для онлайна нет — карточки «Онлайн» тоже нет
+    openOnline: ONLINE_ENABLED
+      ? () => {
+          ui.hide()
+          rig.setShowcase(true, 0.2)
+          online.open()
+        }
+      : null,
     openSetup: () => {
       setupFromScreens = true
       ui.suspend()
@@ -939,7 +954,7 @@ async function main() {
   })
 
   // настройки игрока: применить всё сразу и следить за изменениями
-  const dyn = { scale: 1, sum: 0, n: 0, good: 0, prev: 0, ceil: 1, ceilT: -Infinity } // автоматическое разрешение (dynamicResolution ниже)
+  const dyn = { scale: 1, sum: 0, n: 0, slow: 0, good: 0, prev: 0, ceil: 1, ceilT: -Infinity } // автоматическое разрешение (dynamicResolution ниже)
   const applySetting = (k) => {
     const v = settings.get(k)
     if (k === 'bloom') post.bloom = v
@@ -1020,7 +1035,7 @@ async function main() {
   }
   // ссылка-приглашение (?join=КОД) или перезагрузка на трассу комнаты (?online=1) — сразу в онлайн
   const startParams = new URLSearchParams(location.search)
-  if (startParams.get('online') || startParams.get('join')) {
+  if (ONLINE_ENABLED && (startParams.get('online') || startParams.get('join'))) {
     ui.hide()
     rig.setShowcase(true, 0.2)
     online.open()
@@ -1037,26 +1052,30 @@ async function main() {
     const gap = now - dyn.prev
     dyn.prev = now
     if (!active || !settings.get('autores') || document.hidden || gap > 100) {
-      dyn.sum = dyn.n = 0
+      dyn.sum = dyn.n = dyn.slow = 0
       return
     }
+    const target = 1000 / (settings.get('fps') || 60)
     dyn.sum += gap
     dyn.n++
+    // рывки считаем отдельно (01.11, Рома: «подлагивает, дёргается»): средний кадр мог укладываться, а каждый десятый —
+    // нет (опоздавший кадр экран держит вдвое дольше); 3 и больше кадров длиннее 1,25 шага за окно — тоже снижаем
+    if (gap > target * 1.25) dyn.slow++
     if (dyn.n < 30) return
     const avg = dyn.sum / dyn.n
-    dyn.sum = dyn.n = 0
-    const target = 1000 / (settings.get('fps') || 60)
+    const slow = dyn.slow
+    dyn.sum = dyn.n = dyn.slow = 0
     const base = pixelRatioFor(settings.get('quality'))
     let next = dyn.scale
     // 01.11 (Рома: «что-то лагает»): масштаб качался — поднимался до того, на котором не успевали, падал, снова
     // поднимался; каждый шаг пересоздаёт картинки кадра (setSize) — сам по себе рывок. Теперь масштаб, на котором не
     // успели, запоминается (dyn.ceil) и 30 с к нему не поднимаемся; вверх — только после 8 спокойных окон (~4 с)
-    if (avg > target * 1.1) {
+    if (avg > target * 1.1 || slow >= 3) {
       dyn.ceil = dyn.scale
       dyn.ceilT = now
       next = Math.max(Math.max(DYN_MIN, 0.75 / base), dyn.scale - 0.1)
       dyn.good = 0
-    } else if (avg < target * 1.04) {
+    } else if (avg < target * 1.04 && slow === 0) {
       dyn.good++
       const ceil = now - dyn.ceilT < 30000 ? dyn.ceil - 0.05 : 1
       if (dyn.good >= 8 && dyn.scale + 0.05 <= ceil + 1e-6) {
@@ -1625,6 +1644,7 @@ async function main() {
       start.update(simDt)
       if (wasWaiting && !start.waiting) {
         goShownUntil = performance.now() + 1500
+        marshals?.green()
         race?.go()
         if (race) sound.cheer(null, 0.8) // огни погасли — трибуны ревут
       }
@@ -1718,7 +1738,7 @@ async function main() {
     if (online.active && online.auto) pitRequest = false // сервер завёл в боксы — заказ выполнен
     car.sync(acc / STEP, vehicle, lastInput)
     online.afterSync(dt) // хвост поправки своей машины гаснет плавно
-    bots?.sync(acc / STEP)
+    bots?.sync(acc / STEP, camera.position)
     // машина безопасности и эвакуатор — после того, как болиды выставлены: кран двигает поднятый болид сам
     if (sc?.active && !online.inRace) {
       // в онлайне машину безопасности ведёт сервер (online.update)
@@ -1801,6 +1821,9 @@ async function main() {
     sound.update(vehicle, lastInput, paused, { carPos: car.group.position, bots: rivals, camera, camMode: rig.mode, rain: weather.state.rain, dt: paused ? 0 : dt, lights: online.inRace ? Math.max(0, online.lights()) : start?.waiting ? start.state.lit : 0, pitPhase: pitCtl?.state.phase })
     // зеркала заднего вида: только если их видно (кабина, T-камера) и игра идёт
     mirrors?.update(renderer, scene, !inMenu && (rig.mode === 'onboard' || rig.mode === 'tcam'))
+    // камера с зеркалами в кадре — таблица позиций короткая (hud.js updateRace), иначе она закрывает левое зеркало
+    const cockpit = !inMenu && !replay.active && (rig.mode === 'onboard' || rig.mode === 'tcam')
+    if (cockpit !== cockpitCls) document.body.classList.toggle('cam-cockpit', (cockpitCls = cockpit))
     // из кабины камера — в голове пилота: прячем только голову (шлем, HANS); руки, тело и ноги видно, если посмотреть вниз
     const fromHead = !inMenu && !rig.showcase && rig.mode === 'onboard'
     if (car.driverHead) car.driverHead.visible = !fromHead
@@ -1809,6 +1832,7 @@ async function main() {
     // halo из кабины — по настройке (Камера → Halo из кабины); с остальных камер и в меню — обычный
     car.setHaloView(!inMenu && !rig.showcase && rig.mode === 'onboard' ? settings.get('halo') : 'show')
     car.highlight(inMenu && garageFocus && garageFocus !== 'driver' ? garageFocus : null, now / 1000)
+    marshals?.update(paused ? 0 : dt, performance.now() / 1000, !inMenu && !replay.active && race && flags ? flags : null)
     // гоночная линия: в заезде по настройке, в обучении — вся
     racingLine?.update(laps?.state.idx ?? 0, Math.max(0, vehicle.state.fwdSpeed), inMenu || replay.active ? 'off' : tutorial.active ? 'full' : settings.get('line'))
     if (!inMenu && !paused) tutorial.update(dt, { speedKmh: vehicle.state.speedKmh, input: lastInput, s: laps?.state.s ?? 0, length: track.length, aero: vehicle.aero, pitPhase: pitCtl?.state.phase })
@@ -1821,7 +1845,7 @@ async function main() {
   requestAnimationFrame(frame)
 
   // для проверок и настройки из консоли браузера
-  window.__game = { THREE, scene, camera, renderer, post, driveInstead, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get crew() { return crew }, lane, pitEntryHit, replay, racingLine, tutorial, lapView, get pitRequest() { return pitRequest }, online }
+  window.__game = { THREE, scene, camera, renderer, post, driveInstead, vehicle, car, track, input, rig, telemetry, setupScreen, sound, laps, start, gridStart, menu, ui, settings, enterMenu, startSession, endRun, flags, tow, sc, frame, bots, hud, limits, getRace: () => race, tuning: TUNING, resetToTrack, particles, marks, weather, get pit() { return pitCtl }, get crew() { return crew }, lane, pitEntryHit, replay, racingLine, marshals, pitKit, tutorial, lapView, get pitRequest() { return pitRequest }, online }
 }
 
 main().catch((e) => {

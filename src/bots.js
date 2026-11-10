@@ -5,6 +5,7 @@
 //
 // Тактика: мягкие на старте — заезд на 2–3-м круге, средние — на 3-м; раньше — если шины стёрлись больше
 // 62%, прокол или крыло сломано; правило двух составов — не позже предпоследнего круга.
+import * as THREE from 'three'
 import { createVehicle, stepVehicle, setGhost } from './vehicle.js'
 import { SETUP_DEFAULT } from './tuning.js'
 import { createRaceLine, createAiDriver, AI_LEVELS } from './ai.js'
@@ -54,6 +55,32 @@ export function rubberK(gap) {
   }
   if (gap < -RUBBER_DOWN_FROM) return 1 - RUBBER_DOWN * Math.min(1, (-gap - RUBBER_DOWN_FROM) / (RUBBER_DOWN_AT - RUBBER_DOWN_FROM))
   return 1
+}
+
+// Мелкие детали дальних болидов (01.11, Рома: «всё подлагивает, дёргается»): у бота 259 деталей, из них ~120 меньше
+// LOD_SMALL (болты, гайки, суппорты, кнопки руля, крепления) — за LOD_FAR м их не различить, а каждая — свой вызов
+// отрисовки (11 ботов ~450 вызовов за кадр). Дальше LOD_FAR они уходят на слой 1 (камеры рисуют слой 0); видимость
+// (`visible`) не трогаем — её меняют повреждения и эвакуатор. Переключение с запасом 5 м, чтобы не мигали на границе.
+const LOD_SMALL = 0.18 // м, радиус детали
+const LOD_FAR = 45 // м от камеры
+const lodSize = new THREE.Vector3()
+function lod(b, eye) {
+  if (!b.lodSmall) {
+    b.lodSmall = []
+    b.car.group.updateMatrixWorld(true)
+    b.car.group.traverse((o) => {
+      if (!o.isMesh) return
+      if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere()
+      o.getWorldScale(lodSize)
+      if (o.geometry.boundingSphere.radius * Math.max(lodSize.x, lodSize.y, lodSize.z) < LOD_SMALL) b.lodSmall.push(o)
+    })
+    b.lodFar = false
+  }
+  const d = b.car.group.position.distanceTo(eye)
+  const far = b.lodFar ? d > LOD_FAR - 5 : d > LOD_FAR + 5
+  if (far === b.lodFar) return
+  b.lodFar = far
+  for (const o of b.lodSmall) o.layers.set(far ? 1 : 0)
 }
 
 export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, lane, rand = Math.random, builds = false }) {
@@ -294,11 +321,13 @@ export function createBots({ RAPIER, world, scene = null, track, car = NO_CAR, l
       }
     },
 
-    sync(alpha) {
+    // eye — где камера: мелкие детали дальних болидов не рисуем (LOD_FAR)
+    sync(alpha, eye = null) {
       for (const b of list) {
         if (b.gone) continue
         b.car.setCompound(b.v.compound)
         b.car.sync(alpha, b.v, b.input)
+        if (eye) lod(b, eye)
       }
     },
 

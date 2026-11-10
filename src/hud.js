@@ -152,6 +152,10 @@ export function createHud(track) {
   const twOf = el('twOf')
   const twLap = el('twLap')
   const twList = el('twList')
+  const twRows = new Map() // id болида → строка таблицы
+  let twFrom = -1
+  let twTo = -1
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
   const results = el('results')
   let lastTower = 0
   // состояние болида
@@ -393,12 +397,62 @@ export function createHud(track) {
       setText(twPos, 'P' + pos)
       setText(twOf, `из ${st.cars.length}`)
       setText(twLap, me.finished ? 'Финиш' : `Круг ${Math.min(st.laps, Math.max(1, me.lap))}/${st.laps}`)
-      twList.innerHTML = st.order
-        .map((c, i) => {
-          const gap = c.dsq ? 'ДСК' : c.dnf ? 'Сход' : c.inPit ? 'ПИТ' : i === 0 ? (c.finished ? 'Финиш' : 'Лидер') : `+${c.gap.toFixed(1)}`
-          return `<li class="${c.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${c.paint}"></i><span>${c.name}</span>${c.compound ? badge(c.compound) : '<span></span>'}<span class="gap">${gap}</span></li>`
-        })
-        .join('')
+      // строки живут по болиду (ключ — id): при смене мест они переезжают плавно (FLIP), а не перерисовываются
+      // из кабины и с T-камеры таблица короткая — пять строк вокруг игрока: длинная закрывала левое зеркало
+      const compact = document.body.classList.contains('cam-cockpit') && st.order.length > 5
+      let from = 0
+      let to = st.order.length
+      if (compact) {
+        from = Math.max(0, Math.min(pos - 3, st.order.length - 5))
+        to = from + 5
+      }
+      const before = new Map()
+      for (const [id, li] of twRows) if (li.isConnected) before.set(id, li.offsetTop)
+      const seen = new Set()
+      let prev = null
+      for (let i = from; i < to; i++) {
+        const c = st.order[i]
+        const gap = c.dsq ? 'ДСК' : c.dnf ? 'Сход' : c.inPit ? 'ПИТ' : i === 0 ? (c.finished ? 'Финиш' : 'Лидер') : `+${c.gap.toFixed(1)}`
+        let li = twRows.get(c.id)
+        if (!li) {
+          li = document.createElement('li')
+          li.innerHTML = '<span class="n"></span><i></i><span class="nm"></span><span class="cmp-slot"></span><span class="gap"></span>'
+          li.r = { n: li.children[0], sw: li.children[1], nm: li.children[2], cmp: li.children[3], gap: li.children[4], compound: null, paint: null }
+          twRows.set(c.id, li)
+        }
+        const r = li.r
+        setText(r.n, String(i + 1))
+        setText(r.nm, c.name)
+        setText(r.gap, gap)
+        if (r.paint !== c.paint) r.sw.style.background = r.paint = c.paint
+        if (r.compound !== c.compound) {
+          r.compound = c.compound
+          r.cmp.innerHTML = c.compound ? badge(c.compound) : ''
+        }
+        setClass(li, c.player ? 'me' : '')
+        const want = prev ? prev.nextSibling : twList.firstChild
+        if (want !== li) twList.insertBefore(li, want)
+        prev = li
+        seen.add(c.id)
+      }
+      for (const [id, li] of twRows) {
+        if (seen.has(id)) continue
+        li.remove()
+        if (!st.cars.some((c) => c.id === id)) twRows.delete(id)
+      }
+      // окно таблицы сменилось (камера, игрок сместился в короткой таблице) — без переездов: иначе строки летят через всю панель
+      const sameWindow = from === twFrom && to === twTo
+      twFrom = from
+      twTo = to
+      if (!reduceMotion && sameWindow) {
+        for (const id of seen) {
+          const li = twRows.get(id)
+          const was = before.get(id)
+          const dy = was === undefined ? 0 : was - li.offsetTop
+          if (was === undefined) li.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'ease-out' })
+          else if (dy) li.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 380, easing: 'cubic-bezier(.2, .8, .2, 1)' })
+        }
+      }
     },
 
     // итог гонки (null — спрятать); opts: { note — строка под заголовком (очки чемпионата), actions: [[действие, надпись]…] }
@@ -419,7 +473,7 @@ export function createHud(track) {
           <h2>${me.dsq ? 'Дисквалификация' : me.dnf ? 'Сход' : pos === 1 ? 'Победа!' : `${pos}-е место`}</h2>
           ${me.reason && (me.dnf || me.dsq) ? `<p class="res-why">${me.reason}</p>` : ''}
           ${opts.note ? `<p class="res-why">${opts.note}</p>` : ''}
-          <ol>${st.order.map((c, i) => `<li class="${c.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${c.paint}"></i><span>${c.name}</span><span class="t">${time(c)}</span></li>`).join('')}</ol>
+          <ol>${st.order.map((c, i) => `<li style="--i:${i}" class="${c.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${c.paint}"></i><span>${c.name}</span><span class="t">${time(c)}</span></li>`).join('')}</ol>
           <div class="res-actions">${(opts.actions ?? [['again', 'Ещё раз'], ['menu', 'В главное меню']]).map(([a, t]) => `<button data-act="${a}">${t}</button>`).join('')}</div>
         </div>`
       for (const b of results.querySelectorAll('[data-act]')) b.addEventListener('click', () => onResults?.(b.dataset.act))
@@ -443,7 +497,7 @@ export function createHud(track) {
           <div class="sheet-kicker">${opts.kicker ?? 'Квалификация · лучший круг'}</div>
           <h2>${opts.kicker ? (pos === 1 ? 'Победа!' : `${pos}-е место`) : pos === 1 ? 'Поул-позиция!' : `${pos}-е место на решётке`}</h2>
           ${isFinite(rows[pos - 1].time) ? '' : `<p class="res-why">Ни одного засчитанного круга${opts.kicker ? '' : ' — старт с последнего места'}</p>`}
-          <ol>${rows.map((r, i) => `<li class="${r.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${r.paint}"></i><span>${r.name}</span><span class="t">${time(r, i)}</span></li>`).join('')}</ol>
+          <ol>${rows.map((r, i) => `<li style="--i:${i}" class="${r.player ? 'me' : ''}"><span class="n">${i + 1}</span><i style="background:${r.paint}"></i><span>${r.name}</span><span class="t">${time(r, i)}</span></li>`).join('')}</ol>
           <div class="res-actions"><button data-act="${(opts.primary ?? ['race'])[0]}">${(opts.primary ?? ['race', 'На старт гонки'])[1]}</button><button data-act="menu">В главное меню</button></div>
         </div>`
       for (const b of results.querySelectorAll('[data-act]')) b.addEventListener('click', () => onResults?.(b.dataset.act))
@@ -504,6 +558,8 @@ export function createHud(track) {
       }
       if (state.gear !== lastGear) {
         gear.textContent = state.gear
+        // щелчок передачи: цифра коротко «подпрыгивает» (свойство scale — transform табло не трогаем)
+        if (!reduceMotion && lastGear !== undefined && lastGear !== null) gear.animate([{ scale: 1.22 }, { scale: 1 }], { duration: 150, easing: 'ease-out' })
         lastGear = state.gear
       }
       const r = Math.min(1, Math.max(0, (state.rpm - 0.55) / 0.45))

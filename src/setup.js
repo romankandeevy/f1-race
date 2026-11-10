@@ -3,7 +3,7 @@
 // Значения сразу попадают в TUNING.setup, физика читает их каждый шаг. Сохраняются в браузере.
 // Первая вкладка — «Готовые»: карточки пресетов с оценками для новичка и свои сохранённые настройки.
 // Клавиши: ↑ ↓ — параметр, ← → — изменить (на «Готовых» Enter — поставить), Q E — вкладки, G или Esc — закрыть.
-import { TUNING, SETUP_DEFAULT, presetsFor, PRESET_ORDER } from './tuning.js'
+import { TUNING, SETUP_DEFAULT, presetsFor, PRESET_ORDER, aeroOf, coolDragOf } from './tuning.js'
 import { SETUP_DATA } from './setup-data.js'
 
 const STORE_KEY = 'f1-race.setup.v2' // v2 — шкалы F1 25 (у старой настройки другие ключи)
@@ -384,6 +384,67 @@ const TABS = [
   },
 ]
 const FIELDS = TABS.flatMap((t) => t.fields)
+const FIELD = Object.fromEntries(FIELDS.map((f) => [f.key, f]))
+
+// Страницы экрана — как в Forza Horizon 5/6 (Рома 01.11: «настройка болида не нравится — посмотри, как в Форзе, и сделай
+// так же»): разделы в порядке Форзы (Шины → Развал-схождение → Стабилизаторы → Пружины → Амортизаторы → Аэродинамика →
+// Тормоза → Дифференциал; передач у нас нет), на странице — группы с заголовком и строками «Перед» / «Зад», ползунок во
+// всю ширину с подписями на краях и меткой «по умолчанию», справа число. Давление шин — парой перед/зад, как в Форзе
+// (строка пишет оба колеса оси). Описания параметров — прежние (TABS: what / more / less / tip), внизу — подсказка.
+// Охлаждение и балласт — сверх Форзы: охлаждение на странице аэродинамики (это тоже воздух), балласт — на пружинах.
+const PAGES = [
+  { title: 'Шины', groups: [{ name: 'Давление в шинах', rows: [['Перед', ['tyreFL', 'tyreFR']], ['Зад', ['tyreRL', 'tyreRR']]] }] },
+  {
+    title: 'Развал-схождение',
+    groups: [
+      { name: 'Развал', rows: [['Перед', 'camberF'], ['Зад', 'camberR']] },
+      { name: 'Схождение', rows: [['Перед', 'toeF'], ['Зад', 'toeR']] },
+      { name: 'Угол поворота колёс', rows: [['', 'steerLock']] },
+    ],
+  },
+  { title: 'Стабилизаторы', groups: [{ name: 'Стабилизаторы', rows: [['Перед', 'arbF'], ['Зад', 'arbR']] }] },
+  {
+    title: 'Пружины',
+    groups: [
+      { name: 'Пружины', rows: [['Перед', 'suspF'], ['Зад', 'suspR']] },
+      { name: 'Клиренс', rows: [['Перед', 'rideF'], ['Зад', 'rideR']] },
+      { name: 'Балласт', rows: [['', 'ballast']] },
+    ],
+  },
+  { title: 'Амортизаторы', groups: [{ name: 'Амортизаторы', rows: [['Перед', 'damperF'], ['Зад', 'damperR']] }] },
+  {
+    title: 'Аэродинамика',
+    groups: [
+      { name: 'Антикрыло', rows: [['Перед', 'frontWing'], ['Зад', 'rearWing']] },
+      { name: 'Охлаждение', rows: [['Тормоза', 'brakeDucts'], ['Мотор', 'radiator']] },
+    ],
+  },
+  { title: 'Тормоза', groups: [{ name: 'Баланс', rows: [['', 'brakeBias']] }, { name: 'Давление', rows: [['', 'brakePressure']] }] },
+  {
+    title: 'Дифференциал',
+    groups: [
+      { name: 'Блокировка', rows: [['На газу', 'diffOn'], ['На сбросе', 'diffOff']] },
+      { name: 'Торможение мотором', rows: [['', 'engineBraking']] },
+    ],
+  },
+]
+// строки страницы подряд: { label, keys, f } (f — описание первого ключа)
+const rowsOf = (page) => page.groups.flatMap((g, gi) => g.rows.map(([label, k], ri) => ({ label, keys: [].concat(k), f: FIELD[[].concat(k)[0]], group: g.name, first: ri === 0, gi })))
+for (const pg of PAGES) for (const r of rowsOf(pg)) if (!r.f) throw new Error('setup: нет параметра ' + r.keys)
+if (new Set(PAGES.flatMap((pg) => rowsOf(pg).flatMap((r) => r.keys))).size !== FIELDS.length) throw new Error('setup: на страницах не все параметры')
+
+// Болид сейчас — цифры, которые честно считаются из настройки (как прижим в кг на странице аэро у Форзы):
+// максималка — от сопротивления (мощность та же, скорость ∝ сопротивление^−1/3; при 30/30 и охлаждении 3/3 — 319 км/ч,
+// замер tools/setup/presets.mjs), прижим на 200 км/ч по осям — от крыльев (без днища и клиренса), баланс прижима
+const TOP_KMH = 319
+function carNow(s) {
+  const T = { ...TUNING, setup: s }
+  const A = aeroOf(T)
+  const top = TOP_KMH * Math.pow(A.drag * coolDragOf(s), -1 / 3)
+  const v = 200 / 3.6
+  const kg = (share) => (TUNING.downforceK * share * v * v) / 9.81
+  return { top, front: kg(A.front), rear: kg(A.rear), balance: (A.front / (A.front + A.rear)) * 100 }
+}
 // готовые настройки под трассу, которая сейчас загружена (createSetupScreen({ track })): лучший уровень прижима, круг и
 // оценки — замер (src/setup-data.js); у трассы без замера (тестовая) — «Средний» лучший и без времени круга
 const PRESET_KEYS = PRESET_ORDER
@@ -457,8 +518,9 @@ export function createSetupScreen({ track = null, trackName = '' } = {}) {
   TRACK_NAME = trackName
   load()
   const root = document.getElementById('setup')
-  // tab 0 — «Готовые», дальше вкладки параметров (TABS[tab - 1])
-  const TITLES = ['Готовые', ...TABS.map((t) => t.title)]
+  // tab 0 — «Готовые», дальше страницы параметров (PAGES[tab - 1])
+  const TITLES = ['Готовые', ...PAGES.map((t) => t.title)]
+  let opened = carNow(TUNING.setup) // цифры болида, когда открыли экран: от них — зелёные/красные изменения
   let tab = 0
   let sel = 0
   let mine = loadMine()
@@ -484,15 +546,16 @@ export function createSetupScreen({ track = null, trackName = '' } = {}) {
         <section class="rows"></section>
         <aside class="desc"></aside>
       </div>
+      <div class="help"></div>
       <footer class="sheet-foot">
         <div class="now"></div>
-        <div class="keys"></div>
+        <button class="reset" data-action="reset">Сбросить страницу</button>
       </footer>
     </div>`
   const rows = root.querySelector('.rows')
   const desc = root.querySelector('.desc')
   const nowEl = root.querySelector('.now')
-  const keysEl = root.querySelector('.keys')
+  const helpEl = root.querySelector('.help')
 
   const show = (f, v) => (f.show ? f.show(v) : `${v}${f.unit || ''}`)
   // шаг 0,1 даёт хвосты вроде 24.900000000000002 — округляем до шага
@@ -502,7 +565,9 @@ export function createSetupScreen({ track = null, trackName = '' } = {}) {
   const isPresets = () => tab === 0
   // список вкладки «Готовые»: пресеты, свои, карточка «Сохранить»
   const items = () => [...PRESET_KEYS.map((key) => ({ kind: 'preset', key })), ...mine.map((m, i) => ({ kind: 'mine', i })), { kind: 'add' }]
-  const count = () => (isPresets() ? items().length : TABS[tab - 1].fields.length)
+  const page = () => PAGES[tab - 1]
+  const prow = () => rowsOf(page())
+  const count = () => (isPresets() ? items().length : prow().length)
 
   function renderTab() {
     sel = Math.min(sel, count() - 1)
@@ -560,27 +625,34 @@ export function createSetupScreen({ track = null, trackName = '' } = {}) {
           }
         })
       }
-      keysEl.innerHTML = '<kbd>↑</kbd><kbd>↓</kbd> выбрать · <kbd>Enter</kbd> поставить · <kbd>Q</kbd><kbd>E</kbd> вкладки'
     } else {
-      const t = TABS[tab - 1]
-      rows.innerHTML = t.fields
-        .map(
-          (f, i) => `
-        <div class="field" data-i="${i}">
-          <span class="name">${f.label}</span>
-          <button data-step="${f.key}" data-dir="-1" aria-label="меньше">‹</button>
-          <input type="range" data-key="${f.key}" min="${f.min}" max="${f.max}" step="${f.step}">
-          <button data-step="${f.key}" data-dir="1" aria-label="больше">›</button>
-          <output data-out="${f.key}"></output>
-        </div>`,
-        )
+      // как в Форзе: заголовок группы, под ним строки «Перед» / «Зад» — ползунок во всю ширину, подписи на краях, число справа
+      rows.innerHTML = prow()
+        .map((r, i) => {
+          const f = r.f
+          const def = share(f, SETUP_DEFAULT[f.key])
+          return `${r.first ? `<div class="grp caps">${r.group}</div>` : ''}
+        <div class="field tune" data-i="${i}">
+          <span class="name">${r.label || ''}</span>
+          <button data-row="${i}" data-dir="-1" aria-label="меньше">‹</button>
+          <div class="bar">
+            <input type="range" data-key="${f.key}" min="${f.min}" max="${f.max}" step="${f.step}">
+            <i class="def" style="left:${def}%" title="По умолчанию"></i>
+            <div class="ends"><span>${f.lo}</span><span>${f.hi}</span></div>
+          </div>
+          <button data-row="${i}" data-dir="1" aria-label="больше">›</button>
+          <output data-out="${i}"></output>
+        </div>`
+        })
         .join('')
-      rows.querySelectorAll('.field').forEach((row, i) => {
+      rows.querySelectorAll('.field').forEach((row) => {
+        const i = Number(row.dataset.i)
         row.addEventListener('mouseenter', () => select(i))
-        row.querySelector('input').addEventListener('input', (e) => set(t.fields[i], Number(e.target.value)))
+        row.querySelector('input').addEventListener('input', (e) => setRow(prow()[i], Number(e.target.value)))
       })
-      keysEl.innerHTML = '<kbd>↑</kbd><kbd>↓</kbd> параметр · <kbd>←</kbd><kbd>→</kbd> изменить · <kbd>Q</kbd><kbd>E</kbd> вкладки'
     }
+    helpEl.hidden = isPresets()
+    root.querySelector('.reset').hidden = isPresets()
     for (const b of root.querySelectorAll('[data-tab]')) b.classList.toggle('on', Number(b.dataset.tab) === tab)
     refresh()
   }
@@ -630,21 +702,41 @@ export function createSetupScreen({ track = null, trackName = '' } = {}) {
         <div class="tip"><span class="caps">${on ? 'Стоит сейчас' : 'Как поставить'}</span><p>${on ? 'Можешь подкрутить любую вкладку — эта настройка станет основой.' : 'Нажми на карточку или Enter. Потом можно подкрутить любую вкладку.'}</p></div>`
       return
     }
-    const f = TABS[tab - 1].fields[sel]
-    const v = TUNING.setup[f.key]
+    const r = prow()[sel]
+    const f = r.f
+    const now = carNow(TUNING.setup)
+    // изменение с момента, как открыли экран: ▲ зелёным — лучше для этой цифры, ▼ красным — хуже; баланс — просто число
+    const delta = (a, b, unit, good = 1, digits = 0) => {
+      const d = a - b
+      if (Math.abs(d) < 0.5 * 10 ** -digits) return ''
+      const cls = good === 0 ? '' : d * good > 0 ? ' up' : ' down'
+      return `<em class="d${cls}">${d > 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(digits).replace('.', ',')}${unit}</em>`
+    }
     desc.innerHTML = `
-      <div class="caps">${TABS[tab - 1].title}</div>
-      <h3>${f.label}</h3>
-      <div class="big">${show(f, v)}</div>
-      <div class="scale"><span>${f.lo}</span><i><b style="left:${share(f, v)}%"></b></i><span>${f.hi}</span></div>
+      <div class="caps">Болид сейчас</div>
+      <div class="stat"><span>Максимальная скорость</span><b>~${Math.round(now.top)} км/ч</b>${delta(now.top, opened.top, ' км/ч')}</div>
+      <div class="stat"><span>Прижим на 200 км/ч · перед</span><b>${Math.round(now.front)} кг</b>${delta(now.front, opened.front, ' кг')}</div>
+      <div class="stat"><span>Прижим на 200 км/ч · зад</span><b>${Math.round(now.rear)} кг</b>${delta(now.rear, opened.rear, ' кг')}</div>
+      <div class="stat"><span>Баланс прижима на перед</span><b>${now.balance.toFixed(1).replace('.', ',')}%</b>${delta(now.balance, opened.balance, '%', 0, 1)}</div>
+      <div class="stat"><span>Баланс тормозов на перед</span><b>${TUNING.setup.brakeBias}%</b></div>
+      <p class="note">Максималка и прижим — расчёт по крыльям и охлаждению (без днища). Изменения — с момента, как открыл настройку.</p>`
+    helpEl.innerHTML = `
+      <div class="help-head"><span class="caps">${page().title} · ${r.group}${r.label ? ` · ${r.label}` : ''}</span><b>${r.keys.length > 1 ? `${r.group} · ${r.label}` : f.label}</b></div>
       <p class="what">${f.what}</p>
-      <div class="effect"><span class="caps">Больше <em>›</em></span><p>${f.more}</p></div>
-      <div class="effect"><span class="caps">Меньше <em>‹</em></span><p>${f.less}</p></div>
-      <div class="tip"><span class="caps">Совет</span><p>${f.tip}</p></div>`
+      <div class="help-cols"><p><em>Больше ›</em> ${f.more}</p><p><em>‹ Меньше</em> ${f.less}</p><p class="tip"><em>Совет</em> ${f.tip}</p></div>`
   }
 
-  function set(f, value) {
-    TUNING.setup[f.key] = round(f, value)
+  // строка страницы: пишет все ключи (давление шин — оба колеса оси)
+  function setRow(r, value) {
+    const v = round(r.f, value)
+    for (const k of r.keys) TUNING.setup[k] = v
+    save()
+    refresh()
+  }
+  // сбросить страницу к значениям по умолчанию (как «стандартная настройка» в Форзе, но по странице)
+  function resetPage() {
+    if (isPresets()) return
+    for (const r of prow()) for (const k of r.keys) TUNING.setup[k] = SETUP_DEFAULT[k]
     save()
     refresh()
   }
@@ -703,13 +795,16 @@ export function createSetupScreen({ track = null, trackName = '' } = {}) {
         row.classList.toggle('active', (it.kind === 'preset' && it.key === cur) || (it.kind === 'mine' && same(mine[it.i].values)))
       })
     } else {
-      TABS[tab - 1].fields.forEach((f, i) => {
-        const v = TUNING.setup[f.key]
-        const input = rows.querySelector(`[data-key="${f.key}"]`)
+      prow().forEach((r, i) => {
+        const f = r.f
+        const v = TUNING.setup[r.keys[0]]
+        const row = rows.querySelector(`.field[data-i="${i}"]`)
+        const input = row.querySelector('input')
         input.value = v
         input.style.setProperty('--p', `${share(f, v)}%`)
-        rows.querySelector(`[data-out="${f.key}"]`).textContent = show(f, v)
-        rows.children[i].classList.toggle('on', i === sel)
+        row.querySelector('output').textContent = show(f, v)
+        row.classList.toggle('on', i === sel)
+        row.classList.toggle('changed', r.keys.some((k) => Math.abs(TUNING.setup[k] - SETUP_DEFAULT[k]) > 1e-6))
       })
     }
     renderDesc()
@@ -734,12 +829,13 @@ export function createSetupScreen({ track = null, trackName = '' } = {}) {
     const t = e.target.closest('button')
     if (!t) return
     if (t.dataset.tab) goTab(Number(t.dataset.tab))
-    if (t.dataset.step) {
-      const fields = TABS[tab - 1].fields
-      const i = fields.findIndex((x) => x.key === t.dataset.step)
+    if (t.dataset.row) {
+      const i = Number(t.dataset.row)
+      const r = prow()[i]
       sel = i
-      set(fields[i], TUNING.setup[fields[i].key] + fields[i].step * Number(t.dataset.dir))
+      setRow(r, TUNING.setup[r.keys[0]] + r.f.step * Number(t.dataset.dir))
     }
+    if (t.dataset.action === 'reset') resetPage()
     if (t.dataset.action === 'save-mine') saveCurrent(rows.querySelector('.add-name').value)
     if (t.dataset.del) deleteMine(Number(t.dataset.del))
     if (t.dataset.action === 'close') api.close()
@@ -759,9 +855,9 @@ export function createSetupScreen({ track = null, trackName = '' } = {}) {
     else if (isPresets()) {
       if (e.code === 'Enter') activate(sel)
     } else {
-      const f = TABS[tab - 1].fields[sel]
-      if (e.code === 'ArrowLeft') set(f, TUNING.setup[f.key] - f.step)
-      else if (e.code === 'ArrowRight') set(f, TUNING.setup[f.key] + f.step)
+      const r = prow()[sel]
+      if (e.code === 'ArrowLeft') setRow(r, TUNING.setup[r.keys[0]] - r.f.step)
+      else if (e.code === 'ArrowRight') setRow(r, TUNING.setup[r.keys[0]] + r.f.step)
     }
   })
 
@@ -769,6 +865,7 @@ export function createSetupScreen({ track = null, trackName = '' } = {}) {
     save,
     isOpen: () => !root.hidden,
     open() {
+      opened = carNow(TUNING.setup)
       naming = false
       confirmDel = -1
       renderTab()

@@ -82,13 +82,20 @@ void main() {
 
 export function createMotionBlur(renderer) {
   const size = new THREE.Vector2()
-  const target = new THREE.WebGLRenderTarget(1, 1, { samples: 4, type: THREE.HalfFloatType, depthTexture: new THREE.DepthTexture(1, 1) })
+  // 01.11 (Рома: «всё подлагивает, дёргается»; замер на Спа в гонке: кадр упирался в видеокарту на «Максимуме»):
+  // картинка кадра — 8 бит с гамма-кодированием (sRGB), а не 16 бит: тон (ACES) уже в ней, яркость ≤ 1, пиксели те же
+  // (проверено), а памяти и чтения вдвое меньше. Сглаживание — 4 выборки, но 2, когда картинка и так ≥ 1,75 экрана
+  // (сглаживание сверхразрешением уже есть) — см. render
+  // Цвет для three.js — линейный (тон он пишет как есть), а хранит видеокарта в SRGB8_ALPHA8 — сама кодирует при записи и
+  // раскодирует при чтении: точность в тёмном как у sRGB, без полос. colorSpace: SRGB здесь нельзя — с isXRRenderTarget
+  // three тогда кодирует ещё и в шейдере (вдвое, картинка светлее)
+  const target = new THREE.WebGLRenderTarget(1, 1, { samples: 4, type: THREE.UnsignedByteType, internalFormat: 'SRGB8_ALPHA8', depthTexture: new THREE.DepthTexture(1, 1) })
+  target.texture.colorSpace = THREE.LinearSRGBColorSpace
   // Тон (ACES) — прямо при рисовании сцены, как на экране, ДО сглаживания (Рома 31.10: «лесенки на трассе»). three.js тонирует
   // только при рисовании на экран (или в XR-цель); в свою картинку кадр шёл в «сырой» яркости, и MSAA усреднял край яркой
   // белой линии (ночью она ещё светится, яркость ≫ 1) с асфальтом уже там: точка, на четверть закрытая линией, после тона
   // становилась почти белой — перехода нет, ступеньки. Пометка XR-цели включает тон для этой картинки; цвет в ней линейный.
   target.isXRRenderTarget = true
-  target.texture.colorSpace = THREE.LinearSRGBColorSpace
   const mat = new THREE.ShaderMaterial({
     vertexShader: vert,
     fragmentShader: frag,
@@ -124,6 +131,9 @@ export function createMotionBlur(renderer) {
       level = v
       fresh = true
     },
+    get target() {
+      return target // для проверок (__game.post.target)
+    },
     get level() {
       return level
     },
@@ -141,6 +151,11 @@ export function createMotionBlur(renderer) {
     // calm — кадр без смаза (меню, пауза): картинка стоит, смазывать нечего
     render(scene, camera, calm = false) {
       renderer.getDrawingBufferSize(size)
+      const samples = renderer.getPixelRatio() >= 1.75 ? 2 : 4
+      if (target.samples !== samples) {
+        target.samples = samples
+        target.dispose() // пересоздастся с новым числом выборок
+      }
       if (target.width !== size.x || target.height !== size.y) target.setSize(size.x, size.y)
       camera.updateMatrixWorld()
       viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
